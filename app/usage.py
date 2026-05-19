@@ -162,25 +162,39 @@ def _extract_record(obj: dict) -> Record | None:
     if obj.get("type") != "assistant":
         return None
     message = obj.get("message") or {}
+    if not isinstance(message, dict):
+        return None
     usage = message.get("usage") or {}
+    if not isinstance(usage, dict):
+        return None
     if not usage:
         return None
-    tokens = (
-        int(usage.get("input_tokens") or 0)
-        + int(usage.get("output_tokens") or 0)
-        + int(usage.get("cache_creation_input_tokens") or 0)
-        + int(usage.get("cache_read_input_tokens") or 0)
-    )
+    parts = [
+        _usage_int(usage, "input_tokens"),
+        _usage_int(usage, "output_tokens"),
+        _usage_int(usage, "cache_creation_input_tokens"),
+        _usage_int(usage, "cache_read_input_tokens"),
+    ]
+    if any(v is None for v in parts):
+        return None
+    tokens = sum(v for v in parts if v is not None)
     if tokens <= 0:
         return None
     ts_raw = obj.get("timestamp")
-    if not ts_raw:
+    if not isinstance(ts_raw, str) or not ts_raw:
         return None
     ts = _parse_ts(ts_raw)
     if ts is None:
         return None
     model = str(message.get("model") or "unknown")
     return Record(ts=ts, tokens=tokens, model=model)
+
+
+def _usage_int(usage: dict, key: str) -> int | None:
+    try:
+        return int(usage.get(key) or 0)
+    except (TypeError, ValueError):
+        return None
 
 
 def _parse_ts(value: str) -> datetime | None:

@@ -37,8 +37,8 @@ record per-message token usage to disk, so the panel just renders an
   **not** implement OAuth flows of its own — you need Claude Code and/or
   Codex CLI installed and signed in on the host machine.
 - Read-only bind mounts: codervis never writes to `~/.claude` or `~/.codex`.
-- If you only use one of the two agents, set `CODEX_ENABLED=false` (or
-  remove the Claude side similarly) to hide the unused panel.
+- If you only use one of the two agents, set `CODEX_ENABLED=false`. The Codex
+  panel remains visible but dimmed with a `disabled` source state.
 
 ## Prerequisites
 
@@ -60,10 +60,11 @@ Edit `.env`:
 | --- | --- | --- |
 | `CLAUDE_HOME` | Host path to your Claude Code data dir. **On Windows set this explicitly** — e.g. `C:/Users/you/.claude`. | `~/.claude` |
 | `CODEX_HOME` | Host path to your Codex CLI data dir. Same Windows caveat. | `~/.codex` |
-| `CODEX_ENABLED` | Set to `false` to hide the Codex panel entirely. | `true` |
+| `CODEX_ENABLED` | Set to `false` to render the Codex panel dimmed with a `disabled` state. | `true` |
 | `DASHBOARD_PORT` | Host port the dashboard listens on. | `8765` |
 | `REFRESH_INTERVAL_SECONDS` | How often the browser is pushed a fresh snapshot. | `5` |
 | `QUOTA_CACHE_TTL_SECONDS` | Server-side cache for the upstream calls. Keep ≥ refresh interval. | `30` |
+| `CODEX_ACTIVITY_CACHE_TTL_SECONDS` | Server-side cache for Codex local activity metadata scans. | `5` |
 | `CLAUDE_AI_HOST` | Override the Claude host (rarely needed). | `https://claude.ai` |
 | `CHATGPT_HOST` | Override the Codex host (rarely needed). | `https://chatgpt.com` |
 | `FIVE_HOUR_TOKEN_LIMIT` | Only used in Claude fallback mode — token threshold for the 5-hour gauge. | `500000` |
@@ -83,8 +84,8 @@ CODEX_HOME=C:/Users/yourname/.codex
 (Forward slashes work fine inside `.env`.)
 
 If you don't use Codex, point `CODEX_HOME` at any existing directory and
-set `CODEX_ENABLED=false` — the panel will be hidden and the bind mount
-won't be touched.
+set `CODEX_ENABLED=false`. The panel will be dimmed with a `disabled` state
+and the bind mount won't be touched by the app.
 
 ## Run
 
@@ -92,7 +93,9 @@ won't be touched.
 docker compose up --build -d
 ```
 
-Open <http://localhost:8765> (or whichever port you set).
+Open <http://localhost:8765> (or whichever port you set). The default Compose
+port mapping also exposes the dashboard on your LAN at
+`http://<your-host-ip>:8765`.
 
 To stop:
 
@@ -108,9 +111,11 @@ Two columns, one per agent (Claude Code on the left, Codex on the right):
   with a countdown to when it resets.
 - **Weekly Window** gauge — same, on a 7-day window.
 - Per-column header shows the source state (`live` / `fallback` /
-  `unavailable` / `disabled`); footer shows the plan and (Claude only)
-  the timestamp of your most recent activity on this machine. The Codex
-  footer shows an error string when the live call fails.
+  `unavailable` / `disabled`); footer shows the plan and the timestamp of
+  your most recent local activity for each agent. Claude activity comes from
+  parsed transcripts; Codex activity comes from local history/session file
+  metadata. The Codex footer also shows an error string when the live quota
+  call fails.
 
 The fill colour is computed from the percentage: lime under 50%, sliding
 through amber, to coral as you approach 100%. Panels in `unavailable` or
@@ -124,6 +129,7 @@ through amber, to coral as you approach 100%. Panels in `unavailable` or
 │   ├── main.py          # FastAPI app + SSE stream
 │   ├── quota.py         # Claude live client → claude.ai/api/oauth/usage
 │   ├── codex_quota.py   # Codex live client → chatgpt.com/backend-api/wham/usage
+│   ├── codex_activity.py # Codex local activity metadata reader
 │   ├── usage.py         # transcript-based fallback estimator (Claude only)
 │   ├── templates/
 │   │   └── index.html
@@ -154,8 +160,9 @@ flags that are useful for quick diagnosis.
 ## Security notes
 
 - `~/.claude/.credentials.json` and `~/.codex/auth.json` contain long-lived
-  OAuth bearer tokens. Both bind mounts are read-only and the dashboard
-  binds to `127.0.0.1` by default (via the `DASHBOARD_PORT` mapping).
+  OAuth bearer tokens. Both bind mounts are read-only. The default Compose
+  port mapping publishes the dashboard on all host interfaces, so machines on
+  your LAN can reach it at `http://<your-host-ip>:8765`.
   **Don't expose this port to the public internet** — anyone who can
   reach it can read your usage. If you need remote access, put it behind
   a reverse proxy with auth.

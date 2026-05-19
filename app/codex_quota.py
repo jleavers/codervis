@@ -134,11 +134,18 @@ class CodexLiveQuotaClient:
         except json.JSONDecodeError as e:
             raise CodexLiveQuotaError(f"response is not JSON: {e}") from e
 
-        five_hour_raw = _pick(payload, ("primary_window", "five_hour", "five_hour_window"))
-        seven_day_raw = _pick(
-            payload, ("secondary_window", "weekly", "seven_day", "weekly_window")
+        rate_limit = payload.get("rate_limit") if isinstance(payload.get("rate_limit"), dict) else {}
+        five_hour_raw = _pick_window(
+            payload,
+            rate_limit,
+            keys=("primary_window", "five_hour", "five_hour_window"),
         )
-        rl_plan = (payload.get("rate_limit") or {}).get("plan_type")
+        seven_day_raw = _pick_window(
+            payload,
+            rate_limit,
+            keys=("secondary_window", "weekly", "seven_day", "weekly_window"),
+        )
+        rl_plan = rate_limit.get("plan_type")
 
         return CodexLiveSnapshot(
             five_hour=_window("five_hour", "5-Hour Window", five_hour_raw),
@@ -158,27 +165,33 @@ class CodexLiveQuotaClient:
             return snap
 
 
-def _pick(payload: dict, keys: tuple[str, ...]) -> dict | None:
-    for k in keys:
-        v = payload.get(k)
-        if isinstance(v, dict):
-            return v
+def _pick_window(*containers: dict, keys: tuple[str, ...]) -> dict | None:
+    for container in containers:
+        for k in keys:
+            v = container.get(k)
+            if isinstance(v, dict):
+                return v
     return None
 
 
 def _window(name: str, label: str, raw: dict | None) -> CodexLiveWindow:
-    raw = raw or {}
-    percent: float
+    if not isinstance(raw, dict):
+        raise CodexLiveQuotaError(f"missing or invalid {name} usage window")
+
     if "utilization" in raw:
-        percent = float(raw.get("utilization") or 0.0)
+        percent = _float_field(raw.get("utilization"), f"{name}.utilization")
     elif "percent_used" in raw:
-        percent = float(raw.get("percent_used") or 0.0)
+        percent = _float_field(raw.get("percent_used"), f"{name}.percent_used")
+    elif "used_percent" in raw:
+        percent = _float_field(raw.get("used_percent"), f"{name}.used_percent")
     elif "percent_left" in raw:
-        percent = 100.0 - float(raw.get("percent_left") or 0.0)
+        percent = 100.0 - _float_field(raw.get("percent_left"), f"{name}.percent_left")
     elif "remaining_percent" in raw:
-        percent = 100.0 - float(raw.get("remaining_percent") or 0.0)
+        percent = 100.0 - _float_field(
+            raw.get("remaining_percent"), f"{name}.remaining_percent"
+        )
     else:
-        percent = 0.0
+        raise CodexLiveQuotaError(f"missing {name} utilization field in usage response")
 
     resets_at: datetime | None = None
     for key in ("resets_at", "reset_at", "resets", "reset"):
@@ -193,6 +206,10 @@ def _window(name: str, label: str, raw: dict | None) -> CodexLiveWindow:
                 break
             except ValueError:
                 continue
+        elif isinstance(v, (int, float)):
+            resets_at = _timestamp_or_relative(v)
+            if resets_at is not None:
+                break
     if resets_at is None:
         ms = raw.get("reset_time_ms") or raw.get("resets_in_ms")
         if isinstance(ms, (int, float)):
@@ -205,8 +222,37 @@ def _window(name: str, label: str, raw: dict | None) -> CodexLiveWindow:
                     )
             except (OverflowError, OSError, ValueError):
                 resets_at = None
+    if resets_at is None:
+        seconds = raw.get("reset_after_seconds") or raw.get("resets_in_seconds")
+        if isinstance(seconds, (int, float)):
+            resets_at = _relative_seconds(seconds)
 
     return CodexLiveWindow(name=name, label=label, percent=percent, resets_at=resets_at)
+
+
+def _float_field(value, field: str) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError) as e:
+        raise CodexLiveQuotaError(f"{field} is not numeric") from e
+
+
+def _timestamp_or_relative(value: int | float) -> datetime | None:
+    try:
+        if value > 1e12:
+            return datetime.fromtimestamp(value / 1000.0, tz=timezone.utc)
+        if value > 1e9:
+            return datetime.fromtimestamp(value, tz=timezone.utc)
+        return _relative_seconds(value)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _relative_seconds(value: int | float) -> datetime | None:
+    try:
+        return datetime.fromtimestamp(time.time() + float(value), tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def client_from_env() -> CodexLiveQuotaClient:

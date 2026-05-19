@@ -10,6 +10,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from .codex_activity import CodexActivityReader
+from .codex_activity import reader_from_env as codex_activity_reader_from_env
 from .codex_quota import CodexLiveQuotaClient, CodexLiveQuotaError
 from .codex_quota import client_from_env as codex_client_from_env
 from .quota import LiveQuotaClient, LiveQuotaError, client_from_env
@@ -32,6 +34,7 @@ templates = Jinja2Templates(directory=BASE_DIR / "templates")
 _live: LiveQuotaClient = client_from_env()
 _fallback: UsageReader = reader_from_env()
 _codex: CodexLiveQuotaClient | None = codex_client_from_env() if CODEX_ENABLED else None
+_codex_activity: CodexActivityReader = codex_activity_reader_from_env()
 
 
 def _window_dict(name: str, label: str, percent, resets_at) -> dict:
@@ -82,6 +85,10 @@ def _claude_section() -> dict:
 
 
 def _codex_section() -> dict:
+    activity_snap = _codex_activity.snapshot()
+    last_activity = (
+        activity_snap.last_activity.isoformat() if activity_snap.last_activity else None
+    )
     if _codex is None:
         return {
             "enabled": False,
@@ -90,6 +97,8 @@ def _codex_section() -> dict:
             "source": "disabled",
             "source_error": None,
             "subscription_type": None,
+            "last_activity": last_activity,
+            "data_root_exists": activity_snap.data_root_exists,
         }
 
     try:
@@ -105,6 +114,8 @@ def _codex_section() -> dict:
             "source": "live",
             "source_error": None,
             "subscription_type": snap.plan_type,
+            "last_activity": last_activity,
+            "data_root_exists": activity_snap.data_root_exists,
         }
     except CodexLiveQuotaError as e:
         return {
@@ -114,6 +125,8 @@ def _codex_section() -> dict:
             "source": "unavailable",
             "source_error": str(e),
             "subscription_type": None,
+            "last_activity": last_activity,
+            "data_root_exists": activity_snap.data_root_exists,
         }
 
 
@@ -163,6 +176,7 @@ async def healthz() -> dict:
         "ok": True,
         "data_root_exists": _fallback.data_dir.exists(),
         "claude_credentials_present": _live.credentials_path.exists(),
+        "codex_data_root_exists": _codex_activity.data_dir.exists(),
         "codex_enabled": _codex is not None,
         "codex_credentials_present": _codex.credentials_path.exists() if _codex else False,
     }

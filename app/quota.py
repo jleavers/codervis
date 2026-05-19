@@ -123,8 +123,11 @@ class LiveQuotaClient:
 
 
 def _window(name: str, label: str, raw: dict | None) -> LiveWindow:
-    raw = raw or {}
-    percent = float(raw.get("utilization") or 0.0)
+    if not isinstance(raw, dict):
+        raise LiveQuotaError(f"missing or invalid {name} usage window")
+    if "utilization" not in raw:
+        raise LiveQuotaError(f"missing {name}.utilization in usage response")
+    percent = _float_field(raw.get("utilization"), f"{name}.utilization")
     resets_raw = raw.get("resets_at")
     resets_at: datetime | None = None
     if isinstance(resets_raw, str):
@@ -137,6 +140,13 @@ def _window(name: str, label: str, raw: dict | None) -> LiveWindow:
         except ValueError:
             resets_at = None
     return LiveWindow(name=name, label=label, percent=percent, resets_at=resets_at)
+
+
+def _float_field(value, field: str) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError) as e:
+        raise LiveQuotaError(f"{field} is not numeric") from e
 
 
 def client_from_env() -> LiveQuotaClient:

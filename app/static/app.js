@@ -69,17 +69,20 @@
     document.querySelectorAll(".resets").forEach((el) => {
       el.textContent = formatRelative(el.dataset.iso);
     });
-    const la = document.getElementById("last-activity");
-    if (la && la.dataset.iso) {
-      const t = new Date(la.dataset.iso).getTime();
-      if (!Number.isNaN(t)) {
-        const ago = Math.max(0, Math.round((Date.now() - t) / 1000));
-        const h = Math.floor(ago / 3600);
-        const m = Math.floor((ago % 3600) / 60);
-        const s = ago % 60;
-        la.textContent = h ? `${h}h ${m}m ago` : m ? `${m}m ${s}s ago` : `${s}s ago`;
-      }
-    }
+    document.querySelectorAll(".last-activity").forEach((el) => {
+      el.textContent = formatAgo(el.dataset.iso);
+    });
+  }
+
+  function formatAgo(iso) {
+    if (!iso) return "—";
+    const t = new Date(iso).getTime();
+    if (Number.isNaN(t)) return "—";
+    const ago = Math.max(0, Math.round((Date.now() - t) / 1000));
+    const h = Math.floor(ago / 3600);
+    const m = Math.floor((ago % 3600) / 60);
+    const s = ago % 60;
+    return h ? `${h}h ${m}m ago` : m ? `${m}m ${s}s ago` : `${s}s ago`;
   }
 
   function applyProvider(key, section) {
@@ -100,6 +103,9 @@
 
     const sub = document.getElementById("subscription-" + key);
     if (sub) sub.textContent = section.subscription_type || "—";
+
+    const lastActivity = document.getElementById("last-activity-" + key);
+    if (lastActivity) lastActivity.dataset.iso = section.last_activity || "";
 
     const errEl = document.getElementById("error-" + key);
     if (errEl) errEl.textContent = section.source_error || "";
@@ -131,9 +137,6 @@
   function apply(payload) {
     applyProvider("claude", payload.claude);
     applyProvider("codex", payload.codex);
-
-    const la = document.getElementById("last-activity");
-    if (la) la.dataset.iso = (payload.claude && payload.claude.last_activity) || "";
 
     paintRelativeFields();
     summariseStatus(payload);

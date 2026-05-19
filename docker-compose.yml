@@ -11,6 +11,10 @@ services:
       FIVE_HOUR_TOKEN_LIMIT: "${FIVE_HOUR_TOKEN_LIMIT:-500000}"
       WEEKLY_TOKEN_LIMIT: "${WEEKLY_TOKEN_LIMIT:-3000000}"
       REFRESH_INTERVAL_SECONDS: "${REFRESH_INTERVAL_SECONDS:-5}"
+      QUOTA_CACHE_TTL_SECONDS: "${QUOTA_CACHE_TTL_SECONDS:-30}"
+      CODEX_ACTIVITY_CACHE_TTL_SECONDS: "${CODEX_ACTIVITY_CACHE_TTL_SECONDS:-5}"
+      CLAUDE_AI_HOST: "${CLAUDE_AI_HOST:-https://claude.ai}"
+      CHATGPT_HOST: "${CHATGPT_HOST:-https://chatgpt.com}"
     volumes:
       - "${CLAUDE_HOME:-~/.claude}:/data/claude:ro"
       - "${CODEX_HOME:-~/.codex}:/data/codex:ro"

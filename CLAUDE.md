@@ -55,15 +55,20 @@ token-usage transcripts on disk, so there's nothing to estimate from.
   `tokens.access_token` and `tokens.account_id`, and hits
   `GET https://chatgpt.com/backend-api/wham/usage` with
   `Authorization: Bearer …` and `ChatGPT-Account-Id: …`. The response
-  shape is parsed defensively — primary/secondary windows are read from
-  several possible field names (`primary_window` / `five_hour`,
-  `secondary_window` / `weekly` / `seven_day`) and percentages from
-  whichever of `utilization` / `percent_used` / `percent_left` /
-  `remaining_percent` is present.
+  shape is parsed defensively — primary/secondary windows may appear either
+  at the top level or under `rate_limit` (`primary_window` / `five_hour`,
+  `secondary_window` / `weekly` / `seven_day`) and percentages come from
+  whichever of `utilization` / `percent_used` / `used_percent` /
+  `percent_left` / `remaining_percent` is present.
 - On any failure (`CodexLiveQuotaError`) the section returns
   `source: "unavailable"` with `percent: null` for both gauges and the
   error string surfaced to the UI. The frontend dims the panel and
   shows the error rather than synthesizing fake numbers.
+- **`app/codex_activity.py`** — `CodexActivityReader` reports Codex
+  `last_activity` from safe local file metadata only: `history.jsonl`,
+  `session_index.jsonl`, and files under `sessions/` and
+  `archived_sessions/`. It does not read `auth.json` or session contents,
+  and it is not a quota fallback.
 - If `CODEX_ENABLED` is falsy, `_codex` is `None` and the section
   returns `source: "disabled"` (panel still rendered but dimmed).
 
