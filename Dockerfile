@@ -8,7 +8,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 
 ENV PYTHONUNBUFFERED=1 \
-    CLAUDE_DATA_DIR=/data/claude
+    CLAUDE_DATA_DIR=/data/claude \
+    CODEX_DATA_DIR=/data/codex
 
 EXPOSE 8000
 

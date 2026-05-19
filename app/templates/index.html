@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>codervis · Claude usage</title>
+  <title>codervis · coding agent usage</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
@@ -18,29 +18,52 @@
       </div>
     </header>
 
-    {% for w in [data.five_hour, data.seven_day] %}
-    <section class="gauge" id="gauge-{{ w.name }}" data-percent="{{ w.percent }}">
-      <div class="gauge-head">
-        <h2>{{ w.label }}</h2>
-        <div class="gauge-percent"><span class="pct">{{ '%.1f' % w.percent }}</span>%</div>
-      </div>
-      <div class="meter">
-        <div class="meter-fill"></div>
-        <div class="meter-ticks">
-          {% for i in range(21) %}<span></span>{% endfor %}
-        </div>
-      </div>
-      <div class="gauge-foot">
-        <div><span class="lbl">resets</span> <span class="val resets" data-iso="{{ w.resets_at or '' }}">—</span></div>
-      </div>
-    </section>
-    {% endfor %}
+    <div class="providers">
+      {% for prov in [
+        {"key": "claude", "title": "Claude Code", "data": data.claude},
+        {"key": "codex",  "title": "Codex",       "data": data.codex}
+      ] %}
+      <section class="provider" id="provider-{{ prov.key }}" data-source="{{ prov.data.source }}">
+        <header class="provider-head">
+          <h1 class="provider-title">{{ prov.title }}</h1>
+          <div class="provider-source">
+            <span id="source-{{ prov.key }}" class="source-chip" data-state="{{ prov.data.source }}">{{ prov.data.source }}</span>
+          </div>
+        </header>
 
-    <footer class="panel-foot">
-      <div>source: <span id="source" data-state="{{ data.source }}">{{ data.source }}</span></div>
-      <div>plan: <span id="subscription">{{ data.subscription_type or '—' }}</span></div>
-      <div>last activity: <span id="last-activity" data-iso="{{ data.last_activity or '' }}">—</span></div>
-    </footer>
+        {% for w in [prov.data.five_hour, prov.data.seven_day] %}
+        <section class="gauge" id="gauge-{{ prov.key }}-{{ w.name }}"
+                 data-percent="{{ w.percent if w.percent is not none else 0 }}"
+                 data-has-value="{{ '1' if w.percent is not none else '0' }}">
+          <div class="gauge-head">
+            <h2>{{ w.label }}</h2>
+            <div class="gauge-percent">
+              <span class="pct">{% if w.percent is not none %}{{ '%.1f' % w.percent }}{% else %}—{% endif %}</span><span class="pct-unit">{% if w.percent is not none %}%{% endif %}</span>
+            </div>
+          </div>
+          <div class="meter">
+            <div class="meter-fill"></div>
+            <div class="meter-ticks">
+              {% for i in range(21) %}<span></span>{% endfor %}
+            </div>
+          </div>
+          <div class="gauge-foot">
+            <div><span class="lbl">resets</span> <span class="val resets" data-iso="{{ w.resets_at or '' }}">—</span></div>
+          </div>
+        </section>
+        {% endfor %}
+
+        <footer class="provider-foot">
+          <div>plan: <span id="subscription-{{ prov.key }}">{{ prov.data.subscription_type or '—' }}</span></div>
+          {% if prov.key == 'claude' %}
+          <div>last activity: <span id="last-activity" data-iso="{{ data.claude.last_activity or '' }}">—</span></div>
+          {% else %}
+          <div class="provider-error" id="error-{{ prov.key }}">{{ prov.data.source_error or '' }}</div>
+          {% endif %}
+        </footer>
+      </section>
+      {% endfor %}
+    </div>
   </main>
 
   <script>

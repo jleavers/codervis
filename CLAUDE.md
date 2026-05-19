@@ -4,18 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A local FastAPI dashboard that displays Claude Code's 5-hour and weekly
-quota utilization as colour-shifting meters. Runs as a single Docker
-container, bind-mounts the host's `~/.claude` directory read-only, and
-authenticates upstream using the OAuth token Claude Code already stores
-there.
+A local FastAPI dashboard that displays **Claude Code** and **Codex CLI**
+5-hour and weekly quota utilization as colour-shifting meters, side-by-side.
+Runs as a single Docker container, bind-mounts the host's `~/.claude` and
+`~/.codex` directories read-only, and authenticates upstream using each
+agent's own stored OAuth token.
 
 User-facing setup, env vars, and troubleshooting live in `README.md`.
 
 ## Architecture
 
-The interesting part is the **dual data source with automatic fallback**,
-orchestrated in `app/main.py:_build_payload()`:
+The JSON payload is keyed by provider — `claude` and `codex` — assembled
+in `app/main.py:_build_payload()` from two independent sections.
+
+### Claude (`app/main.py:_claude_section()`)
+
+Dual-source with automatic fallback:
 
 1. **Live path (`app/quota.py`)** — `LiveQuotaClient` reads
    `$CLAUDE_DATA_DIR/.credentials.json` on every call, extracts
@@ -36,24 +40,56 @@ orchestrated in `app/main.py:_build_payload()`:
    keyed by `(mtime, size)` so quiescent transcripts aren't reparsed
    every tick.
 
-`_build_payload()` always runs the fallback reader (it's also the source
-of the "last activity" footer field), then attempts the live call. On
+`_claude_section()` always runs the fallback reader (it's also the source
+of the "last activity" field), then attempts the live call. On
 `LiveQuotaError`, it serves the fallback percentages and reports
-`source: "fallback"` in the JSON. The frontend (`app/static/app.js`)
-shows which source is active and tints the footer chip accordingly.
+`source: "fallback"`.
 
-The SSE loop is in `main.py:stream()`. The frontend keeps relative-time
-labels alive between server pushes via a 1-second `setInterval`.
+### Codex (`app/main.py:_codex_section()`)
 
-## Load-bearing assumption: the live endpoint is undocumented
+Live-only, no fallback by design — Codex CLI doesn't keep per-message
+token-usage transcripts on disk, so there's nothing to estimate from.
 
-`/api/oauth/usage` is not part of Anthropic's public API. It was
-discovered by running `claude --debug-file path -d api` and grepping for
-`fetchUtilization`. If Anthropic changes or removes it, the live path
-will break — the fallback is precisely there to keep the dashboard
-working in that case. **Do not assume the endpoint shape is stable**:
-when modifying `quota.py`, preserve the "any failure → `LiveQuotaError`
-→ fallback" contract.
+- **`app/codex_quota.py`** — `CodexLiveQuotaClient` reads
+  `$CODEX_DATA_DIR/auth.json` on every call, extracts
+  `tokens.access_token` and `tokens.account_id`, and hits
+  `GET https://chatgpt.com/backend-api/wham/usage` with
+  `Authorization: Bearer …` and `ChatGPT-Account-Id: …`. The response
+  shape is parsed defensively — primary/secondary windows are read from
+  several possible field names (`primary_window` / `five_hour`,
+  `secondary_window` / `weekly` / `seven_day`) and percentages from
+  whichever of `utilization` / `percent_used` / `percent_left` /
+  `remaining_percent` is present.
+- On any failure (`CodexLiveQuotaError`) the section returns
+  `source: "unavailable"` with `percent: null` for both gauges and the
+  error string surfaced to the UI. The frontend dims the panel and
+  shows the error rather than synthesizing fake numbers.
+- If `CODEX_ENABLED` is falsy, `_codex` is `None` and the section
+  returns `source: "disabled"` (panel still rendered but dimmed).
+
+The frontend (`app/static/app.js`) shows each provider's source state
+as a chip in its column header. The SSE loop is in `main.py:stream()`.
+The frontend keeps relative-time labels alive between server pushes
+via a 1-second `setInterval`.
+
+## Load-bearing assumption: both live endpoints are undocumented
+
+Neither endpoint is part of its vendor's public API.
+- `/api/oauth/usage` was discovered by running
+  `claude --debug-file path -d api` and grepping for `fetchUtilization`.
+- `/backend-api/wham/usage` was reverse-engineered from the `codex-rs`
+  backend client (also referenced as `/backend-api/codex/usage` in
+  some builds).
+
+Either can change or disappear at any time. The Claude fallback is the
+mitigation on that side; the Codex panel is allowed to degrade visibly.
+**Do not assume the endpoint shapes are stable**:
+- in `quota.py`, preserve the "any failure → `LiveQuotaError` →
+  fallback" contract;
+- in `codex_quota.py`, preserve the "any failure →
+  `CodexLiveQuotaError` → `unavailable` state" contract — and keep
+  field-name parsing tolerant (`_pick()` / the cascading checks in
+  `_window()`).
 
 ## Commands
 
@@ -85,11 +121,12 @@ see the patterns in the conversation history if you need to re-run them.
   The compose file's `${CLAUDE_HOME:-~/.claude}` default only works on
   Linux/macOS; Windows users must set `CLAUDE_HOME` explicitly in `.env`
   (forward slashes are fine: `C:/Users/name/.claude`).
-- The credentials file is bind-mounted read-only at
-  `/data/claude/.credentials.json` inside the container. Claude Code
-  refreshes the access token on the host; the dashboard re-reads the
-  file on each upstream call so it rides along on that refresh cadence.
-  There is no token-refresh logic in this repo.
+- The credentials files are bind-mounted read-only at
+  `/data/claude/.credentials.json` and `/data/codex/auth.json` inside
+  the container. Both CLIs refresh their access tokens on the host;
+  the dashboard re-reads the files on each upstream call so it rides
+  along on those refresh cadences. There is no token-refresh logic in
+  this repo.
 
 ## When changing the dashboard
 
