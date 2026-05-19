@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>codervis · Claude usage</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="panel">
+    <header class="panel-header">
+      <div class="brand">
+        <span class="brand-mark">▮▮▮</span>
+        <span class="brand-name">codervis</span>
+      </div>
+      <div class="status" id="status" data-state="ok">
+        <span class="dot"></span>
+        <span class="status-text">connecting…</span>
+      </div>
+    </header>
+
+    {% for w in [data.five_hour, data.seven_day] %}
+    <section class="gauge" id="gauge-{{ w.name }}" data-percent="{{ w.percent }}">
+      <div class="gauge-head">
+        <h2>{{ w.label }}</h2>
+        <div class="gauge-percent"><span class="pct">{{ '%.1f' % w.percent }}</span>%</div>
+      </div>
+      <div class="meter">
+        <div class="meter-fill"></div>
+        <div class="meter-ticks">
+          {% for i in range(21) %}<span></span>{% endfor %}
+        </div>
+      </div>
+      <div class="gauge-foot">
+        <div><span class="lbl">resets</span> <span class="val resets" data-iso="{{ w.resets_at or '' }}">—</span></div>
+      </div>
+    </section>
+    {% endfor %}
+
+    <footer class="panel-foot">
+      <div>source: <span id="source" data-state="{{ data.source }}">{{ data.source }}</span></div>
+      <div>plan: <span id="subscription">{{ data.subscription_type or '—' }}</span></div>
+      <div>last activity: <span id="last-activity" data-iso="{{ data.last_activity or '' }}">—</span></div>
+    </footer>
+  </main>
+
+  <script>
+    window.__REFRESH_SECONDS__ = {{ refresh_seconds }};
+  </script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

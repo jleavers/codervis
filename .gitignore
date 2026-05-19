@@ -1,0 +1,19 @@
+# Local debug captures — may contain OAuth tokens
+*.log
+usage-debug.log
+latest
+
+# Per-user Claude Code session state
+.claude/settings.local.json
+
+# Local env
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Editors
+.idea/
+.vscode/
