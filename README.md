@@ -104,6 +104,20 @@ To stop:
 docker compose down
 ```
 
+## Test
+
+Install development dependencies, then run the suite:
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest
+python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py
+```
+
+The tests use temporary directories and stubbed upstream clients. They do not
+read your real Claude or Codex credential files and do not call the live quota
+endpoints.
+
 ## What you see
 
 Two columns, one per agent (Claude Code on the left, Codex on the right):
@@ -139,6 +153,9 @@ through amber, to coral as you approach 100%. Panels in `unavailable` or
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
+├── requirements-dev.txt
+├── pytest.ini
+├── tests/
 ├── .env.example
 └── .gitignore
 ```

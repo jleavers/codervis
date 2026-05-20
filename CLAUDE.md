@@ -101,11 +101,16 @@ curl http://localhost:8765/healthz
 
 # One-shot JSON snapshot (same payload SSE pushes)
 curl http://localhost:8765/api/usage
+
+# Automated tests
+python -m pip install -r requirements-dev.txt
+python -m pytest
+python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py
 ```
 
-No automated test suite exists. Smoke-tests during development are
-done in-process via FastAPI's `TestClient` and direct module imports —
-see the patterns in the conversation history if you need to re-run them.
+The pytest suite uses FastAPI's `TestClient`, direct parser imports, stubbed
+quota clients, and temporary directories. It must not read host credential
+files or call the live undocumented quota endpoints.
 
 ## Local dev gotchas
 

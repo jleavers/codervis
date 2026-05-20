@@ -21,10 +21,13 @@ docker compose logs -f codervis
 docker compose down
 curl http://localhost:8765/healthz
 curl http://localhost:8765/api/usage
+python -m pytest
 python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py
 ```
 
-There is no automated test suite at the time of writing.
+Install test dependencies with `python -m pip install -r requirements-dev.txt`.
+The pytest suite stubs live quota clients and uses temporary credential/activity
+directories; it must not call upstream quota endpoints or read host tokens.
 
 ## Implementation Notes
 
@@ -41,6 +44,8 @@ There is no automated test suite at the time of writing.
   session contents.
 - `app/static/app.js` is the single source of truth for gauge color calculation
   on both initial paint and SSE updates.
+- `tests/` contains automated coverage for parser tolerance, unavailable
+  states, disabled Codex state, and safe activity-reader boundaries.
 
 ## Safety Rules
 
