@@ -55,9 +55,7 @@
 
         <footer class="provider-foot">
           <div>plan: <span id="subscription-{{ prov.key }}">{{ prov.data.subscription_type or '—' }}</span></div>
-          {% if prov.key == 'codex' %}
           <div>last activity: <span id="last-activity-{{ prov.key }}" class="last-activity" data-iso="{{ prov.data.last_activity or '' }}">—</span></div>
-          {% endif %}
           <div class="provider-error" id="error-{{ prov.key }}">{{ prov.data.source_error or '' }}</div>
         </footer>
       </section>

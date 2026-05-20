@@ -10,6 +10,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from .claude_activity import ClaudeActivityReader
+from .claude_activity import reader_from_env as claude_activity_reader_from_env
 from .codex_activity import CodexActivityReader
 from .codex_activity import reader_from_env as codex_activity_reader_from_env
 from .codex_quota import CodexLiveQuotaClient, CodexLiveQuotaError
@@ -31,6 +33,7 @@ app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 _live: LiveQuotaClient = client_from_env()
+_claude_activity: ClaudeActivityReader = claude_activity_reader_from_env()
 _codex: CodexLiveQuotaClient | None = codex_client_from_env() if CODEX_ENABLED else None
 _codex_activity: CodexActivityReader = codex_activity_reader_from_env()
 
@@ -45,6 +48,10 @@ def _window_dict(name: str, label: str, percent, resets_at) -> dict:
 
 
 def _claude_section() -> dict:
+    activity_snap = _claude_activity.snapshot()
+    last_activity = (
+        activity_snap.last_activity.isoformat() if activity_snap.last_activity else None
+    )
     try:
         live = _live.get()
         return {
@@ -63,8 +70,8 @@ def _claude_section() -> dict:
             "source": "live",
             "source_error": None,
             "subscription_type": live.subscription_type,
-            "last_activity": None,
-            "data_root_exists": _live.data_dir.exists(),
+            "last_activity": last_activity,
+            "data_root_exists": activity_snap.data_root_exists,
         }
     except LiveQuotaError as e:
         return {
@@ -73,8 +80,8 @@ def _claude_section() -> dict:
             "source": "unavailable",
             "source_error": str(e),
             "subscription_type": None,
-            "last_activity": None,
-            "data_root_exists": _live.data_dir.exists(),
+            "last_activity": last_activity,
+            "data_root_exists": activity_snap.data_root_exists,
         }
 
 
@@ -168,8 +175,9 @@ async def stream(request: Request) -> StreamingResponse:
 async def healthz() -> dict:
     return {
         "ok": True,
-        "data_root_exists": _live.data_dir.exists(),
+        "data_root_exists": _claude_activity.data_dir.exists(),
         "claude_credentials_present": _live.credentials_path.exists(),
+        "claude_activity_data_root_exists": _claude_activity.data_dir.exists(),
         "codex_data_root_exists": _codex_activity.data_dir.exists(),
         "codex_enabled": _codex is not None,
         "codex_credentials_present": _codex.credentials_path.exists() if _codex else False,

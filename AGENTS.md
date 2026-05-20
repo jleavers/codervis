@@ -21,7 +21,7 @@ docker compose logs -f codervis
 docker compose down
 curl http://localhost:8765/healthz
 curl http://localhost:8765/api/usage
-python -m py_compile app/main.py app/quota.py app/codex_quota.py app/codex_activity.py
+python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py
 ```
 
 There is no automated test suite at the time of writing.
@@ -31,6 +31,9 @@ There is no automated test suite at the time of writing.
 - `app/main.py` owns the FastAPI routes, SSE stream, and payload assembly.
 - `app/quota.py` owns the Claude live client and must convert any upstream,
   auth, parse, or file-read failure into `LiveQuotaError`.
+- `app/claude_activity.py` owns Claude last-activity reporting. It should read
+  only project transcript timestamps, must not read `.credentials.json`, and
+  must not compute quota or fallback usage statistics.
 - `app/codex_quota.py` owns the Codex live client and must convert any failure
   into `CodexLiveQuotaError` so the UI can show `source: "unavailable"`.
 - `app/codex_activity.py` owns Codex last-activity reporting. It should derive

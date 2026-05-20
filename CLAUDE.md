@@ -31,8 +31,12 @@ Live-only by design:
   upstream fetch.
 - On any failure (`LiveQuotaError`) the section returns
   `source: "unavailable"` with `percent: null` for both gauges and the
-  error string surfaced to the UI. The app does not parse Claude
-  transcripts or estimate quota usage locally.
+  error string surfaced to the UI. The app does not estimate quota usage
+  locally.
+- **`app/claude_activity.py`** — `ClaudeActivityReader` reports Claude
+  `last_activity` from timestamp fields in local project transcript files.
+  It does not read `.credentials.json`, inspect usage fields, or influence
+  quota.
 
 ### Codex (`app/main.py:_codex_section()`)
 

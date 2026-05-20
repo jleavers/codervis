@@ -24,7 +24,8 @@ meter fill and the colour shifts as the percentage rises.
 
 If either live endpoint is unreachable for any reason (expired token, network
 down, or the vendor changes the API), that panel renders an "unavailable"
-state. codervis does not estimate quota usage from local transcripts.
+state. codervis does not estimate quota usage from local transcripts; it only
+reads Claude transcript timestamp fields to show local last activity.
 
 ### Caveats
 
@@ -65,6 +66,7 @@ Edit `.env`:
 | `DASHBOARD_PORT` | Host port the dashboard listens on. | `8765` |
 | `REFRESH_INTERVAL_SECONDS` | How often the browser is pushed a fresh snapshot. | `5` |
 | `QUOTA_CACHE_TTL_SECONDS` | Server-side cache for the upstream calls. Keep ≥ refresh interval. | `30` |
+| `CLAUDE_ACTIVITY_CACHE_TTL_SECONDS` | Server-side cache for Claude local transcript timestamp scans. | `5` |
 | `CODEX_ACTIVITY_CACHE_TTL_SECONDS` | Server-side cache for Codex local activity metadata scans. | `5` |
 | `CLAUDE_AI_HOST` | Override the Claude host (rarely needed). | `https://claude.ai` |
 | `CHATGPT_HOST` | Override the Codex host (rarely needed). | `https://chatgpt.com` |
@@ -110,9 +112,10 @@ Two columns, one per agent (Claude Code on the left, Codex on the right):
   with a countdown to when it resets.
 - **Weekly Window** gauge — same, on a 7-day window.
 - Per-column header shows the source state (`live` / `unavailable` /
-  `disabled`); footer shows the plan. Codex also shows the timestamp of your
-  most recent local activity from local history/session file metadata. The
-  footer shows an error string when a live quota call fails.
+  `disabled`); footer shows the plan and most recent local activity. Claude
+  activity comes from project transcript timestamps, while Codex activity comes
+  from local history/session file metadata. The footer shows an error string
+  when a live quota call fails.
 
 The fill colour is computed from the percentage: lime under 50%, sliding
 through amber, to coral as you approach 100%. Panels in `unavailable` or
@@ -125,6 +128,7 @@ through amber, to coral as you approach 100%. Panels in `unavailable` or
 ├── app/
 │   ├── main.py          # FastAPI app + SSE stream
 │   ├── quota.py         # Claude live client → claude.ai/api/oauth/usage
+│   ├── claude_activity.py # Claude local activity timestamp reader
 │   ├── codex_quota.py   # Codex live client → chatgpt.com/backend-api/wham/usage
 │   ├── codex_activity.py # Codex local activity metadata reader
 │   ├── templates/
