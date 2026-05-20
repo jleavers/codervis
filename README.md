@@ -22,12 +22,9 @@ directories read-only**, reads the access tokens, and polls the endpoints.
 The browser gets live updates via Server-Sent Events; CSS animates the
 meter fill and the colour shifts as the percentage rises.
 
-If the Claude endpoint is unreachable for any reason (expired token, network
-down, Anthropic changes the API), the Claude panel falls back to an
-approximation computed by parsing your local transcripts in
-`~/.claude/projects/`. There is **no fallback for Codex** — Codex does not
-record per-message token usage to disk, so the panel just renders an
-"unavailable" state if the call fails.
+If either live endpoint is unreachable for any reason (expired token, network
+down, or the vendor changes the API), that panel renders an "unavailable"
+state. codervis does not estimate quota usage from local transcripts.
 
 ### Caveats
 
@@ -67,8 +64,6 @@ Edit `.env`:
 | `CODEX_ACTIVITY_CACHE_TTL_SECONDS` | Server-side cache for Codex local activity metadata scans. | `5` |
 | `CLAUDE_AI_HOST` | Override the Claude host (rarely needed). | `https://claude.ai` |
 | `CHATGPT_HOST` | Override the Codex host (rarely needed). | `https://chatgpt.com` |
-| `FIVE_HOUR_TOKEN_LIMIT` | Only used in Claude fallback mode — token threshold for the 5-hour gauge. | `500000` |
-| `WEEKLY_TOKEN_LIMIT` | Only used in Claude fallback mode — token threshold for the weekly gauge. | `3000000` |
 
 ### Windows note
 
@@ -110,12 +105,10 @@ Two columns, one per agent (Claude Code on the left, Codex on the right):
 - **5-Hour Window** gauge — percentage of your 5-hour rolling quota used,
   with a countdown to when it resets.
 - **Weekly Window** gauge — same, on a 7-day window.
-- Per-column header shows the source state (`live` / `fallback` /
-  `unavailable` / `disabled`); footer shows the plan and the timestamp of
-  your most recent local activity for each agent. Claude activity comes from
-  parsed transcripts; Codex activity comes from local history/session file
-  metadata. The Codex footer also shows an error string when the live quota
-  call fails.
+- Per-column header shows the source state (`live` / `unavailable` /
+  `disabled`); footer shows the plan. Codex also shows the timestamp of your
+  most recent local activity from local history/session file metadata. The
+  footer shows an error string when a live quota call fails.
 
 The fill colour is computed from the percentage: lime under 50%, sliding
 through amber, to coral as you approach 100%. Panels in `unavailable` or
@@ -130,7 +123,6 @@ through amber, to coral as you approach 100%. Panels in `unavailable` or
 │   ├── quota.py         # Claude live client → claude.ai/api/oauth/usage
 │   ├── codex_quota.py   # Codex live client → chatgpt.com/backend-api/wham/usage
 │   ├── codex_activity.py # Codex local activity metadata reader
-│   ├── usage.py         # transcript-based fallback estimator (Claude only)
 │   ├── templates/
 │   │   └── index.html
 │   └── static/
@@ -147,11 +139,10 @@ through amber, to coral as you approach 100%. Panels in `unavailable` or
 
 | Symptom | Likely cause |
 | --- | --- |
-| Claude chip shows `fallback` | Credentials file missing inside the container, token expired, or the endpoint returned non-200. Check `docker compose logs codervis`. |
+| Claude chip shows `unavailable` | `~/.claude/.credentials.json` missing or unreadable inside the container, token expired/refresh hasn't run, or Anthropic changed the endpoint. Hover the chip for the error. |
 | Codex chip shows `unavailable` | `~/.codex/auth.json` missing or unreadable inside the container, token expired/refresh hasn't run, or OpenAI changed the endpoint. Hover the chip for the error. |
 | `claude_credentials_present: false` from `/healthz` | Bind mount didn't pick up the credentials file. Verify `CLAUDE_HOME` points at your real `.claude` directory. |
 | `codex_credentials_present: false` from `/healthz` | Same, for `CODEX_HOME` / `~/.codex/auth.json`. |
-| Both Claude gauges always 100% in fallback | Your transcripts exceed the configured `FIVE_HOUR_TOKEN_LIMIT` / `WEEKLY_TOKEN_LIMIT`. Tune those, or fix whatever is breaking the live call so you don't need them. |
 | Browser shows `reconnecting…` | The container restarted; SSE will reconnect on its own. |
 
 `/healthz` returns JSON with `data_root_exists` and `credentials_present`

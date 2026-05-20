@@ -123,8 +123,8 @@
       setStatus("ok", codexDisabled ? "live · codex off" : "live");
       return;
     }
-    if (payload.claude && payload.claude.source === "fallback") {
-      setStatus("stale", "claude: fallback · " + (payload.claude.source_error || "live unavailable"));
+    if (payload.claude && payload.claude.source === "unavailable") {
+      setStatus("stale", "claude: unavailable · " + (payload.claude.source_error || ""));
       return;
     }
     if (payload.codex && payload.codex.source === "unavailable") {

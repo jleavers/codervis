@@ -19,36 +19,24 @@ in `app/main.py:_build_payload()` from two independent sections.
 
 ### Claude (`app/main.py:_claude_section()`)
 
-Dual-source with automatic fallback:
+Live-only by design:
 
-1. **Live path (`app/quota.py`)** — `LiveQuotaClient` reads
-   `$CLAUDE_DATA_DIR/.credentials.json` on every call, extracts
-   `claudeAiOauth.accessToken`, and hits
-   `GET https://claude.ai/api/oauth/usage` with `Authorization: Bearer …`.
-   Response has `five_hour.utilization` and `seven_day.utilization` as
-   percentages already — no token-count maths needed. Results are cached
-   in-memory for `QUOTA_CACHE_TTL_SECONDS` so all SSE clients share one
-   upstream fetch.
-
-2. **Fallback path (`app/usage.py`)** — `UsageReader` walks
-   `$CLAUDE_DATA_DIR/projects/*/*.jsonl`, extracts `(timestamp, tokens)`
-   tuples from any line where `type=="assistant"` and `message.usage` is
-   present, sums `input + output + cache_creation + cache_read` per
-   message, then computes rolling 5-hour and 7-day sums. Tokens are
-   compared against the `FIVE_HOUR_TOKEN_LIMIT` / `WEEKLY_TOKEN_LIMIT`
-   env vars to produce a percentage. Per-file parse results are cached
-   keyed by `(mtime, size)` so quiescent transcripts aren't reparsed
-   every tick.
-
-`_claude_section()` always runs the fallback reader (it's also the source
-of the "last activity" field), then attempts the live call. On
-`LiveQuotaError`, it serves the fallback percentages and reports
-`source: "fallback"`.
+- **`app/quota.py`** — `LiveQuotaClient` reads
+  `$CLAUDE_DATA_DIR/.credentials.json` on every call, extracts
+  `claudeAiOauth.accessToken`, and hits
+  `GET https://claude.ai/api/oauth/usage` with `Authorization: Bearer …`.
+  Response has `five_hour.utilization` and `seven_day.utilization` as
+  percentages already — no token-count maths needed. Results are cached
+  in-memory for `QUOTA_CACHE_TTL_SECONDS` so all SSE clients share one
+  upstream fetch.
+- On any failure (`LiveQuotaError`) the section returns
+  `source: "unavailable"` with `percent: null` for both gauges and the
+  error string surfaced to the UI. The app does not parse Claude
+  transcripts or estimate quota usage locally.
 
 ### Codex (`app/main.py:_codex_section()`)
 
-Live-only, no fallback by design — Codex CLI doesn't keep per-message
-token-usage transcripts on disk, so there's nothing to estimate from.
+Live-only by design.
 
 - **`app/codex_quota.py`** — `CodexLiveQuotaClient` reads
   `$CODEX_DATA_DIR/auth.json` on every call, extracts
@@ -68,7 +56,7 @@ token-usage transcripts on disk, so there's nothing to estimate from.
   `last_activity` from safe local file metadata only: `history.jsonl`,
   `session_index.jsonl`, and files under `sessions/` and
   `archived_sessions/`. It does not read `auth.json` or session contents,
-  and it is not a quota fallback.
+  and it does not influence quota.
 - If `CODEX_ENABLED` is falsy, `_codex` is `None` and the section
   returns `source: "disabled"` (panel still rendered but dimmed).
 
@@ -86,11 +74,11 @@ Neither endpoint is part of its vendor's public API.
   backend client (also referenced as `/backend-api/codex/usage` in
   some builds).
 
-Either can change or disappear at any time. The Claude fallback is the
-mitigation on that side; the Codex panel is allowed to degrade visibly.
+Either can change or disappear at any time. Both panels are allowed to
+degrade visibly.
 **Do not assume the endpoint shapes are stable**:
 - in `quota.py`, preserve the "any failure → `LiveQuotaError` →
-  fallback" contract;
+  `unavailable` state" contract;
 - in `codex_quota.py`, preserve the "any failure →
   `CodexLiveQuotaError` → `unavailable` state" contract — and keep
   field-name parsing tolerant (`_pick()` / the cascading checks in
@@ -117,11 +105,6 @@ see the patterns in the conversation history if you need to re-run them.
 
 ## Local dev gotchas
 
-- **Python 3.14 + Jinja2** has an LRU-cache bug that crashes
-  `TemplateResponse` with `TypeError: cannot use 'tuple' as a dict key`.
-  The Docker image pins `python:3.12-slim` and is unaffected. If you
-  must run uvicorn directly on a 3.14 host, set
-  `templates.env.cache = None` to work around it.
 - **Windows + Docker Compose**: `~` does not expand in bind-mount paths.
   The compose file's `${CLAUDE_HOME:-~/.claude}` default only works on
   Linux/macOS; Windows users must set `CLAUDE_HOME` explicitly in `.env`
@@ -141,5 +124,4 @@ see the patterns in the conversation history if you need to re-run them.
   SSE-driven updates both go through this function, so keep them in
   sync if you change the curve.
 - Percentage values are floats 0–100 from the upstream API. Never
-  multiply by 100 in either path — the fallback also returns 0–100
-  via `WindowStat.percent`.
+  multiply by 100 in either live path.

@@ -10,8 +10,8 @@ directories read-only, reads each tool's existing OAuth token, and pushes live
 usage snapshots to the browser via Server-Sent Events.
 
 The upstream quota endpoints are undocumented and can change without warning.
-Keep failures contained: Claude should fall back to transcript-derived usage;
-Codex should render an unavailable state.
+Keep failures contained: Claude and Codex should render unavailable states
+instead of synthesizing quota usage.
 
 ## Commands
 
@@ -21,7 +21,7 @@ docker compose logs -f codervis
 docker compose down
 curl http://localhost:8765/healthz
 curl http://localhost:8765/api/usage
-python -m py_compile app/main.py app/quota.py app/codex_quota.py app/usage.py
+python -m py_compile app/main.py app/quota.py app/codex_quota.py app/codex_activity.py
 ```
 
 There is no automated test suite at the time of writing.
@@ -31,8 +31,6 @@ There is no automated test suite at the time of writing.
 - `app/main.py` owns the FastAPI routes, SSE stream, and payload assembly.
 - `app/quota.py` owns the Claude live client and must convert any upstream,
   auth, parse, or file-read failure into `LiveQuotaError`.
-- `app/usage.py` owns the Claude transcript fallback and caches per-file parse
-  results by mtime and size.
 - `app/codex_quota.py` owns the Codex live client and must convert any failure
   into `CodexLiveQuotaError` so the UI can show `source: "unavailable"`.
 - `app/codex_activity.py` owns Codex last-activity reporting. It should derive
@@ -47,8 +45,8 @@ There is no automated test suite at the time of writing.
   debug captures, or Docker output.
 - Preserve read-only bind mounts for `/data/claude` and `/data/codex`.
 - Do not add token refresh or OAuth flow logic here; the host CLIs own that.
-- Do not multiply live utilization values by 100. The live APIs and fallback
-  percentages are expected to already be on a 0-100 scale.
+- Do not multiply live utilization values by 100. The live APIs are expected
+  to already be on a 0-100 scale.
 - Keep parser changes tolerant of alternate field names and missing data.
 - When changing Docker or environment behavior, keep `README.md`,
   `.env.example`, `docker-compose.yml`, and `CLAUDE.md` in sync.

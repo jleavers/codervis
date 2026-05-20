@@ -92,7 +92,6 @@ body {
 }
 
 .source-chip[data-state="live"] { color: var(--lime); border-color: rgba(163,230,53,0.4); }
-.source-chip[data-state="fallback"] { color: var(--amber); border-color: rgba(251,191,36,0.4); }
 .source-chip[data-state="unavailable"] { color: var(--coral); border-color: rgba(248,113,113,0.4); }
 .source-chip[data-state="disabled"] { color: var(--ink-faint); }
 
@@ -280,4 +279,3 @@ body {
   color: var(--ink);
   font-variant-numeric: tabular-nums;
 }
-
