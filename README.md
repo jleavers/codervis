@@ -33,6 +33,10 @@ state. codervis does not estimate quota usage from local transcripts.
 - The dashboard reads the credentials files each CLI maintains. It does
   **not** implement OAuth flows of its own — you need Claude Code and/or
   Codex CLI installed and signed in on the host machine.
+- Claude Code refreshes its own access token. If you have not opened Claude
+  Code for a while, Anthropic may return `HTTP 401` to codervis until the host
+  CLI runs and refreshes `~/.claude/.credentials.json`. Open Claude Code from a
+  terminal on the host, then wait for the next dashboard refresh.
 - Read-only bind mounts: codervis never writes to `~/.claude` or `~/.codex`.
 - If you only use one of the two agents, set `CODEX_ENABLED=false`. The Codex
   panel remains visible but dimmed with a `disabled` source state.
@@ -139,6 +143,7 @@ through amber, to coral as you approach 100%. Panels in `unavailable` or
 
 | Symptom | Likely cause |
 | --- | --- |
+| Claude chip shows `unavailable` with `HTTP 401` | Claude Code's access token has likely expired and the host CLI has not refreshed it yet. Open Claude Code from a terminal on the host, then wait for the next dashboard refresh. |
 | Claude chip shows `unavailable` | `~/.claude/.credentials.json` missing or unreadable inside the container, token expired/refresh hasn't run, or Anthropic changed the endpoint. Hover the chip for the error. |
 | Codex chip shows `unavailable` | `~/.codex/auth.json` missing or unreadable inside the container, token expired/refresh hasn't run, or OpenAI changed the endpoint. Hover the chip for the error. |
 | `claude_credentials_present: false` from `/healthz` | Bind mount didn't pick up the credentials file. Verify `CLAUDE_HOME` points at your real `.claude` directory. |
