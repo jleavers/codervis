@@ -34,7 +34,7 @@ body {
 }
 
 .panel {
-  width: min(1320px, 100%);
+  width: min(1120px, 100%);
   background: var(--panel);
   border: 1px solid var(--rule);
   border-radius: 14px;
@@ -46,11 +46,11 @@ body {
 
 .providers {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 20px;
 }
 
-@media (max-width: 1024px) {
+@media (max-width: 720px) {
   .providers { grid-template-columns: 1fr; }
 }
 

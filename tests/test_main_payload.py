@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from app import main
 from app.claude_activity import ClaudeActivitySnapshot
 from app.codex_activity import CodexActivitySnapshot
+from app.copilot_activity import CopilotActivitySnapshot
 from app.cursor_activity import CursorActivitySnapshot
 
 
@@ -62,6 +63,20 @@ def _stub_cursor(monkeypatch, *, snapshot=None, error=None, data_root_exists=Tru
         monkeypatch.setattr(main, "_cursor", QuotaClientStub(snapshot, error))
 
 
+def _stub_copilot(monkeypatch, *, snapshot=None, error=None, data_root_exists=True):
+    monkeypatch.setattr(
+        main,
+        "_copilot_activity",
+        ActivityStub(
+            CopilotActivitySnapshot(last_activity=None, data_root_exists=data_root_exists)
+        ),
+    )
+    if snapshot is None and error is None:
+        monkeypatch.setattr(main, "_copilot", None)
+    else:
+        monkeypatch.setattr(main, "_copilot", QuotaClientStub(snapshot, error))
+
+
 def test_api_usage_returns_live_payload_without_scaling(monkeypatch) -> None:
     reset = datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc)
     activity = datetime(2026, 5, 20, 9, 30, tzinfo=timezone.utc)
@@ -109,6 +124,18 @@ def test_api_usage_returns_live_payload_without_scaling(monkeypatch) -> None:
             plan_type="pro",
         ),
     )
+    _stub_copilot(
+        monkeypatch,
+        snapshot=SimpleNamespace(
+            premium=_named_window(
+                "premium", "Premium Requests (month)", 11.5, reset, "34 / 300 reqs"
+            ),
+            secondary=_named_window(
+                "secondary", "Chat (month)", None, reset, "unlimited"
+            ),
+            plan_type="individual",
+        ),
+    )
 
     response = TestClient(main.app).get("/api/usage")
 
@@ -132,6 +159,13 @@ def test_api_usage_returns_live_payload_without_scaling(monkeypatch) -> None:
     assert _win(data["cursor"], "spend")["percent"] == 17.0
     assert _win(data["cursor"], "spend")["detail"] == "$3.40 / $20.00"
     assert data["cursor"]["subscription_type"] == "pro"
+    assert data["copilot"]["source"] == "live"
+    assert data["copilot"]["enabled"] is True
+    assert _win(data["copilot"], "premium")["percent"] == 11.5
+    assert _win(data["copilot"], "premium")["detail"] == "34 / 300 reqs"
+    assert _win(data["copilot"], "secondary")["percent"] is None
+    assert _win(data["copilot"], "secondary")["detail"] == "unlimited"
+    assert data["copilot"]["subscription_type"] == "individual"
 
 
 def test_payload_contains_unavailable_states_on_live_errors(monkeypatch) -> None:
@@ -156,6 +190,7 @@ def test_payload_contains_unavailable_states_on_live_errors(monkeypatch) -> None
         QuotaClientStub(error=main.CodexLiveQuotaError("codex upstream changed")),
     )
     _stub_cursor(monkeypatch, error=main.CursorLiveQuotaError("cursor upstream changed"))
+    _stub_copilot(monkeypatch, error=main.CopilotLiveQuotaError("copilot upstream changed"))
 
     data = main._build_payload()
 
@@ -171,6 +206,10 @@ def test_payload_contains_unavailable_states_on_live_errors(monkeypatch) -> None
     assert data["cursor"]["source_error"] == "cursor upstream changed"
     assert _win(data["cursor"], "requests")["percent"] is None
     assert _win(data["cursor"], "spend")["percent"] is None
+    assert data["copilot"]["source"] == "unavailable"
+    assert data["copilot"]["source_error"] == "copilot upstream changed"
+    assert _win(data["copilot"], "premium")["percent"] is None
+    assert _win(data["copilot"], "secondary")["percent"] is None
 
 
 def test_codex_section_reports_disabled_when_client_is_absent(monkeypatch) -> None:
@@ -199,4 +238,16 @@ def test_cursor_section_reports_disabled_when_client_is_absent(monkeypatch) -> N
     assert data["source"] == "disabled"
     assert _win(data, "requests")["percent"] is None
     assert _win(data, "spend")["percent"] is None
+    assert data["data_root_exists"] is False
+
+
+def test_copilot_section_reports_disabled_when_client_is_absent(monkeypatch) -> None:
+    _stub_copilot(monkeypatch, data_root_exists=False)
+
+    data = main._copilot_section()
+
+    assert data["enabled"] is False
+    assert data["source"] == "disabled"
+    assert _win(data, "premium")["percent"] is None
+    assert _win(data, "secondary")["percent"] is None
     assert data["data_root_exists"] is False

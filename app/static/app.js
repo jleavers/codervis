@@ -128,7 +128,7 @@
     if (provRoot) provRoot.dataset.source = section.source;
   }
 
-  const PROVIDERS = ["claude", "codex", "cursor"];
+  const PROVIDERS = ["claude", "codex", "cursor", "copilot"];
 
   function summariseStatus(payload) {
     const present = PROVIDERS.filter((k) => payload[k]);

@@ -20,9 +20,10 @@
 
     <div class="providers">
       {% for prov in [
-        {"key": "claude", "title": "Claude Code", "data": data.claude},
-        {"key": "codex",  "title": "Codex",       "data": data.codex},
-        {"key": "cursor", "title": "Cursor",      "data": data.cursor}
+        {"key": "claude",  "title": "Claude Code",    "data": data.claude},
+        {"key": "codex",   "title": "Codex",          "data": data.codex},
+        {"key": "cursor",  "title": "Cursor",         "data": data.cursor},
+        {"key": "copilot", "title": "GitHub Copilot", "data": data.copilot}
       ] %}
       <section class="provider" id="provider-{{ prov.key }}" data-source="{{ prov.data.source }}">
         <header class="provider-head">

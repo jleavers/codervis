@@ -16,6 +16,14 @@ from .codex_activity import CodexActivityReader
 from .codex_activity import reader_from_env as codex_activity_reader_from_env
 from .codex_quota import CodexLiveQuotaClient, CodexLiveQuotaError
 from .codex_quota import client_from_env as codex_client_from_env
+from .copilot_activity import CopilotActivityReader
+from .copilot_activity import reader_from_env as copilot_activity_reader_from_env
+from .copilot_quota import (
+    CopilotBillingQuotaClient,
+    CopilotLiveQuotaClient,
+    CopilotLiveQuotaError,
+)
+from .copilot_quota import client_from_env as copilot_client_from_env
 from .cursor_activity import CursorActivityReader
 from .cursor_activity import reader_from_env as cursor_activity_reader_from_env
 from .cursor_quota import CursorLiveQuotaClient, CursorLiveQuotaError
@@ -38,6 +46,7 @@ def _enabled(name: str) -> bool:
 
 CODEX_ENABLED = _enabled("CODEX_ENABLED")
 CURSOR_ENABLED = _enabled("CURSOR_ENABLED")
+COPILOT_ENABLED = _enabled("COPILOT_ENABLED")
 
 app = FastAPI(title="Codervis")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -51,6 +60,10 @@ _cursor: CursorLiveQuotaClient | None = (
     cursor_client_from_env() if CURSOR_ENABLED else None
 )
 _cursor_activity: CursorActivityReader = cursor_activity_reader_from_env()
+_copilot: CopilotLiveQuotaClient | CopilotBillingQuotaClient | None = (
+    copilot_client_from_env() if COPILOT_ENABLED else None
+)
+_copilot_activity: CopilotActivityReader = copilot_activity_reader_from_env()
 
 
 def _window_dict(name: str, label: str, percent, resets_at, detail=None) -> dict:
@@ -204,12 +217,57 @@ def _cursor_section() -> dict:
         }
 
 
+def _copilot_section() -> dict:
+    activity_snap = _copilot_activity.snapshot()
+    last_activity = (
+        activity_snap.last_activity.isoformat() if activity_snap.last_activity else None
+    )
+    secondary_label = getattr(_copilot, "secondary_label", "Chat (month)")
+    placeholder = [
+        _window_dict("premium", "Premium Requests (month)", None, None),
+        _window_dict("secondary", secondary_label, None, None),
+    ]
+    if _copilot is None:
+        return {
+            "enabled": False,
+            "windows": placeholder,
+            "source": "disabled",
+            "source_error": None,
+            "subscription_type": None,
+            "last_activity": last_activity,
+            "data_root_exists": activity_snap.data_root_exists,
+        }
+
+    try:
+        snap = _copilot.get()
+        return {
+            "enabled": True,
+            "windows": [_window_from(snap.premium), _window_from(snap.secondary)],
+            "source": "live",
+            "source_error": None,
+            "subscription_type": snap.plan_type,
+            "last_activity": last_activity,
+            "data_root_exists": activity_snap.data_root_exists,
+        }
+    except CopilotLiveQuotaError as e:
+        return {
+            "enabled": True,
+            "windows": placeholder,
+            "source": "unavailable",
+            "source_error": str(e),
+            "subscription_type": None,
+            "last_activity": last_activity,
+            "data_root_exists": activity_snap.data_root_exists,
+        }
+
+
 def _build_payload() -> dict:
     now = datetime.now(timezone.utc)
     return {
         "claude": _claude_section(),
         "codex": _codex_section(),
         "cursor": _cursor_section(),
+        "copilot": _copilot_section(),
         "server_time": now.isoformat(),
     }
 
@@ -258,4 +316,7 @@ async def healthz() -> dict:
         "cursor_data_root_exists": _cursor_activity.data_dir.exists(),
         "cursor_enabled": _cursor is not None,
         "cursor_credentials_present": _cursor.credentials_path.exists() if _cursor else False,
+        "copilot_data_root_exists": _copilot_activity.data_dir.exists(),
+        "copilot_enabled": _copilot is not None,
+        "copilot_credentials_present": _copilot.credentials_present() if _copilot else False,
     }

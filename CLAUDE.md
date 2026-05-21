@@ -4,18 +4,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A local FastAPI dashboard that displays **Claude Code**, **Codex CLI**, and
-**Cursor** quota utilization as colour-shifting meters, side-by-side. Runs as
-a single Docker container, bind-mounts the host's `~/.claude`, `~/.codex`, and
-Cursor data directories read-only, and authenticates upstream using each
-agent's own stored credential.
+A local FastAPI dashboard that displays **Claude Code**, **Codex CLI**,
+**Cursor**, and **GitHub Copilot** quota utilization as colour-shifting meters
+in a 2×2 grid. Runs as a single Docker container, bind-mounts the host's
+`~/.claude`, `~/.codex`, Cursor, and `github-copilot` data directories
+read-only, and authenticates upstream using each agent's own stored credential.
 
 User-facing setup, env vars, and troubleshooting live in `README.md`.
 
 ## Architecture
 
-The JSON payload is keyed by provider — `claude`, `codex`, and `cursor` —
-assembled in `app/main.py:_build_payload()` from three independent sections.
+The JSON payload is keyed by provider — `claude`, `codex`, `cursor`, and
+`copilot` — assembled in `app/main.py:_build_payload()` from four independent
+sections.
 
 Each section exposes a `windows` list (rather than fixed `five_hour` /
 `seven_day` keys) so providers can report differently-shaped quota windows.
@@ -107,6 +108,66 @@ a **cookie** (not a bearer token).
 - If `CURSOR_ENABLED` is falsy, `_cursor` is `None` and the section
   returns `source: "disabled"`.
 
+### Copilot (`app/main.py:_copilot_section()`)
+
+Live-only by design and metered **monthly** like Cursor, but Copilot has **two
+client implementations** in `app/copilot_quota.py`, selected by
+`client_from_env()`: if a PAT is configured (`COPILOT_GITHUB_TOKEN` /
+`COPILOT_TOKEN_FILE`) it returns `CopilotBillingQuotaClient`, otherwise
+`CopilotLiveQuotaClient`. Both return a `CopilotLiveSnapshot` with `premium`
+and `secondary` windows, expose `secondary_label` and `credentials_present()`,
+and raise `CopilotLiveQuotaError`, so `_copilot_section()` treats them
+interchangeably. The second window's DOM slot is always named `secondary` (the
+heading text differs by mode); `_copilot_section()` reads the active client's
+`secondary_label` for the placeholder so the server-rendered heading matches.
+
+**File mode** (`CopilotLiveQuotaClient`) — for clients that persist the OAuth
+token to disk (Neovim/JetBrains/Eclipse/language-server). **VS Code does not**
+(its token is in the OS keychain), so VS-Code-only users need PAT mode.
+
+- **`app/copilot_quota.py`** — `CopilotLiveQuotaClient` reads the OAuth
+  token from `$COPILOT_DATA_DIR/apps.json` (falling back to `hosts.json`)
+  on every call — a JSON object keyed by host (`github.com` /
+  `github.com:Iv1.<appid>`) whose value carries `oauth_token`. It hits
+  `GET https://api.github.com/copilot_internal/user` with
+  `Authorization: token …` plus `Editor-Version` headers (the same internal
+  endpoint VS Code's status-bar usage indicator uses).
+  - The response's `quota_snapshots` object carries one entry per quota kind
+    (`premium_interactions`, `chat`, `completions`), each with
+    `entitlement` / `remaining` / `percent_remaining` / `unlimited` /
+    `overage_count`; the reset is the top-level `quota_reset_date`.
+  - Window `premium` ("Premium Requests (month)") comes from
+    `premium_interactions`. `percent` is `100 − percent_remaining` (or
+    derived from `entitlement`/`remaining`); on `unlimited` snapshots
+    `percent` is `null`.
+  - Window `secondary` ("Chat (month)") is **best-effort** from the `chat`
+    snapshot: on paid plans it is `unlimited` so `percent` is `null` and the
+    detail reads `unlimited`; only a failure of the core call (or a missing
+    `premium_interactions` snapshot) raises `CopilotLiveQuotaError` and takes
+    the section to `unavailable`.
+
+**PAT mode** (`CopilotBillingQuotaClient`) — uses GitHub's *documented* billing
+REST API for keychain-only setups (e.g. VS Code).
+
+- Reads a fine-grained PAT (`Plan` read) from `COPILOT_GITHUB_TOKEN` or
+  `COPILOT_TOKEN_FILE`, derives the username from `GET /user` (override with
+  `COPILOT_GITHUB_USER`), then calls
+  `GET /users/{user}/settings/billing/premium_request/usage?year=&month=`.
+- The report gives **consumption only, no allowance**: window `premium` sums
+  `usageItems[].grossQuantity` and divides by the plan cap (`COPILOT_PLAN` →
+  `PLAN_ALLOWANCES`, or `COPILOT_PREMIUM_ALLOWANCE`). Window `secondary`
+  ("Usage-Based Spend (month)") sums `netAmount` (dollar overage); `percent`
+  is `null` unless `COPILOT_SPEND_BUDGET` is set.
+- This endpoint returns nothing for org/enterprise-managed licences — that
+  surfaces as `CopilotLiveQuotaError` → `unavailable` like any other failure.
+- **`app/copilot_activity.py`** — `CopilotActivityReader` reports Copilot
+  `last_activity` from safe file metadata only: the mtimes of `apps.json`,
+  `hosts.json`, `versions.json`, and any files under `logs/`. Copilot keeps
+  no per-session transcript here, so this is a coarser "recently used" signal
+  than the other agents. It never reads the stored token.
+- If `COPILOT_ENABLED` is falsy, `_copilot` is `None` and the section
+  returns `source: "disabled"`.
+
 The frontend (`app/static/app.js`) shows each provider's source state
 as a chip in its column header. The SSE loop is in `main.py:stream()`.
 The frontend keeps relative-time labels alive between server pushes
@@ -124,6 +185,14 @@ None of the endpoints are part of their vendor's public API.
   same calls Cursor's web dashboard makes, plus the `state.vscdb`
   ItemTable key layout, all reverse-engineered from the client. The token
   format (`<userId>::<jwt>` cookie) and the SQLite schema can change.
+- `api.github.com/copilot_internal/user` (file mode) is the internal
+  Microsoft↔GitHub endpoint VS Code's usage indicator calls; it is
+  unversioned and not in the public REST API. The `quota_snapshots` shape and
+  the `apps.json` / `hosts.json` token layout can change. The PAT-mode
+  endpoint `/users/{user}/settings/billing/premium_request/usage` *is*
+  documented and stable, but needs a user-supplied fine-grained PAT, returns
+  consumption without an allowance (hence the hardcoded `PLAN_ALLOWANCES`),
+  and is empty for org/enterprise-managed seats.
 
 Any of these can change or disappear at any time. All panels are allowed
 to degrade visibly.
@@ -139,7 +208,14 @@ to degrade visibly.
   window best-effort (never let it fail the section), and always open
   `state.vscdb` read-only without `immutable=1`; if in-place WAL access
   fails, use only a temporary container-local snapshot, never a writable bind
-  mount.
+  mount;
+- in `copilot_quota.py`, both clients preserve the "core call failure →
+  `CopilotLiveQuotaError` → `unavailable` state" contract, return a
+  `premium` + `secondary` snapshot, and keep the secondary window non-fatal
+  (`unlimited` → null percent in file mode; spend without a budget → null
+  percent in PAT mode). File mode only ever reads the `oauth_token` from the
+  credential JSON; PAT mode reads only the configured token. Keep both
+  interchangeable behind `client_from_env()`.
 
 ## Commands
 
@@ -158,7 +234,7 @@ curl http://localhost:8765/api/usage
 # Automated tests
 python -m pip install -r requirements-dev.txt
 python -m pytest
-python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/cursor_quota.py app/cursor_activity.py
+python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/cursor_quota.py app/cursor_activity.py app/copilot_quota.py app/copilot_activity.py
 ```
 
 The pytest suite uses FastAPI's `TestClient`, direct parser imports, stubbed
@@ -177,9 +253,15 @@ files or call the live undocumented quota endpoints.
   path; Windows/macOS users must set `CURSOR_HOME` explicitly. The whole
   Cursor dir is mounted at `/data/cursor`; the client reads only
   `/data/cursor/User/globalStorage/state.vscdb`.
+- **Copilot data dir is OS-specific** and is *not* a dotfile in `~`. The
+  default is `~/.config/github-copilot` (the editor plugin / Copilot CLI
+  token dir); some clients use `${LOCALAPPDATA}/github-copilot` on Windows.
+  Windows users must set `COPILOT_HOME` explicitly. The whole dir is mounted
+  at `/data/copilot`; the client reads only `apps.json` / `hosts.json`.
 - The credentials files are bind-mounted read-only at
-  `/data/claude/.credentials.json`, `/data/codex/auth.json`, and (Cursor)
-  `/data/cursor/User/globalStorage/state.vscdb` inside the container. Each
+  `/data/claude/.credentials.json`, `/data/codex/auth.json`, (Cursor)
+  `/data/cursor/User/globalStorage/state.vscdb`, and (Copilot)
+  `/data/copilot/apps.json` inside the container. Each
   CLI refreshes its access token on the host; the dashboard re-reads the
   files on each upstream call so it rides along on those refresh cadences.
   There is no token-refresh logic in this repo. `state.vscdb` can be large

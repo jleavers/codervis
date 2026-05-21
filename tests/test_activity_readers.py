@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from app.claude_activity import ClaudeActivityReader
 from app.codex_activity import CodexActivityReader
+from app.copilot_activity import CopilotActivityReader
 from app.cursor_activity import CursorActivityReader
 
 
@@ -77,10 +78,30 @@ def test_cursor_activity_uses_state_db_metadata(tmp_path) -> None:
     assert snapshot.last_activity == state_time
 
 
+def test_copilot_activity_uses_config_metadata_and_ignores_token(tmp_path) -> None:
+    root = tmp_path / "github-copilot"
+    root.mkdir(parents=True)
+    apps = root / "apps.json"
+    versions = root / "versions.json"
+    apps.write_text('{"github.com": {"oauth_token": "secret not parsed"}}', encoding="utf-8")
+    versions.write_text("{}", encoding="utf-8")
+
+    apps_time = datetime(2026, 5, 20, 8, 0, tzinfo=timezone.utc)
+    versions_time = datetime(2026, 5, 20, 9, 30, tzinfo=timezone.utc)
+    _set_mtime(apps, apps_time)
+    _set_mtime(versions, versions_time)
+
+    snapshot = CopilotActivityReader(root, cache_ttl_seconds=0).snapshot()
+
+    assert snapshot.data_root_exists is True
+    assert snapshot.last_activity == versions_time
+
+
 def test_activity_readers_report_missing_roots(tmp_path) -> None:
     claude_snapshot = ClaudeActivityReader(tmp_path / "missing-claude").snapshot()
     codex_snapshot = CodexActivityReader(tmp_path / "missing-codex").snapshot()
     cursor_snapshot = CursorActivityReader(tmp_path / "missing-cursor").snapshot()
+    copilot_snapshot = CopilotActivityReader(tmp_path / "missing-copilot").snapshot()
 
     assert claude_snapshot.data_root_exists is False
     assert claude_snapshot.last_activity is None
@@ -88,3 +109,5 @@ def test_activity_readers_report_missing_roots(tmp_path) -> None:
     assert codex_snapshot.last_activity is None
     assert cursor_snapshot.data_root_exists is False
     assert cursor_snapshot.last_activity is None
+    assert copilot_snapshot.data_root_exists is False
+    assert copilot_snapshot.last_activity is None
