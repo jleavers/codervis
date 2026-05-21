@@ -34,7 +34,7 @@ body {
 }
 
 .panel {
-  width: min(1200px, 100%);
+  width: min(1320px, 100%);
   background: var(--panel);
   border: 1px solid var(--rule);
   border-radius: 14px;
@@ -46,11 +46,11 @@ body {
 
 .providers {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 20px;
 }
 
-@media (max-width: 780px) {
+@media (max-width: 1024px) {
   .providers { grid-template-columns: 1fr; }
 }
 
@@ -260,6 +260,14 @@ body {
   margin-top: 14px;
   font-size: 12px;
 }
+
+.gauge-detail {
+  margin-left: auto;
+  color: var(--ink-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.gauge-detail[hidden] { display: none; }
 
 .pct-unit {
   font-size: 22px;

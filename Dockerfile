@@ -9,7 +9,8 @@ COPY app ./app
 
 ENV PYTHONUNBUFFERED=1 \
     CLAUDE_DATA_DIR=/data/claude \
-    CODEX_DATA_DIR=/data/codex
+    CODEX_DATA_DIR=/data/codex \
+    CURSOR_DATA_DIR=/data/cursor
 
 EXPOSE 8000
 

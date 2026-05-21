@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from app import main
 from app.claude_activity import ClaudeActivitySnapshot
 from app.codex_activity import CodexActivitySnapshot
+from app.cursor_activity import CursorActivitySnapshot
 
 
 class ActivityStub:
@@ -35,6 +36,30 @@ class QuotaClientStub:
 
 def _window(percent: float, resets_at: datetime | None = None):
     return SimpleNamespace(percent=percent, resets_at=resets_at)
+
+
+def _named_window(name, label, percent, resets_at=None, detail=None):
+    return SimpleNamespace(
+        name=name, label=label, percent=percent, resets_at=resets_at, detail=detail
+    )
+
+
+def _win(section: dict, name: str) -> dict:
+    return next(w for w in section["windows"] if w["name"] == name)
+
+
+def _stub_cursor(monkeypatch, *, snapshot=None, error=None, data_root_exists=True):
+    monkeypatch.setattr(
+        main,
+        "_cursor_activity",
+        ActivityStub(
+            CursorActivitySnapshot(last_activity=None, data_root_exists=data_root_exists)
+        ),
+    )
+    if snapshot is None and error is None:
+        monkeypatch.setattr(main, "_cursor", None)
+    else:
+        monkeypatch.setattr(main, "_cursor", QuotaClientStub(snapshot, error))
 
 
 def test_api_usage_returns_live_payload_without_scaling(monkeypatch) -> None:
@@ -72,22 +97,41 @@ def test_api_usage_returns_live_payload_without_scaling(monkeypatch) -> None:
             )
         ),
     )
+    _stub_cursor(
+        monkeypatch,
+        snapshot=SimpleNamespace(
+            requests=_named_window(
+                "requests", "Premium Requests (month)", 2.4, reset, "12 / 500 reqs"
+            ),
+            spend=_named_window(
+                "spend", "Usage-Based Spend (month)", 17.0, reset, "$3.40 / $20.00"
+            ),
+            plan_type="pro",
+        ),
+    )
 
     response = TestClient(main.app).get("/api/usage")
 
     assert response.status_code == 200
     data = response.json()
     assert data["claude"]["source"] == "live"
-    assert data["claude"]["five_hour"]["percent"] == 12.35
-    assert data["claude"]["seven_day"]["percent"] == 67.89
-    assert data["claude"]["five_hour"]["resets_at"] == "2026-05-20T12:00:00+00:00"
+    assert _win(data["claude"], "five_hour")["percent"] == 12.35
+    assert _win(data["claude"], "seven_day")["percent"] == 67.89
+    assert _win(data["claude"], "five_hour")["resets_at"] == "2026-05-20T12:00:00+00:00"
     assert data["claude"]["subscription_type"] == "max"
     assert data["claude"]["last_activity"] == "2026-05-20T09:30:00+00:00"
     assert data["codex"]["source"] == "live"
     assert data["codex"]["enabled"] is True
-    assert data["codex"]["five_hour"]["percent"] == 33.33
-    assert data["codex"]["seven_day"]["percent"] == 88.89
+    assert _win(data["codex"], "five_hour")["percent"] == 33.33
+    assert _win(data["codex"], "seven_day")["percent"] == 88.89
     assert data["codex"]["subscription_type"] == "pro"
+    assert data["cursor"]["source"] == "live"
+    assert data["cursor"]["enabled"] is True
+    assert _win(data["cursor"], "requests")["percent"] == 2.4
+    assert _win(data["cursor"], "requests")["detail"] == "12 / 500 reqs"
+    assert _win(data["cursor"], "spend")["percent"] == 17.0
+    assert _win(data["cursor"], "spend")["detail"] == "$3.40 / $20.00"
+    assert data["cursor"]["subscription_type"] == "pro"
 
 
 def test_payload_contains_unavailable_states_on_live_errors(monkeypatch) -> None:
@@ -111,17 +155,22 @@ def test_payload_contains_unavailable_states_on_live_errors(monkeypatch) -> None
         "_codex",
         QuotaClientStub(error=main.CodexLiveQuotaError("codex upstream changed")),
     )
+    _stub_cursor(monkeypatch, error=main.CursorLiveQuotaError("cursor upstream changed"))
 
     data = main._build_payload()
 
     assert data["claude"]["source"] == "unavailable"
     assert data["claude"]["source_error"] == "claude upstream changed"
-    assert data["claude"]["five_hour"]["percent"] is None
-    assert data["claude"]["seven_day"]["percent"] is None
+    assert _win(data["claude"], "five_hour")["percent"] is None
+    assert _win(data["claude"], "seven_day")["percent"] is None
     assert data["codex"]["source"] == "unavailable"
     assert data["codex"]["source_error"] == "codex upstream changed"
-    assert data["codex"]["five_hour"]["percent"] is None
-    assert data["codex"]["seven_day"]["percent"] is None
+    assert _win(data["codex"], "five_hour")["percent"] is None
+    assert _win(data["codex"], "seven_day")["percent"] is None
+    assert data["cursor"]["source"] == "unavailable"
+    assert data["cursor"]["source_error"] == "cursor upstream changed"
+    assert _win(data["cursor"], "requests")["percent"] is None
+    assert _win(data["cursor"], "spend")["percent"] is None
 
 
 def test_codex_section_reports_disabled_when_client_is_absent(monkeypatch) -> None:
@@ -136,6 +185,18 @@ def test_codex_section_reports_disabled_when_client_is_absent(monkeypatch) -> No
 
     assert data["enabled"] is False
     assert data["source"] == "disabled"
-    assert data["five_hour"]["percent"] is None
-    assert data["seven_day"]["percent"] is None
+    assert _win(data, "five_hour")["percent"] is None
+    assert _win(data, "seven_day")["percent"] is None
+    assert data["data_root_exists"] is False
+
+
+def test_cursor_section_reports_disabled_when_client_is_absent(monkeypatch) -> None:
+    _stub_cursor(monkeypatch, data_root_exists=False)
+
+    data = main._cursor_section()
+
+    assert data["enabled"] is False
+    assert data["source"] == "disabled"
+    assert _win(data, "requests")["percent"] is None
+    assert _win(data, "spend")["percent"] is None
     assert data["data_root_exists"] is False

@@ -1,54 +1,69 @@
 # codervis
 
-A local web dashboard that shows your **Claude Code** and **Codex CLI** quota
-usage live, side-by-side — the 5-hour and weekly utilization figures each
-agent's own `/status` exposes, displayed as geiger-style meters that shift
-from **lime → amber → coral** as you approach the limit.
+A local web dashboard that shows your **Claude Code**, **Codex CLI**, and
+**Cursor** quota usage live, side-by-side — displayed as geiger-style meters
+that shift from **lime → amber → coral** as you approach the limit.
 
 ## How it works
 
-Each coding agent stores OAuth credentials in a dotfile under your home
-directory. The same tokens are accepted by undocumented usage endpoints:
+Each coding agent stores a credential locally that its own usage endpoint
+accepts. codervis reads each one and polls the matching undocumented endpoint:
 
-| Agent | Credentials file | Endpoint |
-| --- | --- | --- |
-| Claude Code | `~/.claude/.credentials.json` (field `claudeAiOauth.accessToken`) | `GET https://claude.ai/api/oauth/usage` |
-| Codex CLI | `~/.codex/auth.json` (fields `tokens.access_token`, `tokens.account_id`) | `GET https://chatgpt.com/backend-api/wham/usage` |
+| Agent | Credential (read-only) | Endpoint(s) | Windows |
+| --- | --- | --- | --- |
+| Claude Code | `~/.claude/.credentials.json` → `claudeAiOauth.accessToken` (bearer) | `GET claude.ai/api/oauth/usage` | 5-hour + weekly utilization |
+| Codex CLI | `~/.codex/auth.json` → `tokens.access_token` + `account_id` (bearer) | `GET chatgpt.com/backend-api/wham/usage` | 5-hour + weekly utilization |
+| Cursor | `…/Cursor/User/globalStorage/state.vscdb` → SQLite key `cursorAuth/accessToken` (cookie) | `GET cursor.com/api/usage` + `/api/dashboard/*` | monthly premium-requests + usage-based spend |
 
-Both return per-window utilization as a percentage plus a reset timestamp.
+Claude and Codex return per-window utilization as a percentage plus a reset
+timestamp. **Cursor is different**: it meters on a monthly billing cycle, its
+token lives in a SQLite database rather than a JSON dotfile, and it
+authenticates with a `Cookie: WorkosCursorSessionToken=<userId>::<jwt>` header
+instead of a bearer token. codervis derives two monthly gauges for it — premium
+request count vs. cap, and usage-based dollar spend vs. hard limit.
 
-codervis runs as a small FastAPI container, **bind-mounts both data
-directories read-only**, reads the access tokens, and polls the endpoints.
-The browser gets live updates via Server-Sent Events; CSS animates the
-meter fill and the colour shifts as the percentage rises.
+codervis runs as a small FastAPI container, **bind-mounts all three data
+directories read-only**, reads the tokens, and polls the endpoints. The browser
+gets live updates via Server-Sent Events; CSS animates the meter fill and the
+colour shifts as the percentage rises.
 
-If either live endpoint is unreachable for any reason (expired token, network
+If a live endpoint is unreachable for any reason (expired token, network
 down, or the vendor changes the API), that panel renders an "unavailable"
 state. codervis does not estimate quota usage from local transcripts; it only
-reads Claude transcript timestamp fields to show local last activity.
+reads timestamp/metadata to show each agent's local last activity.
 
 ### Caveats
 
-- Both endpoints are **internal**, not part of Anthropic's or OpenAI's
-  public API. They can change or disappear at any time.
-- The dashboard reads the credentials files each CLI maintains. It does
-  **not** implement OAuth flows of its own — you need Claude Code and/or
-  Codex CLI installed and signed in on the host machine.
+- Every endpoint is **internal**, not part of Anthropic's, OpenAI's, or
+  Cursor's public API. They can change or disappear at any time.
+- The dashboard reads the credential each tool maintains. It does
+  **not** implement OAuth flows of its own — you need Claude Code, Codex
+  CLI, and/or Cursor installed and signed in on the host machine.
+- **Cursor on the free plan** has no fixed premium-request cap and no
+  usage-based billing, so both Cursor gauges honestly show "—" (the raw
+  request count still appears under the meter). The gauges populate on
+  Pro/Business plans. Cursor's Premium Requests gauge tracks the legacy
+  premium/fast-request model; on accounts fully migrated off it,
+  `maxRequestUsage` is `null` and that gauge shows "—" too.
 - Claude Code refreshes its own access token. If you have not opened Claude
   Code for a while, Anthropic may return `HTTP 401` to codervis until the host
   CLI runs and refreshes `~/.claude/.credentials.json`. Open Claude Code from a
   terminal on the host, then wait for the next dashboard refresh.
-- Read-only bind mounts: codervis never writes to `~/.claude` or `~/.codex`.
-- If you only use one of the two agents, set `CODEX_ENABLED=false`. The Codex
-  panel remains visible but dimmed with a `disabled` source state.
+- Read-only bind mounts: codervis never writes to `~/.claude`, `~/.codex`,
+  or your Cursor directory. The Cursor `state.vscdb` is opened read-only
+  without `immutable` so SQLite sees live WAL-mode writes. If Docker's
+  read-only mount prevents SQLite from opening the WAL sidecars directly,
+  codervis reads from a short-lived temp snapshot inside the container.
+- If you don't use an agent, set its `*_ENABLED=false`. That panel remains
+  visible but dimmed with a `disabled` source state.
 
 ## Prerequisites
 
 - Docker Desktop (or any recent Docker + Compose v2)
-- Claude Code installed and signed in on the host (so
-  `~/.claude/.credentials.json` exists), and/or
-- Codex CLI installed and signed in on the host (so `~/.codex/auth.json`
-  exists)
+- Any combination of, installed and signed in on the host:
+  - Claude Code (so `~/.claude/.credentials.json` exists)
+  - Codex CLI (so `~/.codex/auth.json` exists)
+  - Cursor (so `…/Cursor/User/globalStorage/state.vscdb` exists)
 
 ## Setup
 
@@ -62,30 +77,44 @@ Edit `.env`:
 | --- | --- | --- |
 | `CLAUDE_HOME` | Host path to your Claude Code data dir. **On Windows set this explicitly** — e.g. `C:/Users/you/.claude`. | `~/.claude` |
 | `CODEX_HOME` | Host path to your Codex CLI data dir. Same Windows caveat. | `~/.codex` |
+| `CURSOR_HOME` | Host path to your Cursor data dir (the one containing `User/globalStorage/state.vscdb`). OS-specific — see below. | `~/.config/Cursor` |
 | `CODEX_ENABLED` | Set to `false` to render the Codex panel dimmed with a `disabled` state. | `true` |
+| `CURSOR_ENABLED` | Set to `false` to render the Cursor panel dimmed with a `disabled` state. | `true` |
 | `DASHBOARD_PORT` | Host port the dashboard listens on. | `8765` |
 | `REFRESH_INTERVAL_SECONDS` | How often the browser is pushed a fresh snapshot. | `5` |
 | `QUOTA_CACHE_TTL_SECONDS` | Server-side cache for the upstream calls. Keep ≥ refresh interval. | `30` |
 | `CLAUDE_ACTIVITY_CACHE_TTL_SECONDS` | Server-side cache for Claude local transcript timestamp scans. | `5` |
 | `CODEX_ACTIVITY_CACHE_TTL_SECONDS` | Server-side cache for Codex local activity metadata scans. | `5` |
+| `CURSOR_ACTIVITY_CACHE_TTL_SECONDS` | Server-side cache for Cursor local activity metadata scans. | `5` |
 | `CLAUDE_AI_HOST` | Override the Claude host (rarely needed). | `https://claude.ai` |
 | `CHATGPT_HOST` | Override the Codex host (rarely needed). | `https://chatgpt.com` |
+| `CURSOR_HOST` | Override the Cursor host (rarely needed). | `https://cursor.com` |
+
+Cursor's data directory is **not** a dotfile in your home directory — it's
+the editor's application-data folder:
+
+| OS | `CURSOR_HOME` |
+| --- | --- |
+| Windows | `${APPDATA}/Cursor` (e.g. `C:/Users/you/AppData/Roaming/Cursor`) |
+| macOS | `~/Library/Application Support/Cursor` |
+| Linux | `~/.config/Cursor` |
 
 ### Windows note
 
 Docker Compose on Windows does **not** expand `~` in bind-mount paths, so
-the defaults `${CLAUDE_HOME:-~/.claude}` and `${CODEX_HOME:-~/.codex}` only
-work if you set both explicitly. The simplest thing is:
+the home-directory defaults only work if you set the paths explicitly. The
+simplest thing is:
 
 ```dotenv
 CLAUDE_HOME=C:/Users/yourname/.claude
 CODEX_HOME=C:/Users/yourname/.codex
+CURSOR_HOME=C:/Users/yourname/AppData/Roaming/Cursor
 ```
 
 (Forward slashes work fine inside `.env`.)
 
-If you don't use Codex, point `CODEX_HOME` at any existing directory and
-set `CODEX_ENABLED=false`. The panel will be dimmed with a `disabled` state
+If you don't use an agent, point its `*_HOME` at any existing directory and
+set its `*_ENABLED=false`. The panel will be dimmed with a `disabled` state
 and the bind mount won't be touched by the app.
 
 ## Run
@@ -111,24 +140,29 @@ Install development dependencies, then run the suite:
 ```bash
 python -m pip install -r requirements-dev.txt
 python -m pytest
-python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py
+python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/cursor_quota.py app/cursor_activity.py
 ```
 
-The tests use temporary directories and stubbed upstream clients. They do not
-read your real Claude or Codex credential files and do not call the live quota
-endpoints.
+The tests use temporary directories, an in-memory SQLite DB for the Cursor
+path, and stubbed upstream clients. They do not read your real credential
+files and do not call the live quota endpoints.
 
 ## What you see
 
-Two columns, one per agent (Claude Code on the left, Codex on the right):
+Three columns, one per agent (Claude Code, Codex, Cursor):
 
-- **5-Hour Window** gauge — percentage of your 5-hour rolling quota used,
-  with a countdown to when it resets.
-- **Weekly Window** gauge — same, on a 7-day window.
+- **Claude & Codex** each show a **5-Hour Window** gauge (percentage of your
+  5-hour rolling quota used) and a **Weekly Window** gauge (same, on a 7-day
+  window), each with a countdown to when it resets.
+- **Cursor** shows a **Premium Requests (month)** gauge and a **Usage-Based
+  Spend (month)** gauge, both on your monthly billing cycle. The line under
+  each meter shows the raw figures (e.g. `42 / 500 reqs`, `$3.40 / $20.00`).
+  On the free plan these have no cap, so the percentage reads "—".
 - Per-column header shows the source state (`live` / `unavailable` /
   `disabled`); footer shows the plan and most recent local activity. Claude
-  activity comes from project transcript timestamps, while Codex activity comes
-  from local history/session file metadata. The footer shows an error string
+  activity comes from project transcript timestamps; Codex from local
+  history/session file metadata; Cursor from `state.vscdb` and
+  History/workspace directory metadata. The footer shows an error string
   when a live quota call fails.
 
 The fill colour is computed from the percentage: lime under 50%, sliding
@@ -145,6 +179,8 @@ through amber, to coral as you approach 100%. Panels in `unavailable` or
 │   ├── claude_activity.py # Claude local activity timestamp reader
 │   ├── codex_quota.py   # Codex live client → chatgpt.com/backend-api/wham/usage
 │   ├── codex_activity.py # Codex local activity metadata reader
+│   ├── cursor_quota.py  # Cursor live client → cursor.com (reads state.vscdb)
+│   ├── cursor_activity.py # Cursor local activity metadata reader
 │   ├── templates/
 │   │   └── index.html
 │   └── static/
@@ -167,8 +203,11 @@ through amber, to coral as you approach 100%. Panels in `unavailable` or
 | Claude chip shows `unavailable` with `HTTP 401` | Claude Code's access token has likely expired and the host CLI has not refreshed it yet. Open Claude Code from a terminal on the host, then wait for the next dashboard refresh. |
 | Claude chip shows `unavailable` | `~/.claude/.credentials.json` missing or unreadable inside the container, token expired/refresh hasn't run, or Anthropic changed the endpoint. Hover the chip for the error. |
 | Codex chip shows `unavailable` | `~/.codex/auth.json` missing or unreadable inside the container, token expired/refresh hasn't run, or OpenAI changed the endpoint. Hover the chip for the error. |
+| Cursor chip shows `unavailable` | `state.vscdb` missing/unreadable inside the container, you're signed out of Cursor (no `cursorAuth/accessToken`), token expired, or Cursor changed the endpoint/schema. Hover the chip for the error. |
+| Cursor gauges show `—` but chip is `live` | Expected on the free plan (no request cap, usage-based billing off). The raw request count still shows under the meter. |
 | `claude_credentials_present: false` from `/healthz` | Bind mount didn't pick up the credentials file. Verify `CLAUDE_HOME` points at your real `.claude` directory. |
 | `codex_credentials_present: false` from `/healthz` | Same, for `CODEX_HOME` / `~/.codex/auth.json`. |
+| `cursor_credentials_present: false` from `/healthz` | Bind mount missed `state.vscdb`. Verify `CURSOR_HOME` points at your Cursor data dir (it must contain `User/globalStorage/state.vscdb`). |
 | Browser shows `reconnecting…` | The container restarted; SSE will reconnect on its own. |
 
 `/healthz` returns JSON with `data_root_exists` and `credentials_present`
@@ -176,12 +215,18 @@ flags that are useful for quick diagnosis.
 
 ## Security notes
 
-- `~/.claude/.credentials.json` and `~/.codex/auth.json` contain long-lived
-  OAuth bearer tokens. Both bind mounts are read-only. The default Compose
-  port mapping publishes the dashboard on all host interfaces, so machines on
-  your LAN can reach it at `http://<your-host-ip>:8765`.
+- `~/.claude/.credentials.json`, `~/.codex/auth.json`, and Cursor's
+  `state.vscdb` all contain long-lived session tokens. All three bind mounts
+  are read-only, and `state.vscdb` is opened in SQLite read-only mode. The
+  default Compose port mapping publishes the dashboard on all host interfaces,
+  so machines on your LAN can reach it at `http://<your-host-ip>:8765`.
   **Don't expose this port to the public internet** — anyone who can
   reach it can read your usage. If you need remote access, put it behind
   a reverse proxy with auth.
+- Cursor's `state.vscdb` also holds your chat/composer history. codervis
+  queries **only** the `cursorAuth/accessToken` and membership ItemTable keys.
+  When direct WAL reads fail on a read-only mount, it temporarily copies
+  `state.vscdb` and `state.vscdb-wal` inside the container, queries those keys,
+  and deletes the snapshot.
 - The dashboard never logs the tokens. If you regenerated `usage-debug.log`
   during setup, delete it.

@@ -7,14 +7,19 @@ services:
     environment:
       CLAUDE_DATA_DIR: /data/claude
       CODEX_DATA_DIR: /data/codex
+      CURSOR_DATA_DIR: /data/cursor
       CODEX_ENABLED: "${CODEX_ENABLED:-true}"
+      CURSOR_ENABLED: "${CURSOR_ENABLED:-true}"
       REFRESH_INTERVAL_SECONDS: "${REFRESH_INTERVAL_SECONDS:-5}"
       QUOTA_CACHE_TTL_SECONDS: "${QUOTA_CACHE_TTL_SECONDS:-30}"
       CLAUDE_ACTIVITY_CACHE_TTL_SECONDS: "${CLAUDE_ACTIVITY_CACHE_TTL_SECONDS:-5}"
       CODEX_ACTIVITY_CACHE_TTL_SECONDS: "${CODEX_ACTIVITY_CACHE_TTL_SECONDS:-5}"
+      CURSOR_ACTIVITY_CACHE_TTL_SECONDS: "${CURSOR_ACTIVITY_CACHE_TTL_SECONDS:-5}"
       CLAUDE_AI_HOST: "${CLAUDE_AI_HOST:-https://claude.ai}"
       CHATGPT_HOST: "${CHATGPT_HOST:-https://chatgpt.com}"
+      CURSOR_HOST: "${CURSOR_HOST:-https://cursor.com}"
     volumes:
       - "${CLAUDE_HOME:-~/.claude}:/data/claude:ro"
       - "${CODEX_HOME:-~/.codex}:/data/codex:ro"
+      - "${CURSOR_HOME:-~/.config/Cursor}:/data/cursor:ro"
     restart: unless-stopped

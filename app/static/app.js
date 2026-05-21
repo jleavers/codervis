@@ -22,6 +22,7 @@
   }
 
   function applyGauge(provider, w) {
+    if (!w) return;
     const root = document.getElementById("gauge-" + provider + "-" + w.name);
     if (!root) return;
     const hasValue = w.percent !== null && w.percent !== undefined;
@@ -47,6 +48,16 @@
     const resets = root.querySelector(".val.resets");
     resets.dataset.iso = w.resets_at || "";
     resets.textContent = formatRelative(w.resets_at);
+
+    const detail = document.getElementById("detail-" + provider + "-" + w.name);
+    if (detail) {
+      if (w.detail) {
+        detail.querySelector(".val").textContent = w.detail;
+        detail.removeAttribute("hidden");
+      } else {
+        detail.setAttribute("hidden", "");
+      }
+    }
   }
 
   function formatRelative(iso) {
@@ -79,16 +90,19 @@
     const t = new Date(iso).getTime();
     if (Number.isNaN(t)) return "—";
     const ago = Math.max(0, Math.round((Date.now() - t) / 1000));
-    const h = Math.floor(ago / 3600);
+    const d = Math.floor(ago / 86400);
+    const h = Math.floor((ago % 86400) / 3600);
     const m = Math.floor((ago % 3600) / 60);
     const s = ago % 60;
-    return h ? `${h}h ${m}m ago` : m ? `${m}m ${s}s ago` : `${s}s ago`;
+    if (d > 0) return `${d}d ${h}h ago`;
+    if (h > 0) return `${h}h ${m}m ago`;
+    if (m > 0) return `${m}m ${s}s ago`;
+    return `${s}s ago`;
   }
 
   function applyProvider(key, section) {
     if (!section) return;
-    applyGauge(key, section.five_hour);
-    applyGauge(key, section.seven_day);
+    (section.windows || []).forEach((w) => applyGauge(key, w));
 
     const src = document.getElementById("source-" + key);
     if (src) {
@@ -114,29 +128,30 @@
     if (provRoot) provRoot.dataset.source = section.source;
   }
 
-  function summariseStatus(payload) {
-    const claudeOk = payload.claude && payload.claude.source === "live";
-    const codexOk = payload.codex && payload.codex.source === "live";
-    const codexDisabled = payload.codex && payload.codex.source === "disabled";
+  const PROVIDERS = ["claude", "codex", "cursor"];
 
-    if (claudeOk && (codexOk || codexDisabled)) {
-      setStatus("ok", codexDisabled ? "live · codex off" : "live");
+  function summariseStatus(payload) {
+    const present = PROVIDERS.filter((k) => payload[k]);
+
+    const broken = present.find((k) => payload[k].source === "unavailable");
+    if (broken) {
+      setStatus("stale", broken + ": unavailable · " + (payload[broken].source_error || ""));
       return;
     }
-    if (payload.claude && payload.claude.source === "unavailable") {
-      setStatus("stale", "claude: unavailable · " + (payload.claude.source_error || ""));
-      return;
-    }
-    if (payload.codex && payload.codex.source === "unavailable") {
-      setStatus("stale", "codex: unavailable · " + (payload.codex.source_error || ""));
+
+    const allOk = present.every((k) =>
+      payload[k].source === "live" || payload[k].source === "disabled"
+    );
+    if (allOk) {
+      const off = present.filter((k) => payload[k].source === "disabled");
+      setStatus("ok", off.length ? "live · " + off.join(",") + " off" : "live");
       return;
     }
     setStatus("error", "error");
   }
 
   function apply(payload) {
-    applyProvider("claude", payload.claude);
-    applyProvider("codex", payload.codex);
+    PROVIDERS.forEach((key) => applyProvider(key, payload[key]));
 
     paintRelativeFields();
     summariseStatus(payload);

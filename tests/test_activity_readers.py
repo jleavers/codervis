@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from app.claude_activity import ClaudeActivityReader
 from app.codex_activity import CodexActivityReader
+from app.cursor_activity import CursorActivityReader
 
 
 def _set_mtime(path, dt: datetime) -> None:
@@ -60,11 +61,30 @@ def test_codex_activity_uses_known_metadata_and_ignores_auth_json(tmp_path) -> N
     assert snapshot.last_activity != ignored_auth_time
 
 
+def test_cursor_activity_uses_state_db_metadata(tmp_path) -> None:
+    root = tmp_path / "cursor"
+    global_storage = root / "User" / "globalStorage"
+    global_storage.mkdir(parents=True)
+    state_db = global_storage / "state.vscdb"
+    state_db.write_text("token bytes are not parsed", encoding="utf-8")
+
+    state_time = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+    _set_mtime(state_db, state_time)
+
+    snapshot = CursorActivityReader(root, cache_ttl_seconds=0).snapshot()
+
+    assert snapshot.data_root_exists is True
+    assert snapshot.last_activity == state_time
+
+
 def test_activity_readers_report_missing_roots(tmp_path) -> None:
     claude_snapshot = ClaudeActivityReader(tmp_path / "missing-claude").snapshot()
     codex_snapshot = CodexActivityReader(tmp_path / "missing-codex").snapshot()
+    cursor_snapshot = CursorActivityReader(tmp_path / "missing-cursor").snapshot()
 
     assert claude_snapshot.data_root_exists is False
     assert claude_snapshot.last_activity is None
     assert codex_snapshot.data_root_exists is False
     assert codex_snapshot.last_activity is None
+    assert cursor_snapshot.data_root_exists is False
+    assert cursor_snapshot.last_activity is None

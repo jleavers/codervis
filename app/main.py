@@ -16,17 +16,28 @@ from .codex_activity import CodexActivityReader
 from .codex_activity import reader_from_env as codex_activity_reader_from_env
 from .codex_quota import CodexLiveQuotaClient, CodexLiveQuotaError
 from .codex_quota import client_from_env as codex_client_from_env
+from .cursor_activity import CursorActivityReader
+from .cursor_activity import reader_from_env as cursor_activity_reader_from_env
+from .cursor_quota import CursorLiveQuotaClient, CursorLiveQuotaError
+from .cursor_quota import client_from_env as cursor_client_from_env
 from .quota import LiveQuotaClient, LiveQuotaError, client_from_env
 
 BASE_DIR = Path(__file__).parent
 REFRESH_SECONDS = max(1, int(os.environ.get("REFRESH_INTERVAL_SECONDS", "5")))
-CODEX_ENABLED = os.environ.get("CODEX_ENABLED", "true").strip().lower() not in (
-    "0",
-    "false",
-    "no",
-    "off",
-    "",
-)
+
+
+def _enabled(name: str) -> bool:
+    return os.environ.get(name, "true").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+        "",
+    )
+
+
+CODEX_ENABLED = _enabled("CODEX_ENABLED")
+CURSOR_ENABLED = _enabled("CURSOR_ENABLED")
 
 app = FastAPI(title="Codervis")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -36,15 +47,30 @@ _live: LiveQuotaClient = client_from_env()
 _claude_activity: ClaudeActivityReader = claude_activity_reader_from_env()
 _codex: CodexLiveQuotaClient | None = codex_client_from_env() if CODEX_ENABLED else None
 _codex_activity: CodexActivityReader = codex_activity_reader_from_env()
+_cursor: CursorLiveQuotaClient | None = (
+    cursor_client_from_env() if CURSOR_ENABLED else None
+)
+_cursor_activity: CursorActivityReader = cursor_activity_reader_from_env()
 
 
-def _window_dict(name: str, label: str, percent, resets_at) -> dict:
+def _window_dict(name: str, label: str, percent, resets_at, detail=None) -> dict:
     return {
         "name": name,
         "label": label,
         "percent": None if percent is None else round(float(percent), 2),
         "resets_at": resets_at.isoformat() if resets_at else None,
+        "detail": detail,
     }
+
+
+def _window_from(window) -> dict:
+    return _window_dict(
+        window.name,
+        window.label,
+        getattr(window, "percent", None),
+        getattr(window, "resets_at", None),
+        getattr(window, "detail", None),
+    )
 
 
 def _claude_section() -> dict:
@@ -55,18 +81,14 @@ def _claude_section() -> dict:
     try:
         live = _live.get()
         return {
-            "five_hour": _window_dict(
-                "five_hour",
-                "5-Hour Window",
-                live.five_hour.percent,
-                live.five_hour.resets_at,
-            ),
-            "seven_day": _window_dict(
-                "seven_day",
-                "Weekly Window",
-                live.seven_day.percent,
-                live.seven_day.resets_at,
-            ),
+            "windows": [
+                _window_dict(
+                    "five_hour", "5-Hour Window", live.five_hour.percent, live.five_hour.resets_at
+                ),
+                _window_dict(
+                    "seven_day", "Weekly Window", live.seven_day.percent, live.seven_day.resets_at
+                ),
+            ],
             "source": "live",
             "source_error": None,
             "subscription_type": live.subscription_type,
@@ -75,8 +97,10 @@ def _claude_section() -> dict:
         }
     except LiveQuotaError as e:
         return {
-            "five_hour": _window_dict("five_hour", "5-Hour Window", None, None),
-            "seven_day": _window_dict("seven_day", "Weekly Window", None, None),
+            "windows": [
+                _window_dict("five_hour", "5-Hour Window", None, None),
+                _window_dict("seven_day", "Weekly Window", None, None),
+            ],
             "source": "unavailable",
             "source_error": str(e),
             "subscription_type": None,
@@ -93,8 +117,10 @@ def _codex_section() -> dict:
     if _codex is None:
         return {
             "enabled": False,
-            "five_hour": _window_dict("five_hour", "5-Hour Window", None, None),
-            "seven_day": _window_dict("seven_day", "Weekly Window", None, None),
+            "windows": [
+                _window_dict("five_hour", "5-Hour Window", None, None),
+                _window_dict("seven_day", "Weekly Window", None, None),
+            ],
             "source": "disabled",
             "source_error": None,
             "subscription_type": None,
@@ -106,12 +132,14 @@ def _codex_section() -> dict:
         snap = _codex.get()
         return {
             "enabled": True,
-            "five_hour": _window_dict(
-                "five_hour", "5-Hour Window", snap.five_hour.percent, snap.five_hour.resets_at
-            ),
-            "seven_day": _window_dict(
-                "seven_day", "Weekly Window", snap.seven_day.percent, snap.seven_day.resets_at
-            ),
+            "windows": [
+                _window_dict(
+                    "five_hour", "5-Hour Window", snap.five_hour.percent, snap.five_hour.resets_at
+                ),
+                _window_dict(
+                    "seven_day", "Weekly Window", snap.seven_day.percent, snap.seven_day.resets_at
+                ),
+            ],
             "source": "live",
             "source_error": None,
             "subscription_type": snap.plan_type,
@@ -121,8 +149,53 @@ def _codex_section() -> dict:
     except CodexLiveQuotaError as e:
         return {
             "enabled": True,
-            "five_hour": _window_dict("five_hour", "5-Hour Window", None, None),
-            "seven_day": _window_dict("seven_day", "Weekly Window", None, None),
+            "windows": [
+                _window_dict("five_hour", "5-Hour Window", None, None),
+                _window_dict("seven_day", "Weekly Window", None, None),
+            ],
+            "source": "unavailable",
+            "source_error": str(e),
+            "subscription_type": None,
+            "last_activity": last_activity,
+            "data_root_exists": activity_snap.data_root_exists,
+        }
+
+
+def _cursor_section() -> dict:
+    activity_snap = _cursor_activity.snapshot()
+    last_activity = (
+        activity_snap.last_activity.isoformat() if activity_snap.last_activity else None
+    )
+    placeholder = [
+        _window_dict("requests", "Premium Requests (month)", None, None),
+        _window_dict("spend", "Usage-Based Spend (month)", None, None),
+    ]
+    if _cursor is None:
+        return {
+            "enabled": False,
+            "windows": placeholder,
+            "source": "disabled",
+            "source_error": None,
+            "subscription_type": None,
+            "last_activity": last_activity,
+            "data_root_exists": activity_snap.data_root_exists,
+        }
+
+    try:
+        snap = _cursor.get()
+        return {
+            "enabled": True,
+            "windows": [_window_from(snap.requests), _window_from(snap.spend)],
+            "source": "live",
+            "source_error": None,
+            "subscription_type": snap.plan_type,
+            "last_activity": last_activity,
+            "data_root_exists": activity_snap.data_root_exists,
+        }
+    except CursorLiveQuotaError as e:
+        return {
+            "enabled": True,
+            "windows": placeholder,
             "source": "unavailable",
             "source_error": str(e),
             "subscription_type": None,
@@ -136,6 +209,7 @@ def _build_payload() -> dict:
     return {
         "claude": _claude_section(),
         "codex": _codex_section(),
+        "cursor": _cursor_section(),
         "server_time": now.isoformat(),
     }
 
@@ -181,4 +255,7 @@ async def healthz() -> dict:
         "codex_data_root_exists": _codex_activity.data_dir.exists(),
         "codex_enabled": _codex is not None,
         "codex_credentials_present": _codex.credentials_path.exists() if _codex else False,
+        "cursor_data_root_exists": _cursor_activity.data_dir.exists(),
+        "cursor_enabled": _cursor is not None,
+        "cursor_credentials_present": _cursor.credentials_path.exists() if _cursor else False,
     }
