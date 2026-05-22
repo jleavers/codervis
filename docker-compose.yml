@@ -9,9 +9,11 @@ services:
       CODEX_DATA_DIR: /data/codex
       CURSOR_DATA_DIR: /data/cursor
       COPILOT_DATA_DIR: /data/copilot
+      GEMINI_DATA_DIR: /data/gemini
       CODEX_ENABLED: "${CODEX_ENABLED:-true}"
       CURSOR_ENABLED: "${CURSOR_ENABLED:-true}"
       COPILOT_ENABLED: "${COPILOT_ENABLED:-true}"
+      GEMINI_ENABLED: "${GEMINI_ENABLED:-true}"
       # Copilot PAT mode (for VS Code users whose token isn't in a file).
       # If COPILOT_GITHUB_TOKEN is set, the documented billing REST API is used
       # instead of the apps.json/hosts.json + copilot_internal path.
@@ -26,13 +28,16 @@ services:
       CODEX_ACTIVITY_CACHE_TTL_SECONDS: "${CODEX_ACTIVITY_CACHE_TTL_SECONDS:-5}"
       CURSOR_ACTIVITY_CACHE_TTL_SECONDS: "${CURSOR_ACTIVITY_CACHE_TTL_SECONDS:-5}"
       COPILOT_ACTIVITY_CACHE_TTL_SECONDS: "${COPILOT_ACTIVITY_CACHE_TTL_SECONDS:-5}"
+      GEMINI_ACTIVITY_CACHE_TTL_SECONDS: "${GEMINI_ACTIVITY_CACHE_TTL_SECONDS:-5}"
       CLAUDE_AI_HOST: "${CLAUDE_AI_HOST:-https://claude.ai}"
       CHATGPT_HOST: "${CHATGPT_HOST:-https://chatgpt.com}"
       CURSOR_HOST: "${CURSOR_HOST:-https://cursor.com}"
       GITHUB_API_HOST: "${GITHUB_API_HOST:-https://api.github.com}"
+      GEMINI_CODE_ASSIST_HOST: "${GEMINI_CODE_ASSIST_HOST:-https://daily-cloudcode-pa.googleapis.com}"
     volumes:
       - "${CLAUDE_HOME:-~/.claude}:/data/claude:ro"
       - "${CODEX_HOME:-~/.codex}:/data/codex:ro"
       - "${CURSOR_HOME:-~/.config/Cursor}:/data/cursor:ro"
       - "${COPILOT_HOME:-~/.config/github-copilot}:/data/copilot:ro"
+      - "${GEMINI_HOME:-~/.gemini}:/data/gemini:ro"
     restart: unless-stopped

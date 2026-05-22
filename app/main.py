@@ -28,6 +28,10 @@ from .cursor_activity import CursorActivityReader
 from .cursor_activity import reader_from_env as cursor_activity_reader_from_env
 from .cursor_quota import CursorLiveQuotaClient, CursorLiveQuotaError
 from .cursor_quota import client_from_env as cursor_client_from_env
+from .gemini_activity import GeminiActivityReader
+from .gemini_activity import reader_from_env as gemini_activity_reader_from_env
+from .gemini_quota import GeminiLiveQuotaClient, GeminiLiveQuotaError
+from .gemini_quota import client_from_env as gemini_client_from_env
 from .quota import LiveQuotaClient, LiveQuotaError, client_from_env
 
 BASE_DIR = Path(__file__).parent
@@ -47,6 +51,7 @@ def _enabled(name: str) -> bool:
 CODEX_ENABLED = _enabled("CODEX_ENABLED")
 CURSOR_ENABLED = _enabled("CURSOR_ENABLED")
 COPILOT_ENABLED = _enabled("COPILOT_ENABLED")
+GEMINI_ENABLED = _enabled("GEMINI_ENABLED")
 
 app = FastAPI(title="Codervis")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -64,6 +69,10 @@ _copilot: CopilotLiveQuotaClient | CopilotBillingQuotaClient | None = (
     copilot_client_from_env() if COPILOT_ENABLED else None
 )
 _copilot_activity: CopilotActivityReader = copilot_activity_reader_from_env()
+_gemini: GeminiLiveQuotaClient | None = (
+    gemini_client_from_env() if GEMINI_ENABLED else None
+)
+_gemini_activity: GeminiActivityReader = gemini_activity_reader_from_env()
 
 
 def _window_dict(name: str, label: str, percent, resets_at, detail=None) -> dict:
@@ -261,6 +270,49 @@ def _copilot_section() -> dict:
         }
 
 
+def _gemini_section() -> dict:
+    activity_snap = _gemini_activity.snapshot()
+    last_activity = (
+        activity_snap.last_activity.isoformat() if activity_snap.last_activity else None
+    )
+    placeholder = [
+        _window_dict("pro", "Pro Requests (day)", None, None),
+        _window_dict("flash", "Flash Requests (day)", None, None),
+    ]
+    if _gemini is None:
+        return {
+            "enabled": False,
+            "windows": placeholder,
+            "source": "disabled",
+            "source_error": None,
+            "subscription_type": None,
+            "last_activity": last_activity,
+            "data_root_exists": activity_snap.data_root_exists,
+        }
+
+    try:
+        snap = _gemini.get()
+        return {
+            "enabled": True,
+            "windows": [_window_from(snap.pro), _window_from(snap.flash)],
+            "source": "live",
+            "source_error": None,
+            "subscription_type": snap.plan_type,
+            "last_activity": last_activity,
+            "data_root_exists": activity_snap.data_root_exists,
+        }
+    except GeminiLiveQuotaError as e:
+        return {
+            "enabled": True,
+            "windows": placeholder,
+            "source": "unavailable",
+            "source_error": str(e),
+            "subscription_type": None,
+            "last_activity": last_activity,
+            "data_root_exists": activity_snap.data_root_exists,
+        }
+
+
 def _build_payload() -> dict:
     now = datetime.now(timezone.utc)
     return {
@@ -268,6 +320,7 @@ def _build_payload() -> dict:
         "codex": _codex_section(),
         "cursor": _cursor_section(),
         "copilot": _copilot_section(),
+        "gemini": _gemini_section(),
         "server_time": now.isoformat(),
     }
 
@@ -319,4 +372,7 @@ async def healthz() -> dict:
         "copilot_data_root_exists": _copilot_activity.data_dir.exists(),
         "copilot_enabled": _copilot is not None,
         "copilot_credentials_present": _copilot.credentials_present() if _copilot else False,
+        "gemini_data_root_exists": _gemini_activity.data_dir.exists(),
+        "gemini_enabled": _gemini is not None,
+        "gemini_credentials_present": _gemini.credentials_path.exists() if _gemini else False,
     }

@@ -1,9 +1,9 @@
 # codervis
 
 A local web dashboard that shows your **Claude Code**, **Codex CLI**,
-**Cursor**, and **GitHub Copilot** quota usage live, in a 2×2 grid — displayed
-as geiger-style meters that shift from **lime → amber → coral** as you approach
-the limit.
+**Cursor**, **GitHub Copilot**, and **Gemini Code Assist / Antigravity** quota
+usage live, displayed as geiger-style meters that shift from **lime → amber →
+coral** as you approach the limit.
 
 ## How it works
 
@@ -17,6 +17,7 @@ accepts. codervis reads each one and polls the matching undocumented endpoint:
 | Cursor | `…/Cursor/User/globalStorage/state.vscdb` → SQLite key `cursorAuth/accessToken` (cookie) | `GET cursor.com/api/usage` + `/api/dashboard/*` | monthly premium-requests + usage-based spend |
 | GitHub Copilot (file mode) | `…/github-copilot/apps.json` → `oauth_token` (`token` header) | `GET api.github.com/copilot_internal/user` | monthly premium-requests + chat |
 | GitHub Copilot (PAT mode) | fine-grained PAT (`Plan` read) you create, via `COPILOT_GITHUB_TOKEN` | `GET api.github.com/users/{user}/settings/billing/premium_request/usage` | monthly premium-requests + usage-based spend |
+| Gemini Code Assist / Antigravity | `~/.gemini/antigravity-cli/antigravity-oauth-token` → `token.access_token` (bearer) | `POST daily-cloudcode-pa.googleapis.com/v1internal:*` | daily request quota by model family |
 
 Claude and Codex return per-window utilization as a percentage plus a reset
 timestamp. **Cursor** is different: it meters on a monthly billing cycle, its
@@ -34,8 +35,12 @@ fine-grained Personal Access Token (`COPILOT_GITHUB_TOKEN`, `Plan` read) and
 codervis uses GitHub's *documented* billing REST API instead, showing
 premium-request count vs. allowance plus usage-based dollar spend. See
 [Copilot setup](#github-copilot-setup).
+**Gemini** uses the OAuth token written by Antigravity CLI (`agy`) and calls
+the internal Cloud Code Assist quota endpoints. Those endpoints expose daily
+request buckets by model, so codervis displays the most constrained Pro and
+Flash request buckets rather than the Gemini web app's 5-hour / weekly limits.
 
-codervis runs as a small FastAPI container, **bind-mounts all four data
+codervis runs as a small FastAPI container, **bind-mounts all five data
 directories read-only**, reads the tokens, and polls the endpoints. The browser
 gets live updates via Server-Sent Events; CSS animates the meter fill and the
 colour shifts as the percentage rises.
@@ -47,12 +52,16 @@ reads timestamp/metadata to show each agent's local last activity.
 
 ### Caveats
 
-- Every endpoint is **internal**, not part of Anthropic's, OpenAI's, or
-  Cursor's public API. They can change or disappear at any time.
+- Most live endpoints are **internal**, not part of the vendors' public APIs.
+  They can change or disappear at any time. Copilot PAT mode is the exception:
+  it uses GitHub's documented billing API.
 - The dashboard reads the credential each tool maintains. It does
   **not** implement OAuth flows of its own — you need Claude Code, Codex
-  CLI, Cursor, and/or the GitHub Copilot plugin installed and signed in on
-  the host machine.
+  CLI, Cursor, the GitHub Copilot plugin, and/or Antigravity CLI installed and
+  signed in on the host machine.
+- **Gemini does not report web-app 5-hour or weekly limits.** The Antigravity
+  path currently exposes daily Gemini Code Assist request buckets by model
+  family. codervis shows the most constrained Pro and Flash buckets.
 - **Cursor on the free plan** has no fixed premium-request cap and no
   usage-based billing, so both Cursor gauges honestly show "—" (the raw
   request count still appears under the meter). The gauges populate on
@@ -81,10 +90,11 @@ reads timestamp/metadata to show each agent's local last activity.
   CLI runs and refreshes `~/.claude/.credentials.json`. Open Claude Code from a
   terminal on the host, then wait for the next dashboard refresh.
 - Read-only bind mounts: codervis never writes to `~/.claude`, `~/.codex`,
-  or your Cursor directory. The Cursor `state.vscdb` is opened read-only
-  without `immutable` so SQLite sees live WAL-mode writes. If Docker's
-  read-only mount prevents SQLite from opening the WAL sidecars directly,
-  codervis reads from a short-lived temp snapshot inside the container.
+  your Cursor directory, Copilot config, or `~/.gemini`. The Cursor
+  `state.vscdb` is opened read-only without `immutable` so SQLite sees live
+  WAL-mode writes. If Docker's read-only mount prevents SQLite from opening
+  the WAL sidecars directly, codervis reads from a short-lived temp snapshot
+  inside the container.
 - If you don't use an agent, set its `*_ENABLED=false`. That panel remains
   visible but dimmed with a `disabled` source state.
 
@@ -98,6 +108,8 @@ reads timestamp/metadata to show each agent's local last activity.
   - GitHub Copilot — either a client that writes `…/github-copilot/apps.json`
     (Neovim/JetBrains/Eclipse/language-server), or a fine-grained PAT for VS
     Code users (see [Copilot setup](#github-copilot-setup))
+  - Antigravity CLI / Gemini Code Assist (so
+    `~/.gemini/antigravity-cli/antigravity-oauth-token` exists)
 
 ## Setup
 
@@ -113,9 +125,11 @@ Edit `.env`:
 | `CODEX_HOME` | Host path to your Codex CLI data dir. Same Windows caveat. | `~/.codex` |
 | `CURSOR_HOME` | Host path to your Cursor data dir (the one containing `User/globalStorage/state.vscdb`). OS-specific — see below. | `~/.config/Cursor` |
 | `COPILOT_HOME` | Host path to your GitHub Copilot config dir (the one containing `apps.json`/`hosts.json`). OS-specific — see below. | `~/.config/github-copilot` |
+| `GEMINI_HOME` | Host path to your Gemini / Antigravity config dir (the one containing `antigravity-cli/antigravity-oauth-token`). | `~/.gemini` |
 | `CODEX_ENABLED` | Set to `false` to render the Codex panel dimmed with a `disabled` state. | `true` |
 | `CURSOR_ENABLED` | Set to `false` to render the Cursor panel dimmed with a `disabled` state. | `true` |
 | `COPILOT_ENABLED` | Set to `false` to render the Copilot panel dimmed with a `disabled` state. | `true` |
+| `GEMINI_ENABLED` | Set to `false` to render the Gemini panel dimmed with a `disabled` state. | `true` |
 | `COPILOT_GITHUB_TOKEN` | Fine-grained PAT (`Plan` read) → switches Copilot to PAT mode (billing REST API). Needed for VS-Code-only setups. See [Copilot setup](#github-copilot-setup). | _(unset → file mode)_ |
 | `COPILOT_GITHUB_USER` | GitHub login for PAT mode. Auto-detected from the token if unset. | _(auto)_ |
 | `COPILOT_PLAN` | Plan whose monthly premium-request cap is the gauge denominator in PAT mode: `free`/`pro`/`pro+`/`business`/`enterprise`. | `pro` |
@@ -128,10 +142,12 @@ Edit `.env`:
 | `CODEX_ACTIVITY_CACHE_TTL_SECONDS` | Server-side cache for Codex local activity metadata scans. | `5` |
 | `CURSOR_ACTIVITY_CACHE_TTL_SECONDS` | Server-side cache for Cursor local activity metadata scans. | `5` |
 | `COPILOT_ACTIVITY_CACHE_TTL_SECONDS` | Server-side cache for Copilot local activity metadata scans. | `5` |
+| `GEMINI_ACTIVITY_CACHE_TTL_SECONDS` | Server-side cache for Gemini / Antigravity local activity metadata scans. | `5` |
 | `CLAUDE_AI_HOST` | Override the Claude host (rarely needed). | `https://claude.ai` |
 | `CHATGPT_HOST` | Override the Codex host (rarely needed). | `https://chatgpt.com` |
 | `CURSOR_HOST` | Override the Cursor host (rarely needed). | `https://cursor.com` |
 | `GITHUB_API_HOST` | Override the Copilot/GitHub API host (rarely needed). | `https://api.github.com` |
+| `GEMINI_CODE_ASSIST_HOST` | Override the Gemini Code Assist host (rarely needed). | `https://daily-cloudcode-pa.googleapis.com` |
 
 Cursor's data directory is **not** a dotfile in your home directory — it's
 the editor's application-data folder:
@@ -182,6 +198,22 @@ nothing for Copilot licences billed through an organization or enterprise** —
 that endpoint only covers individually-billed plans, so the panel will read
 `unavailable` for managed seats.
 
+### Gemini / Antigravity setup
+
+Gemini support uses the token Antigravity CLI writes after `agy` has
+authenticated:
+
+```text
+~/.gemini/antigravity-cli/antigravity-oauth-token
+```
+
+Point `GEMINI_HOME` at the directory containing that `antigravity-cli`
+subdirectory. The live client first calls `v1internal:loadCodeAssist` in
+health-check mode to discover the companion project, then calls
+`v1internal:retrieveUserQuota` for that project. The response currently
+contains daily request buckets by model; codervis groups those into Pro and
+Flash gauges and uses the most constrained bucket in each group.
+
 ### Windows note
 
 Docker Compose on Windows does **not** expand `~` in bind-mount paths, so
@@ -193,6 +225,7 @@ CLAUDE_HOME=C:/Users/yourname/.claude
 CODEX_HOME=C:/Users/yourname/.codex
 CURSOR_HOME=C:/Users/yourname/AppData/Roaming/Cursor
 COPILOT_HOME=C:/Users/yourname/.config/github-copilot
+GEMINI_HOME=C:/Users/yourname/.gemini
 ```
 
 (Forward slashes work fine inside `.env`.)
@@ -224,7 +257,7 @@ Install development dependencies, then run the suite:
 ```bash
 python -m pip install -r requirements-dev.txt
 python -m pytest
-python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/cursor_quota.py app/cursor_activity.py app/copilot_quota.py app/copilot_activity.py
+python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/cursor_quota.py app/cursor_activity.py app/copilot_quota.py app/copilot_activity.py app/gemini_quota.py app/gemini_activity.py
 ```
 
 The tests use temporary directories, an in-memory SQLite DB for the Cursor
@@ -233,7 +266,8 @@ files and do not call the live quota endpoints.
 
 ## What you see
 
-A 2×2 grid, one panel per agent (Claude Code, Codex, Cursor, GitHub Copilot):
+One panel per agent (Claude Code, Codex, Cursor, GitHub Copilot, Gemini Code
+Assist):
 
 - **Claude & Codex** each show a **5-Hour Window** gauge (percentage of your
   5-hour rolling quota used) and a **Weekly Window** gauge (same, on a 7-day
@@ -245,12 +279,16 @@ A 2×2 grid, one panel per agent (Claude Code, Codex, Cursor, GitHub Copilot):
 - **Copilot** shows a **Premium Requests (month)** gauge (e.g. `34 / 300 reqs`)
   and a **Chat (month)** gauge, both on your monthly cycle. On Pro/Pro+ the
   chat gauge reads "unlimited", so its percentage shows "—".
+- **Gemini** shows **Pro Requests (day)** and **Flash Requests (day)** gauges
+  from Code Assist request buckets, each with a daily reset timestamp when the
+  upstream response includes one.
 - Per-panel header shows the source state (`live` / `unavailable` /
   `disabled`); footer shows the plan and most recent local activity. Claude
   activity comes from project transcript timestamps; Codex from local
   history/session file metadata; Cursor from `state.vscdb` and
   History/workspace directory metadata; Copilot from `apps.json`/`hosts.json`
-  config metadata (a coarser signal — Copilot keeps no local transcript).
+  config metadata (a coarser signal — Copilot keeps no local transcript);
+  Gemini from safe Antigravity/Gemini file metadata.
   The footer shows an error string when a live quota call fails.
 
 The fill colour is computed from the percentage: lime under 50%, sliding
@@ -271,6 +309,8 @@ through amber, to coral as you approach 100%. Panels in `unavailable` or
 │   ├── cursor_activity.py # Cursor local activity metadata reader
 │   ├── copilot_quota.py # Copilot live client → api.github.com/copilot_internal/user
 │   ├── copilot_activity.py # Copilot local activity metadata reader
+│   ├── gemini_quota.py # Gemini live client → daily-cloudcode-pa.googleapis.com
+│   ├── gemini_activity.py # Gemini / Antigravity local activity metadata reader
 │   ├── templates/
 │   │   └── index.html
 │   └── static/
@@ -297,10 +337,12 @@ through amber, to coral as you approach 100%. Panels in `unavailable` or
 | Cursor gauges show `—` but chip is `live` | Expected on the free plan (no request cap, usage-based billing off). The raw request count still shows under the meter. |
 | Copilot chip shows `unavailable` | `apps.json`/`hosts.json` missing or unreadable inside the container (token may be in the OS keychain instead of a file), you're signed out of Copilot, the licence is org/enterprise-managed, the token expired, or GitHub changed the endpoint. Hover the chip for the error. |
 | Copilot Chat gauge shows `—` but chip is `live` | Expected on Pro/Pro+ — chat is unlimited. Only the premium-requests gauge fills. |
+| Gemini chip shows `unavailable` | `~/.gemini/antigravity-cli/antigravity-oauth-token` missing or unreadable inside the container, Antigravity is signed out, the token expired, or Google changed the Cloud Code Assist endpoint. Hover the chip for the error. |
 | `claude_credentials_present: false` from `/healthz` | Bind mount didn't pick up the credentials file. Verify `CLAUDE_HOME` points at your real `.claude` directory. |
 | `codex_credentials_present: false` from `/healthz` | Same, for `CODEX_HOME` / `~/.codex/auth.json`. |
 | `cursor_credentials_present: false` from `/healthz` | Bind mount missed `state.vscdb`. Verify `CURSOR_HOME` points at your Cursor data dir (it must contain `User/globalStorage/state.vscdb`). |
 | `copilot_credentials_present: false` from `/healthz` | Bind mount missed `apps.json`/`hosts.json`. Verify `COPILOT_HOME` points at your Copilot config dir. |
+| `gemini_credentials_present: false` from `/healthz` | Bind mount missed `antigravity-cli/antigravity-oauth-token`. Verify `GEMINI_HOME` points at your `.gemini` directory. |
 | Browser shows `reconnecting…` | The container restarted; SSE will reconnect on its own. |
 
 `/healthz` returns JSON with `data_root_exists` and `credentials_present`
@@ -309,10 +351,12 @@ flags that are useful for quick diagnosis.
 ## Security notes
 
 - `~/.claude/.credentials.json`, `~/.codex/auth.json`, Cursor's
-  `state.vscdb`, and Copilot's `apps.json`/`hosts.json` all contain
-  long-lived session tokens. All four bind mounts are read-only, and
+  `state.vscdb`, Copilot's `apps.json`/`hosts.json`, and Gemini's
+  `antigravity-oauth-token` all contain long-lived session tokens. All five
+  bind mounts are read-only, and
   `state.vscdb` is opened in SQLite read-only mode. codervis reads only the
-  `oauth_token` from the Copilot config and never logs it. The
+  `oauth_token` from the Copilot config and only `token.access_token` from the
+  Gemini token JSON, and never logs either. The
   default Compose port mapping publishes the dashboard on all host interfaces,
   so machines on your LAN can reach it at `http://<your-host-ip>:8765`.
   **Don't expose this port to the public internet** — anyone who can

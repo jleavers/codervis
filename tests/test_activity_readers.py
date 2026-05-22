@@ -7,6 +7,7 @@ from app.claude_activity import ClaudeActivityReader
 from app.codex_activity import CodexActivityReader
 from app.copilot_activity import CopilotActivityReader
 from app.cursor_activity import CursorActivityReader
+from app.gemini_activity import GeminiActivityReader
 
 
 def _set_mtime(path, dt: datetime) -> None:
@@ -97,11 +98,34 @@ def test_copilot_activity_uses_config_metadata_and_ignores_token(tmp_path) -> No
     assert snapshot.last_activity == versions_time
 
 
+def test_gemini_activity_uses_metadata_and_ignores_token_contents(tmp_path) -> None:
+    root = tmp_path / "gemini"
+    token_dir = root / "antigravity-cli"
+    brain_dir = root / "antigravity" / "brain" / "session"
+    token_dir.mkdir(parents=True)
+    brain_dir.mkdir(parents=True)
+    token = token_dir / "antigravity-oauth-token"
+    brain = brain_dir / "task.md"
+    token.write_text('{"token":{"access_token":"secret not parsed"}}', encoding="utf-8")
+    brain.write_text("activity content is not parsed", encoding="utf-8")
+
+    token_time = datetime(2026, 5, 20, 8, 0, tzinfo=timezone.utc)
+    brain_time = datetime(2026, 5, 20, 11, 0, tzinfo=timezone.utc)
+    _set_mtime(token, token_time)
+    _set_mtime(brain, brain_time)
+
+    snapshot = GeminiActivityReader(root, cache_ttl_seconds=0).snapshot()
+
+    assert snapshot.data_root_exists is True
+    assert snapshot.last_activity == brain_time
+
+
 def test_activity_readers_report_missing_roots(tmp_path) -> None:
     claude_snapshot = ClaudeActivityReader(tmp_path / "missing-claude").snapshot()
     codex_snapshot = CodexActivityReader(tmp_path / "missing-codex").snapshot()
     cursor_snapshot = CursorActivityReader(tmp_path / "missing-cursor").snapshot()
     copilot_snapshot = CopilotActivityReader(tmp_path / "missing-copilot").snapshot()
+    gemini_snapshot = GeminiActivityReader(tmp_path / "missing-gemini").snapshot()
 
     assert claude_snapshot.data_root_exists is False
     assert claude_snapshot.last_activity is None
@@ -111,3 +135,5 @@ def test_activity_readers_report_missing_roots(tmp_path) -> None:
     assert cursor_snapshot.last_activity is None
     assert copilot_snapshot.data_root_exists is False
     assert copilot_snapshot.last_activity is None
+    assert gemini_snapshot.data_root_exists is False
+    assert gemini_snapshot.last_activity is None

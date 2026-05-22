@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app import codex_quota, copilot_quota, cursor_quota, quota
+from app import codex_quota, copilot_quota, cursor_quota, gemini_quota, quota
 
 
 def _fake_jwt(sub: str) -> str:
@@ -642,6 +642,170 @@ def test_copilot_fetch_raises_when_no_credential_file(tmp_path, monkeypatch) -> 
     client = copilot_quota.CopilotLiveQuotaClient(tmp_path, cache_ttl_seconds=0)
 
     with pytest.raises(copilot_quota.CopilotLiveQuotaError, match="no Copilot credential"):
+        client.get()
+
+
+def test_gemini_window_uses_remaining_fraction_as_percent_used() -> None:
+    buckets = [
+        {
+            "modelId": "gemini-2.5-pro",
+            "tokenType": "REQUESTS",
+            "remainingFraction": 0.25,
+            "resetTime": "2026-05-23T09:42:54Z",
+        },
+        {
+            "modelId": "gemini-3.1-pro-preview",
+            "tokenType": "REQUESTS",
+            "remainingFraction": 0.5,
+            "resetTime": "2026-05-23T09:42:54Z",
+        },
+    ]
+
+    window = gemini_quota._bucket_window(
+        "pro",
+        "Pro Requests (day)",
+        buckets,
+        lambda model: "pro" in model,
+    )
+
+    assert window.percent == 75.0
+    assert window.detail == "gemini-2.5-pro: 25% left"
+    assert window.resets_at == datetime(2026, 5, 23, 9, 42, 54, tzinfo=timezone.utc)
+
+
+def test_gemini_window_skips_malformed_matching_bucket() -> None:
+    buckets = [
+        {
+            "modelId": "gemini-3.1-pro-preview",
+            "tokenType": "REQUESTS",
+            "remainingFraction": "unknown",
+        },
+        {
+            "modelId": "gemini-2.5-pro",
+            "tokenType": "REQUESTS",
+            "remainingFraction": 0.4,
+        },
+    ]
+
+    window = gemini_quota._bucket_window(
+        "pro",
+        "Pro Requests (day)",
+        buckets,
+        lambda model: "pro" in model,
+    )
+
+    assert window.percent == 60.0
+    assert window.detail == "gemini-2.5-pro: 40% left"
+
+
+def test_gemini_fetch_builds_code_assist_requests(tmp_path, monkeypatch) -> None:
+    token_dir = tmp_path / "antigravity-cli"
+    token_dir.mkdir()
+    (token_dir / "antigravity-oauth-token").write_text(
+        json.dumps(
+            {
+                "auth_method": "consumer",
+                "token": {
+                    "access_token": "agy_access",
+                    "refresh_token": "refresh",
+                    "token_type": "Bearer",
+                    "expiry": "2026-05-22T11:36:59+01:00",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    seen: list[tuple[str, dict, dict]] = []
+
+    class FakeResponse:
+        status = 200
+
+        def __init__(self, body: dict) -> None:
+            self._body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(self._body).encode("utf-8")
+
+    def fake_urlopen(req, timeout):
+        body = json.loads(req.data.decode("utf-8"))
+        headers = {k.lower(): v for k, v in req.header_items()}
+        seen.append((req.full_url, headers, body))
+        if req.full_url.endswith(":loadCodeAssist"):
+            return FakeResponse(
+                {
+                    "cloudaicompanionProject": {"id": "project-1"},
+                    "currentTier": {"name": "Gemini Code Assist"},
+                    "paidTier": {"name": "Gemini Code Assist in Google One AI Pro"},
+                }
+            )
+        return FakeResponse(
+            {
+                "buckets": [
+                    {
+                        "modelId": "gemini-2.5-pro",
+                        "tokenType": "REQUESTS",
+                        "remainingFraction": 0.25,
+                        "resetTime": "2026-05-23T09:42:54Z",
+                    },
+                    {
+                        "modelId": "gemini-2.5-flash",
+                        "tokenType": "REQUESTS",
+                        "remainingFraction": 0.8,
+                        "resetTime": "2026-05-23T09:42:54Z",
+                    },
+                ]
+            }
+        )
+
+    monkeypatch.setattr(gemini_quota.urllib.request, "urlopen", fake_urlopen)
+    client = gemini_quota.GeminiLiveQuotaClient(
+        tmp_path,
+        host="https://example.test",
+        cache_ttl_seconds=0,
+    )
+
+    snap = client.get()
+
+    assert seen[0][0] == "https://example.test/v1internal:loadCodeAssist"
+    assert seen[0][1]["authorization"] == "Bearer agy_access"
+    assert seen[0][2]["mode"] == "HEALTH_CHECK"
+    assert seen[1][0] == "https://example.test/v1internal:retrieveUserQuota"
+    assert seen[1][2] == {"project": "project-1"}
+    assert snap.plan_type == "Gemini Code Assist in Google One AI Pro"
+    assert snap.pro.percent == 75.0
+    assert snap.flash.percent == pytest.approx(20.0)
+    assert snap.flash.detail == "gemini-2.5-flash: 80% left"
+
+
+def test_gemini_fetch_raises_when_no_token_file(tmp_path, monkeypatch) -> None:
+    def fail(*args, **kwargs):
+        raise AssertionError("network must not be called without a token file")
+
+    monkeypatch.setattr(gemini_quota.urllib.request, "urlopen", fail)
+    client = gemini_quota.GeminiLiveQuotaClient(tmp_path, cache_ttl_seconds=0)
+
+    with pytest.raises(gemini_quota.GeminiLiveQuotaError, match="cannot read token file"):
+        client.get()
+
+
+def test_gemini_read_token_rejects_non_object_json(tmp_path, monkeypatch) -> None:
+    token_dir = tmp_path / "antigravity-cli"
+    token_dir.mkdir()
+    (token_dir / "antigravity-oauth-token").write_text("[]", encoding="utf-8")
+
+    def fail(*args, **kwargs):
+        raise AssertionError("network must not be called with malformed token file")
+
+    monkeypatch.setattr(gemini_quota.urllib.request, "urlopen", fail)
+    client = gemini_quota.GeminiLiveQuotaClient(tmp_path, cache_ttl_seconds=0)
+
+    with pytest.raises(gemini_quota.GeminiLiveQuotaError, match="not a JSON object"):
         client.get()
 
 

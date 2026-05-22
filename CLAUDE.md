@@ -5,18 +5,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 A local FastAPI dashboard that displays **Claude Code**, **Codex CLI**,
-**Cursor**, and **GitHub Copilot** quota utilization as colour-shifting meters
-in a 2×2 grid. Runs as a single Docker container, bind-mounts the host's
-`~/.claude`, `~/.codex`, Cursor, and `github-copilot` data directories
-read-only, and authenticates upstream using each agent's own stored credential.
+**Cursor**, **GitHub Copilot**, and **Gemini Code Assist / Antigravity** quota
+utilization as colour-shifting meters. Runs as a single Docker container,
+bind-mounts the host's `~/.claude`, `~/.codex`, Cursor, `github-copilot`, and
+`.gemini` data directories read-only, and authenticates upstream using each
+agent's own stored credential.
 
 User-facing setup, env vars, and troubleshooting live in `README.md`.
 
 ## Architecture
 
-The JSON payload is keyed by provider — `claude`, `codex`, `cursor`, and
-`copilot` — assembled in `app/main.py:_build_payload()` from four independent
-sections.
+The JSON payload is keyed by provider — `claude`, `codex`, `cursor`,
+`copilot`, and `gemini` — assembled in `app/main.py:_build_payload()` from
+five independent sections.
 
 Each section exposes a `windows` list (rather than fixed `five_hour` /
 `seven_day` keys) so providers can report differently-shaped quota windows.
@@ -168,6 +169,37 @@ REST API for keychain-only setups (e.g. VS Code).
 - If `COPILOT_ENABLED` is falsy, `_copilot` is `None` and the section
   returns `source: "disabled"`.
 
+### Gemini (`app/main.py:_gemini_section()`)
+
+Live-only by design, using Antigravity CLI's OAuth token. It reports daily
+Code Assist request buckets by model family, **not** the Gemini web app's
+5-hour or weekly limits.
+
+- **`app/gemini_quota.py`** — `GeminiLiveQuotaClient` reads
+  `$GEMINI_DATA_DIR/antigravity-cli/antigravity-oauth-token` on every call
+  (or `GEMINI_TOKEN_FILE` if set), extracts `token.access_token`, and posts to
+  `https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist` with
+  `mode: "HEALTH_CHECK"` to discover the companion project. It then posts to
+  `v1internal:retrieveUserQuota` with that project.
+  - The quota response currently has `buckets[]` entries with `modelId`,
+    `tokenType: "REQUESTS"`, `remainingFraction`, and optional `resetTime`.
+  - Window `pro` ("Pro Requests (day)") selects the most constrained request
+    bucket whose model id contains `pro`.
+  - Window `flash` ("Flash Requests (day)") selects the most constrained
+    request bucket whose model id contains `flash`.
+  - `percent` is derived as `(1 - remainingFraction) * 100`; tolerate
+    `remainingFraction` in either `0..1` or `0..100` form.
+- On any failure (`GeminiLiveQuotaError`) the section returns
+  `source: "unavailable"` with `percent: null` for both gauges and the error
+  string surfaced to the UI. Do not infer Gemini usage from local files.
+- **`app/gemini_activity.py`** — `GeminiActivityReader` reports
+  `last_activity` from safe file metadata only: the token file mtime,
+  `config/.migrated`, and files under `antigravity/brain`,
+  `antigravity/annotations`, and `config/projects`. It never reads token
+  contents or transcript/database contents.
+- If `GEMINI_ENABLED` is falsy, `_gemini` is `None` and the section returns
+  `source: "disabled"`.
+
 The frontend (`app/static/app.js`) shows each provider's source state
 as a chip in its column header. The SSE loop is in `main.py:stream()`.
 The frontend keeps relative-time labels alive between server pushes
@@ -175,7 +207,8 @@ via a 1-second `setInterval`.
 
 ## Load-bearing assumption: every live endpoint is undocumented
 
-None of the endpoints are part of their vendor's public API.
+Except for Copilot PAT mode's GitHub billing call, these endpoints are not
+part of their vendor's public API.
 - `/api/oauth/usage` was discovered by running
   `claude --debug-file path -d api` and grepping for `fetchUtilization`.
 - `/backend-api/wham/usage` was reverse-engineered from the `codex-rs`
@@ -193,6 +226,10 @@ None of the endpoints are part of their vendor's public API.
   documented and stable, but needs a user-supplied fine-grained PAT, returns
   consumption without an allowance (hence the hardcoded `PLAN_ALLOWANCES`),
   and is empty for org/enterprise-managed seats.
+- `daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist` and
+  `v1internal:retrieveUserQuota` are internal Google Cloud Code Assist /
+  Antigravity endpoints. They currently expose daily request quota buckets by
+  model family; they do not expose Gemini web-app 5-hour or weekly limits.
 
 Any of these can change or disappear at any time. All panels are allowed
 to degrade visibly.
@@ -216,6 +253,10 @@ to degrade visibly.
   percent in PAT mode). File mode only ever reads the `oauth_token` from the
   credential JSON; PAT mode reads only the configured token. Keep both
   interchangeable behind `client_from_env()`.
+- in `gemini_quota.py`, preserve the "any failure →
+  `GeminiLiveQuotaError` → `unavailable` state" contract, keep bucket parsing
+  tolerant of alternate field names, and only ever read `token.access_token`
+  from the configured Antigravity token JSON.
 
 ## Commands
 
@@ -234,7 +275,7 @@ curl http://localhost:8765/api/usage
 # Automated tests
 python -m pip install -r requirements-dev.txt
 python -m pytest
-python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/cursor_quota.py app/cursor_activity.py app/copilot_quota.py app/copilot_activity.py
+python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/cursor_quota.py app/cursor_activity.py app/copilot_quota.py app/copilot_activity.py app/gemini_quota.py app/gemini_activity.py
 ```
 
 The pytest suite uses FastAPI's `TestClient`, direct parser imports, stubbed
@@ -245,8 +286,8 @@ files or call the live undocumented quota endpoints.
 
 - **Windows + Docker Compose**: `~` does not expand in bind-mount paths.
   The compose file's `${CLAUDE_HOME:-~/.claude}` default only works on
-  Linux/macOS; Windows users must set `CLAUDE_HOME`/`CODEX_HOME` explicitly
-  in `.env` (forward slashes are fine: `C:/Users/name/.claude`).
+  Linux/macOS; Windows users must set the `*_HOME` paths explicitly in `.env`
+  (forward slashes are fine: `C:/Users/name/.claude`).
 - **Cursor data dir is OS-specific** and is *not* a dotfile in `~`:
   `${APPDATA}/Cursor` (Windows), `~/Library/Application Support/Cursor`
   (macOS), `~/.config/Cursor` (Linux). The compose default is the Linux
@@ -258,10 +299,17 @@ files or call the live undocumented quota endpoints.
   token dir); some clients use `${LOCALAPPDATA}/github-copilot` on Windows.
   Windows users must set `COPILOT_HOME` explicitly. The whole dir is mounted
   at `/data/copilot`; the client reads only `apps.json` / `hosts.json`.
+- **Gemini data dir defaults to `~/.gemini`**. Antigravity CLI writes the
+  token under `antigravity-cli/antigravity-oauth-token`; Windows users should
+  set `GEMINI_HOME=C:/Users/name/.gemini` explicitly. The whole dir is mounted
+  at `/data/gemini`; the quota client reads only that token JSON and the
+  activity reader stats known metadata paths.
 - The credentials files are bind-mounted read-only at
   `/data/claude/.credentials.json`, `/data/codex/auth.json`, (Cursor)
   `/data/cursor/User/globalStorage/state.vscdb`, and (Copilot)
-  `/data/copilot/apps.json` inside the container. Each
+  `/data/copilot/apps.json`, and (Gemini)
+  `/data/gemini/antigravity-cli/antigravity-oauth-token` inside the container.
+  Each
   CLI refreshes its access token on the host; the dashboard re-reads the
   files on each upstream call so it rides along on those refresh cadences.
   There is no token-refresh logic in this repo. `state.vscdb` can be large
@@ -276,5 +324,7 @@ files or call the live undocumented quota endpoints.
   then 45° → 5° to 100%. The server-rendered initial paint and the
   SSE-driven updates both go through this function, so keep them in
   sync if you change the curve.
-- Percentage values are floats 0–100 from the upstream API. Never
-  multiply by 100 in either live path.
+- Percentage values exposed to the frontend are floats 0–100. Claude/Codex
+  live APIs already report that scale; Gemini reports remaining fractions, so
+  convert exactly once in `gemini_quota.py`. Never multiply already-normalized
+  utilization values by 100.

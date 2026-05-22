@@ -11,6 +11,7 @@ from app.claude_activity import ClaudeActivitySnapshot
 from app.codex_activity import CodexActivitySnapshot
 from app.copilot_activity import CopilotActivitySnapshot
 from app.cursor_activity import CursorActivitySnapshot
+from app.gemini_activity import GeminiActivitySnapshot
 
 
 class ActivityStub:
@@ -77,6 +78,20 @@ def _stub_copilot(monkeypatch, *, snapshot=None, error=None, data_root_exists=Tr
         monkeypatch.setattr(main, "_copilot", QuotaClientStub(snapshot, error))
 
 
+def _stub_gemini(monkeypatch, *, snapshot=None, error=None, data_root_exists=True):
+    monkeypatch.setattr(
+        main,
+        "_gemini_activity",
+        ActivityStub(
+            GeminiActivitySnapshot(last_activity=None, data_root_exists=data_root_exists)
+        ),
+    )
+    if snapshot is None and error is None:
+        monkeypatch.setattr(main, "_gemini", None)
+    else:
+        monkeypatch.setattr(main, "_gemini", QuotaClientStub(snapshot, error))
+
+
 def test_api_usage_returns_live_payload_without_scaling(monkeypatch) -> None:
     reset = datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc)
     activity = datetime(2026, 5, 20, 9, 30, tzinfo=timezone.utc)
@@ -136,6 +151,18 @@ def test_api_usage_returns_live_payload_without_scaling(monkeypatch) -> None:
             plan_type="individual",
         ),
     )
+    _stub_gemini(
+        monkeypatch,
+        snapshot=SimpleNamespace(
+            pro=_named_window(
+                "pro", "Pro Requests (day)", 5.0, reset, "gemini-3.1-pro-preview: 95% left"
+            ),
+            flash=_named_window(
+                "flash", "Flash Requests (day)", 15.0, reset, "gemini-3-flash-preview: 85% left"
+            ),
+            plan_type="Gemini Code Assist in Google One AI Pro",
+        ),
+    )
 
     response = TestClient(main.app).get("/api/usage")
 
@@ -166,6 +193,13 @@ def test_api_usage_returns_live_payload_without_scaling(monkeypatch) -> None:
     assert _win(data["copilot"], "secondary")["percent"] is None
     assert _win(data["copilot"], "secondary")["detail"] == "unlimited"
     assert data["copilot"]["subscription_type"] == "individual"
+    assert data["gemini"]["source"] == "live"
+    assert data["gemini"]["enabled"] is True
+    assert _win(data["gemini"], "pro")["percent"] == 5.0
+    assert _win(data["gemini"], "pro")["detail"] == "gemini-3.1-pro-preview: 95% left"
+    assert _win(data["gemini"], "flash")["percent"] == 15.0
+    assert _win(data["gemini"], "flash")["detail"] == "gemini-3-flash-preview: 85% left"
+    assert data["gemini"]["subscription_type"] == "Gemini Code Assist in Google One AI Pro"
 
 
 def test_payload_contains_unavailable_states_on_live_errors(monkeypatch) -> None:
@@ -191,6 +225,7 @@ def test_payload_contains_unavailable_states_on_live_errors(monkeypatch) -> None
     )
     _stub_cursor(monkeypatch, error=main.CursorLiveQuotaError("cursor upstream changed"))
     _stub_copilot(monkeypatch, error=main.CopilotLiveQuotaError("copilot upstream changed"))
+    _stub_gemini(monkeypatch, error=main.GeminiLiveQuotaError("gemini upstream changed"))
 
     data = main._build_payload()
 
@@ -210,6 +245,10 @@ def test_payload_contains_unavailable_states_on_live_errors(monkeypatch) -> None
     assert data["copilot"]["source_error"] == "copilot upstream changed"
     assert _win(data["copilot"], "premium")["percent"] is None
     assert _win(data["copilot"], "secondary")["percent"] is None
+    assert data["gemini"]["source"] == "unavailable"
+    assert data["gemini"]["source_error"] == "gemini upstream changed"
+    assert _win(data["gemini"], "pro")["percent"] is None
+    assert _win(data["gemini"], "flash")["percent"] is None
 
 
 def test_codex_section_reports_disabled_when_client_is_absent(monkeypatch) -> None:
@@ -250,4 +289,16 @@ def test_copilot_section_reports_disabled_when_client_is_absent(monkeypatch) -> 
     assert data["source"] == "disabled"
     assert _win(data, "premium")["percent"] is None
     assert _win(data, "secondary")["percent"] is None
+    assert data["data_root_exists"] is False
+
+
+def test_gemini_section_reports_disabled_when_client_is_absent(monkeypatch) -> None:
+    _stub_gemini(monkeypatch, data_root_exists=False)
+
+    data = main._gemini_section()
+
+    assert data["enabled"] is False
+    assert data["source"] == "disabled"
+    assert _win(data, "pro")["percent"] is None
+    assert _win(data, "flash")["percent"] is None
     assert data["data_root_exists"] is False
