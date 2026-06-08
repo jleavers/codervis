@@ -34,6 +34,31 @@ def _write_state_db(data_dir, token: str | None, membership: str | None = None) 
     con.close()
 
 
+def _write_gemini_token(data_dir, payload: dict | None = None) -> None:
+    token_dir = data_dir / "antigravity-cli"
+    token_dir.mkdir()
+    (token_dir / "antigravity-oauth-token").write_text(
+        json.dumps(payload or {"token": {"access_token": "agy_access"}}),
+        encoding="utf-8",
+    )
+
+
+class _JSONResponse:
+    status = 200
+
+    def __init__(self, body: dict) -> None:
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return json.dumps(self._body).encode("utf-8")
+
+
 def test_claude_window_uses_live_utilization_without_scaling() -> None:
     window = quota._window(
         "five_hour",
@@ -770,66 +795,47 @@ def test_gemini_summary_parser_accepts_snake_case_and_skips_malformed_bucket() -
     assert flash.detail == "Flash Requests: 40% left"
 
 
-def test_gemini_fetch_builds_code_assist_requests(tmp_path, monkeypatch) -> None:
-    token_dir = tmp_path / "antigravity-cli"
-    token_dir.mkdir()
-    (token_dir / "antigravity-oauth-token").write_text(
-        json.dumps(
-            {
-                "auth_method": "consumer",
-                "token": {
-                    "access_token": "agy_access",
-                    "refresh_token": "refresh",
-                    "token_type": "Bearer",
-                    "expiry": "2026-05-22T11:36:59+01:00",
-                },
-            }
-        ),
-        encoding="utf-8",
+def test_gemini_fetch_prefers_quota_summary(tmp_path, monkeypatch) -> None:
+    _write_gemini_token(
+        tmp_path,
+        {
+            "auth_method": "consumer",
+            "token": {
+                "access_token": "agy_access",
+                "refresh_token": "refresh",
+                "token_type": "Bearer",
+                "expiry": "2026-05-22T11:36:59+01:00",
+            },
+        },
     )
     seen: list[tuple[str, dict, dict]] = []
-
-    class FakeResponse:
-        status = 200
-
-        def __init__(self, body: dict) -> None:
-            self._body = body
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc) -> None:
-            return None
-
-        def read(self) -> bytes:
-            return json.dumps(self._body).encode("utf-8")
 
     def fake_urlopen(req, timeout):
         body = json.loads(req.data.decode("utf-8"))
         headers = {k.lower(): v for k, v in req.header_items()}
         seen.append((req.full_url, headers, body))
         if req.full_url.endswith(":loadCodeAssist"):
-            return FakeResponse(
+            return _JSONResponse(
                 {
                     "cloudaicompanionProject": {"id": "project-1"},
                     "currentTier": {"name": "Gemini Code Assist"},
                     "paidTier": {"name": "Gemini Code Assist in Google One AI Pro"},
                 }
             )
-        return FakeResponse(
+        return _JSONResponse(
             {
                 "buckets": [
                     {
-                        "modelId": "gemini-2.5-pro",
-                        "tokenType": "REQUESTS",
+                        "bucketId": "pro-requests",
+                        "displayName": "Gemini 3.1 Pro Requests",
                         "remainingFraction": 0.25,
-                        "resetTime": "2026-05-23T09:42:54Z",
+                        "resetTime": "2026-06-09T00:00:00Z",
                     },
                     {
-                        "modelId": "gemini-2.5-flash",
-                        "tokenType": "REQUESTS",
+                        "bucketId": "flash-requests",
+                        "displayName": "Gemini 3 Flash Requests",
                         "remainingFraction": 0.8,
-                        "resetTime": "2026-05-23T09:42:54Z",
+                        "resetTime": "2026-06-09T00:00:00Z",
                     },
                 ]
             }
@@ -847,12 +853,104 @@ def test_gemini_fetch_builds_code_assist_requests(tmp_path, monkeypatch) -> None
     assert seen[0][0] == "https://example.test/v1internal:loadCodeAssist"
     assert seen[0][1]["authorization"] == "Bearer agy_access"
     assert seen[0][2]["mode"] == "HEALTH_CHECK"
-    assert seen[1][0] == "https://example.test/v1internal:retrieveUserQuota"
+    assert seen[1][0] == "https://example.test/v1internal:retrieveUserQuotaSummary"
     assert seen[1][2] == {"project": "project-1"}
+    assert snap.raw["retrieveUserQuotaSummary"]
     assert snap.plan_type == "Gemini Code Assist in Google One AI Pro"
     assert snap.pro.percent == 75.0
     assert snap.flash.percent == pytest.approx(20.0)
-    assert snap.flash.detail == "gemini-2.5-flash: 80% left"
+    assert snap.flash.detail == "Gemini 3 Flash Requests: 80% left"
+
+
+@pytest.mark.parametrize("status", [404, 405])
+def test_gemini_fetch_falls_back_when_summary_method_is_unavailable(
+    tmp_path, monkeypatch, status
+) -> None:
+    _write_gemini_token(tmp_path)
+    seen: list[str] = []
+
+    def fake_urlopen(req, timeout):
+        seen.append(req.full_url)
+        if req.full_url.endswith(":loadCodeAssist"):
+            return _JSONResponse({"cloudaicompanionProject": {"id": "project-1"}})
+        if req.full_url.endswith(":retrieveUserQuotaSummary"):
+            raise urllib.error.HTTPError(req.full_url, status, "missing", {}, None)
+        return _JSONResponse(
+            {
+                "buckets": [
+                    {
+                        "modelId": "gemini-2.5-pro",
+                        "tokenType": "REQUESTS",
+                        "remainingFraction": 0.5,
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr(gemini_quota.urllib.request, "urlopen", fake_urlopen)
+    snap = gemini_quota.GeminiLiveQuotaClient(
+        tmp_path, host="https://example.test", cache_ttl_seconds=0
+    ).get()
+
+    assert seen[-2:] == [
+        "https://example.test/v1internal:retrieveUserQuotaSummary",
+        "https://example.test/v1internal:retrieveUserQuota",
+    ]
+    assert snap.pro.percent == 50.0
+    assert "retrieveUserQuota" in snap.raw
+    assert "retrieveUserQuotaSummary" not in snap.raw
+
+
+def test_gemini_fetch_does_not_fall_back_after_summary_unauthorized(
+    tmp_path, monkeypatch
+) -> None:
+    _write_gemini_token(tmp_path)
+    seen: list[str] = []
+
+    def fake_urlopen(req, timeout):
+        seen.append(req.full_url)
+        if req.full_url.endswith(":loadCodeAssist"):
+            return _JSONResponse(
+                {"cloudaicompanionProject": {"id": "project-1"}}
+            )
+        raise urllib.error.HTTPError(req.full_url, 401, "unauthorized", {}, None)
+
+    monkeypatch.setattr(gemini_quota.urllib.request, "urlopen", fake_urlopen)
+    client = gemini_quota.GeminiLiveQuotaClient(
+        tmp_path, host="https://example.test", cache_ttl_seconds=0
+    )
+
+    with pytest.raises(gemini_quota.GeminiLiveQuotaError, match="HTTP 401"):
+        client.get()
+
+    assert seen[-1].endswith(":retrieveUserQuotaSummary")
+    assert not any(url.endswith(":retrieveUserQuota") for url in seen)
+
+
+def test_gemini_fetch_does_not_fall_back_after_summary_network_error(
+    tmp_path, monkeypatch
+) -> None:
+    _write_gemini_token(tmp_path)
+    seen: list[str] = []
+
+    def fake_urlopen(req, timeout):
+        seen.append(req.full_url)
+        if req.full_url.endswith(":loadCodeAssist"):
+            return _JSONResponse(
+                {"cloudaicompanionProject": {"id": "project-1"}}
+            )
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr(gemini_quota.urllib.request, "urlopen", fake_urlopen)
+    client = gemini_quota.GeminiLiveQuotaClient(
+        tmp_path, host="https://example.test", cache_ttl_seconds=0
+    )
+
+    with pytest.raises(gemini_quota.GeminiLiveQuotaError, match="network error"):
+        client.get()
+
+    assert seen[-1].endswith(":retrieveUserQuotaSummary")
+    assert not any(url.endswith(":retrieveUserQuota") for url in seen)
 
 
 def test_gemini_fetch_raises_when_no_token_file(tmp_path, monkeypatch) -> None:
