@@ -221,7 +221,7 @@ def _request_buckets(payload: dict) -> list[dict]:
         token_type = _str_field(bucket, "tokenType", "token_type")
         if token_type and token_type.upper() != "REQUESTS":
             continue
-        if _model_id(bucket):
+        if _bucket_identity(bucket):
             request_buckets.append(bucket)
     if not request_buckets:
         raise GeminiLiveQuotaError("no request quota buckets in response")
@@ -236,8 +236,9 @@ def _bucket_window(
 ) -> GeminiLiveWindow:
     candidates: list[tuple[float, int, str, GeminiLiveWindow]] = []
     for bucket in buckets:
-        model = _model_id(bucket)
-        if not model or not predicate(model):
+        identity = _bucket_identity(bucket)
+        detail_name = _bucket_detail_name(bucket)
+        if not identity or not detail_name or not predicate(identity):
             continue
         try:
             fraction = _remaining_fraction(bucket)
@@ -248,9 +249,9 @@ def _bucket_window(
             label=label,
             percent=(1.0 - fraction) * 100.0,
             resets_at=_reset_time(bucket),
-            detail=_detail(model, fraction, bucket),
+            detail=_detail(detail_name, fraction, bucket),
         )
-        candidates.append((fraction, -_model_priority(model), model, window))
+        candidates.append((fraction, -_model_priority(identity), identity, window))
 
     if not candidates:
         return GeminiLiveWindow(name=name, label=label, percent=None, resets_at=None, detail="unavailable")
@@ -259,6 +260,24 @@ def _bucket_window(
 
 def _model_id(bucket: dict) -> str | None:
     return _str_field(bucket, "modelId", "model_id", "model")
+
+
+def _bucket_identity(bucket: dict) -> str | None:
+    values = [
+        _model_id(bucket),
+        _str_field(bucket, "displayName", "display_name"),
+        _str_field(bucket, "bucketId", "bucket_id"),
+    ]
+    present = [value for value in values if value]
+    return " ".join(present) if present else None
+
+
+def _bucket_detail_name(bucket: dict) -> str | None:
+    return (
+        _model_id(bucket)
+        or _str_field(bucket, "displayName", "display_name")
+        or _str_field(bucket, "bucketId", "bucket_id")
+    )
 
 
 def _str_field(bucket: dict, *keys: str) -> str | None:

@@ -698,6 +698,78 @@ def test_gemini_window_skips_malformed_matching_bucket() -> None:
     assert window.detail == "gemini-2.5-pro: 40% left"
 
 
+def test_gemini_summary_window_uses_display_name_and_bucket_id() -> None:
+    buckets = gemini_quota._request_buckets(
+        {
+            "buckets": [
+                {
+                    "bucketId": "pro-requests",
+                    "displayName": "Gemini 3.1 Pro Requests",
+                    "remainingFraction": 0.35,
+                    "remainingAmount": 70,
+                    "resetTime": "2026-06-09T00:00:00Z",
+                },
+                {
+                    "bucketId": "flash-requests",
+                    "displayName": "Gemini 3 Flash Requests",
+                    "remainingFraction": 0.8,
+                    "resetTime": "2026-06-09T00:00:00Z",
+                },
+            ]
+        }
+    )
+
+    pro = gemini_quota._bucket_window(
+        "pro",
+        "Pro Requests (day)",
+        buckets,
+        lambda identity: "pro" in identity.lower(),
+    )
+    flash = gemini_quota._bucket_window(
+        "flash",
+        "Flash Requests (day)",
+        buckets,
+        lambda identity: "flash" in identity.lower(),
+    )
+
+    assert pro.percent == 65.0
+    assert pro.detail == "Gemini 3.1 Pro Requests: 70 remaining"
+    assert pro.resets_at == datetime(2026, 6, 9, tzinfo=timezone.utc)
+    assert flash.percent == pytest.approx(20.0)
+    assert flash.detail == "Gemini 3 Flash Requests: 80% left"
+
+
+def test_gemini_summary_parser_accepts_snake_case_and_skips_malformed_bucket() -> None:
+    buckets = gemini_quota._request_buckets(
+        {
+            "buckets": [
+                {
+                    "bucket_id": "pro-invalid",
+                    "display_name": "Pro Requests",
+                    "remaining_fraction": "unknown",
+                },
+                {
+                    "bucket_id": "flash-valid",
+                    "display_name": "Flash Requests",
+                    "remaining_fraction": 0.4,
+                    "reset_time": "2026-06-09T00:00:00Z",
+                },
+                {"display_name": "Unrelated bucket", "remaining_fraction": 0.2},
+            ]
+        }
+    )
+
+    flash = gemini_quota._bucket_window(
+        "flash",
+        "Flash Requests (day)",
+        buckets,
+        lambda identity: "flash" in identity.lower(),
+    )
+
+    assert flash.percent == 60.0
+    assert flash.detail == "Flash Requests: 40% left"
+
+
 def test_gemini_fetch_builds_code_assist_requests(tmp_path, monkeypatch) -> None:
     token_dir = tmp_path / "antigravity-cli"
     token_dir.mkdir()
