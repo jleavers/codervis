@@ -171,22 +171,30 @@ REST API for keychain-only setups (e.g. VS Code).
 
 ### Gemini (`app/main.py:_gemini_section()`)
 
-Live-only by design, using Antigravity CLI's OAuth token. It reports daily
-Code Assist request buckets by model family, **not** the Gemini web app's
-5-hour or weekly limits.
+Live-only by design, using Antigravity CLI (`agy`) 1.0.6's file-backed OAuth
+token. It reports daily Code Assist request buckets by model family, **not**
+the Gemini web app's 5-hour or weekly limits. Keyring-only credentials are
+intentionally unsupported; do not expose host D-Bus or Secret Service sockets
+to the container.
 
 - **`app/gemini_quota.py`** — `GeminiLiveQuotaClient` reads
   `$GEMINI_DATA_DIR/antigravity-cli/antigravity-oauth-token` on every call
   (or `GEMINI_TOKEN_FILE` if set), extracts `token.access_token`, and posts to
   `https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist` with
   `mode: "HEALTH_CHECK"` to discover the companion project. It then posts to
-  `v1internal:retrieveUserQuota` with that project.
-  - The quota response currently has `buckets[]` entries with `modelId`,
-    `tokenType: "REQUESTS"`, `remainingFraction`, and optional `resetTime`.
+  `v1internal:retrieveUserQuotaSummary` with that project. Only HTTP 404 or 405
+  from the summary method triggers a fallback to
+  `v1internal:retrieveUserQuota`; auth, network, parse, and other HTTP failures
+  remain unavailable states.
+  - Summary buckets may identify a quota with `displayName` / `display_name`
+    and `bucketId` / `bucket_id`. Legacy buckets use `modelId` / `model_id`
+    and may include `tokenType: "REQUESTS"`.
+  - Both forms expose `remainingFraction` and optional `remainingAmount` and
+    `resetTime`; snake_case alternates are accepted.
   - Window `pro` ("Pro Requests (day)") selects the most constrained request
-    bucket whose model id contains `pro`.
+    bucket whose combined model/display/bucket identity contains `pro`.
   - Window `flash` ("Flash Requests (day)") selects the most constrained
-    request bucket whose model id contains `flash`.
+    request bucket whose combined identity contains `flash`.
   - `percent` is derived as `(1 - remainingFraction) * 100`; tolerate
     `remainingFraction` in either `0..1` or `0..100` form.
 - On any failure (`GeminiLiveQuotaError`) the section returns
@@ -226,10 +234,12 @@ part of their vendor's public API.
   documented and stable, but needs a user-supplied fine-grained PAT, returns
   consumption without an allowance (hence the hardcoded `PLAN_ALLOWANCES`),
   and is empty for org/enterprise-managed seats.
-- `daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist` and
-  `v1internal:retrieveUserQuota` are internal Google Cloud Code Assist /
-  Antigravity endpoints. They currently expose daily request quota buckets by
-  model family; they do not expose Gemini web-app 5-hour or weekly limits.
+- `daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist`,
+  `v1internal:retrieveUserQuotaSummary`, and the legacy
+  `v1internal:retrieveUserQuota` fallback are internal Google Cloud Code
+  Assist / Antigravity endpoints. They currently expose daily request quota
+  buckets by model family; they do not expose Gemini web-app 5-hour or weekly
+  limits.
 
 Any of these can change or disappear at any time. All panels are allowed
 to degrade visibly.
@@ -255,8 +265,11 @@ to degrade visibly.
   interchangeable behind `client_from_env()`.
 - in `gemini_quota.py`, preserve the "any failure →
   `GeminiLiveQuotaError` → `unavailable` state" contract, keep bucket parsing
-  tolerant of alternate field names, and only ever read `token.access_token`
-  from the configured Antigravity token JSON.
+  tolerant of alternate field names, fall back from
+  `retrieveUserQuotaSummary` only on HTTP 404/405, and only ever read
+  `token.access_token` from the configured Antigravity token JSON. Do not add
+  host keyring or D-Bus access; `gemini_credentials_present` means only that
+  the configured token file exists.
 
 ## Commands
 
@@ -299,11 +312,13 @@ files or call the live undocumented quota endpoints.
   token dir); some clients use `${LOCALAPPDATA}/github-copilot` on Windows.
   Windows users must set `COPILOT_HOME` explicitly. The whole dir is mounted
   at `/data/copilot`; the client reads only `apps.json` / `hosts.json`.
-- **Gemini data dir defaults to `~/.gemini`**. Antigravity CLI writes the
-  token under `antigravity-cli/antigravity-oauth-token`; Windows users should
-  set `GEMINI_HOME=C:/Users/name/.gemini` explicitly. The whole dir is mounted
-  at `/data/gemini`; the quota client reads only that token JSON and the
-  activity reader stats known metadata paths.
+- **Gemini data dir defaults to `~/.gemini`**. `agy` 1.0.6's supported
+  file-backed credential lives under
+  `antigravity-cli/antigravity-oauth-token`; Linux keyring-only credentials
+  are outside codervis's security boundary. Windows users should set
+  `GEMINI_HOME=C:/Users/name/.gemini` explicitly. The whole dir is mounted at
+  `/data/gemini`; the quota client reads only that token JSON and the activity
+  reader stats known metadata paths.
 - The credentials files are bind-mounted read-only at
   `/data/claude/.credentials.json`, `/data/codex/auth.json`, (Cursor)
   `/data/cursor/User/globalStorage/state.vscdb`, and (Copilot)

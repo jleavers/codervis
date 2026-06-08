@@ -17,7 +17,7 @@ accepts. codervis reads each one and polls the matching undocumented endpoint:
 | Cursor | `…/Cursor/User/globalStorage/state.vscdb` → SQLite key `cursorAuth/accessToken` (cookie) | `GET cursor.com/api/usage` + `/api/dashboard/*` | monthly premium-requests + usage-based spend |
 | GitHub Copilot (file mode) | `…/github-copilot/apps.json` → `oauth_token` (`token` header) | `GET api.github.com/copilot_internal/user` | monthly premium-requests + chat |
 | GitHub Copilot (PAT mode) | fine-grained PAT (`Plan` read) you create, via `COPILOT_GITHUB_TOKEN` | `GET api.github.com/users/{user}/settings/billing/premium_request/usage` | monthly premium-requests + usage-based spend |
-| Gemini Code Assist / Antigravity | `~/.gemini/antigravity-cli/antigravity-oauth-token` → `token.access_token` (bearer) | `POST daily-cloudcode-pa.googleapis.com/v1internal:*` | daily request quota by model family |
+| Gemini Code Assist / Antigravity | `~/.gemini/antigravity-cli/antigravity-oauth-token` → `token.access_token` (bearer) | `POST …/v1internal:retrieveUserQuotaSummary` (legacy fallback) | daily request quota by model family |
 
 Claude and Codex return per-window utilization as a percentage plus a reset
 timestamp. **Cursor** is different: it meters on a monthly billing cycle, its
@@ -35,10 +35,13 @@ fine-grained Personal Access Token (`COPILOT_GITHUB_TOKEN`, `Plan` read) and
 codervis uses GitHub's *documented* billing REST API instead, showing
 premium-request count vs. allowance plus usage-based dollar spend. See
 [Copilot setup](#github-copilot-setup).
-**Gemini** uses the OAuth token written by Antigravity CLI (`agy`) and calls
-the internal Cloud Code Assist quota endpoints. Those endpoints expose daily
-request buckets by model, so codervis displays the most constrained Pro and
-Flash request buckets rather than the Gemini web app's 5-hour / weekly limits.
+**Gemini** supports Antigravity CLI (`agy`) 1.0.6's file-backed OAuth token and
+calls the internal Cloud Code Assist quota endpoints. It prefers
+`retrieveUserQuotaSummary`, matching `agy` 1.0.6, with a narrow fallback to the
+legacy endpoint when the summary method is unavailable. These endpoints expose
+daily request buckets by model, so codervis displays the most constrained Pro
+and Flash request buckets rather than the Gemini web app's 5-hour / weekly
+limits.
 
 codervis runs as a small FastAPI container, **bind-mounts all five data
 directories read-only**, reads the tokens, and polls the endpoints. The browser
@@ -62,6 +65,9 @@ reads timestamp/metadata to show each agent's local last activity.
 - **Gemini does not report web-app 5-hour or weekly limits.** The Antigravity
   path currently exposes daily Gemini Code Assist request buckets by model
   family. codervis shows the most constrained Pro and Flash buckets.
+- **Gemini requires `agy`'s file-backed credential.** Linux keyring-only
+  sessions are intentionally unsupported: codervis does not expose the host
+  D-Bus Secret Service to Docker.
 - **Cursor on the free plan** has no fixed premium-request cap and no
   usage-based billing, so both Cursor gauges honestly show "—" (the raw
   request count still appears under the meter). The gauges populate on
@@ -108,7 +114,7 @@ reads timestamp/metadata to show each agent's local last activity.
   - GitHub Copilot — either a client that writes `…/github-copilot/apps.json`
     (Neovim/JetBrains/Eclipse/language-server), or a fine-grained PAT for VS
     Code users (see [Copilot setup](#github-copilot-setup))
-  - Antigravity CLI / Gemini Code Assist (so
+  - Antigravity CLI (`agy`) 1.0.6 / Gemini Code Assist (so
     `~/.gemini/antigravity-cli/antigravity-oauth-token` exists)
 
 ## Setup
@@ -200,19 +206,32 @@ that endpoint only covers individually-billed plans, so the panel will read
 
 ### Gemini / Antigravity setup
 
-Gemini support uses the token Antigravity CLI writes after `agy` has
-authenticated:
+Gemini support is compatible with Antigravity CLI (`agy`) 1.0.6 when `agy`
+uses its file-backed credential fallback:
 
 ```text
 ~/.gemini/antigravity-cli/antigravity-oauth-token
 ```
 
+Run `agy` to authenticate, then verify the file exists before starting
+codervis:
+
+```bash
+test -f ~/.gemini/antigravity-cli/antigravity-oauth-token
+```
+
+On Linux, `agy` may store credentials only in the OS keyring. codervis
+intentionally does not expose the host D-Bus Secret Service to Docker, so a
+keyring-only session renders Gemini unavailable.
+
 Point `GEMINI_HOME` at the directory containing that `antigravity-cli`
 subdirectory. The live client first calls `v1internal:loadCodeAssist` in
 health-check mode to discover the companion project, then calls
-`v1internal:retrieveUserQuota` for that project. The response currently
-contains daily request buckets by model; codervis groups those into Pro and
-Flash gauges and uses the most constrained bucket in each group.
+`v1internal:retrieveUserQuotaSummary` for that project. It falls back to
+`v1internal:retrieveUserQuota` only if the summary method returns HTTP 404 or
+405. The response contains daily request buckets by model; codervis groups
+those into Pro and Flash gauges and uses the most constrained bucket in each
+group.
 
 ### Windows note
 
@@ -337,12 +356,12 @@ through amber, to coral as you approach 100%. Panels in `unavailable` or
 | Cursor gauges show `—` but chip is `live` | Expected on the free plan (no request cap, usage-based billing off). The raw request count still shows under the meter. |
 | Copilot chip shows `unavailable` | `apps.json`/`hosts.json` missing or unreadable inside the container (token may be in the OS keychain instead of a file), you're signed out of Copilot, the licence is org/enterprise-managed, the token expired, or GitHub changed the endpoint. Hover the chip for the error. |
 | Copilot Chat gauge shows `—` but chip is `live` | Expected on Pro/Pro+ — chat is unlimited. Only the premium-requests gauge fills. |
-| Gemini chip shows `unavailable` | `~/.gemini/antigravity-cli/antigravity-oauth-token` missing or unreadable inside the container, Antigravity is signed out, the token expired, or Google changed the Cloud Code Assist endpoint. Hover the chip for the error. |
+| Gemini chip shows `unavailable` | `~/.gemini/antigravity-cli/antigravity-oauth-token` is missing or unreadable inside the container (including an `agy` keyring-only session), Antigravity is signed out, the token expired, or Google changed the Cloud Code Assist endpoint. Hover the chip for the error. |
 | `claude_credentials_present: false` from `/healthz` | Bind mount didn't pick up the credentials file. Verify `CLAUDE_HOME` points at your real `.claude` directory. |
 | `codex_credentials_present: false` from `/healthz` | Same, for `CODEX_HOME` / `~/.codex/auth.json`. |
 | `cursor_credentials_present: false` from `/healthz` | Bind mount missed `state.vscdb`. Verify `CURSOR_HOME` points at your Cursor data dir (it must contain `User/globalStorage/state.vscdb`). |
 | `copilot_credentials_present: false` from `/healthz` | Bind mount missed `apps.json`/`hosts.json`. Verify `COPILOT_HOME` points at your Copilot config dir. |
-| `gemini_credentials_present: false` from `/healthz` | Bind mount missed `antigravity-cli/antigravity-oauth-token`. Verify `GEMINI_HOME` points at your `.gemini` directory. |
+| `gemini_credentials_present: false` from `/healthz` | The token file is absent. Verify `GEMINI_HOME` points at your `.gemini` directory and that `agy` created `antigravity-cli/antigravity-oauth-token`; keyring-only credentials are not visible to codervis. |
 | Browser shows `reconnecting…` | The container restarted; SSE will reconnect on its own. |
 
 `/healthz` returns JSON with `data_root_exists` and `credentials_present`
@@ -356,8 +375,9 @@ flags that are useful for quick diagnosis.
   bind mounts are read-only, and
   `state.vscdb` is opened in SQLite read-only mode. codervis reads only the
   `oauth_token` from the Copilot config and only `token.access_token` from the
-  Gemini token JSON, and never logs either. The
-  default Compose port mapping publishes the dashboard on all host interfaces,
+  Gemini token JSON, and never logs either. The container does not receive the
+  host D-Bus socket or Linux keyring access. The default Compose port mapping
+  publishes the dashboard on all host interfaces,
   so machines on your LAN can reach it at `http://<your-host-ip>:8765`.
   **Don't expose this port to the public internet** — anyone who can
   reach it can read your usage. If you need remote access, put it behind

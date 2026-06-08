@@ -13,6 +13,7 @@ from threading import Lock
 
 CODE_ASSIST_HOST = "https://daily-cloudcode-pa.googleapis.com"
 LOAD_CODE_ASSIST_METHOD = "loadCodeAssist"
+RETRIEVE_USER_QUOTA_SUMMARY_METHOD = "retrieveUserQuotaSummary"
 RETRIEVE_USER_QUOTA_METHOD = "retrieveUserQuota"
 
 
@@ -36,6 +37,12 @@ class GeminiLiveSnapshot:
 
 class GeminiLiveQuotaError(Exception):
     pass
+
+
+class _GeminiHTTPError(GeminiLiveQuotaError):
+    def __init__(self, code: int, reason: str) -> None:
+        self.code = code
+        super().__init__(f"HTTP {code}: {reason}")
 
 
 class GeminiLiveQuotaClient:
@@ -110,7 +117,7 @@ class GeminiLiveQuotaClient:
                     raise GeminiLiveQuotaError(f"unexpected status {resp.status}")
                 body = resp.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as e:
-            raise GeminiLiveQuotaError(f"HTTP {e.code}: {e.reason}") from e
+            raise _GeminiHTTPError(e.code, str(e.reason)) from e
         except urllib.error.URLError as e:
             raise GeminiLiveQuotaError(f"network error: {e.reason}") from e
 
@@ -121,6 +128,22 @@ class GeminiLiveQuotaClient:
         if not isinstance(data, dict):
             raise GeminiLiveQuotaError("response is not a JSON object")
         return data
+
+    def _fetch_quota(self, token: str, project: str) -> tuple[str, dict]:
+        payload = {"project": project}
+        try:
+            quota = self._post_json(
+                RETRIEVE_USER_QUOTA_SUMMARY_METHOD,
+                token,
+                payload,
+            )
+            return RETRIEVE_USER_QUOTA_SUMMARY_METHOD, quota
+        except _GeminiHTTPError as e:
+            if e.code not in {404, 405}:
+                raise
+
+        quota = self._post_json(RETRIEVE_USER_QUOTA_METHOD, token, payload)
+        return RETRIEVE_USER_QUOTA_METHOD, quota
 
     def _fetch(self) -> GeminiLiveSnapshot:
         token = self._read_token()
@@ -140,7 +163,7 @@ class GeminiLiveQuotaClient:
         if not project:
             raise GeminiLiveQuotaError("no cloudaicompanionProject in response")
 
-        quota = self._post_json(RETRIEVE_USER_QUOTA_METHOD, token, {"project": project})
+        quota_method, quota = self._fetch_quota(token, project)
         buckets = _request_buckets(quota)
         pro = _bucket_window(
             "pro",
@@ -162,7 +185,7 @@ class GeminiLiveQuotaClient:
             flash=flash,
             plan_type=_plan_type(load),
             fetched_at=datetime.now(timezone.utc),
-            raw={"loadCodeAssist": load, "retrieveUserQuota": quota},
+            raw={"loadCodeAssist": load, quota_method: quota},
         )
 
     def get(self) -> GeminiLiveSnapshot:
@@ -221,7 +244,7 @@ def _request_buckets(payload: dict) -> list[dict]:
         token_type = _str_field(bucket, "tokenType", "token_type")
         if token_type and token_type.upper() != "REQUESTS":
             continue
-        if _model_id(bucket):
+        if _bucket_identity(bucket):
             request_buckets.append(bucket)
     if not request_buckets:
         raise GeminiLiveQuotaError("no request quota buckets in response")
@@ -236,8 +259,9 @@ def _bucket_window(
 ) -> GeminiLiveWindow:
     candidates: list[tuple[float, int, str, GeminiLiveWindow]] = []
     for bucket in buckets:
-        model = _model_id(bucket)
-        if not model or not predicate(model):
+        identity = _bucket_identity(bucket)
+        detail_name = _bucket_detail_name(bucket)
+        if not identity or not detail_name or not predicate(identity):
             continue
         try:
             fraction = _remaining_fraction(bucket)
@@ -248,9 +272,9 @@ def _bucket_window(
             label=label,
             percent=(1.0 - fraction) * 100.0,
             resets_at=_reset_time(bucket),
-            detail=_detail(model, fraction, bucket),
+            detail=_detail(detail_name, fraction, bucket),
         )
-        candidates.append((fraction, -_model_priority(model), model, window))
+        candidates.append((fraction, -_model_priority(identity), identity, window))
 
     if not candidates:
         return GeminiLiveWindow(name=name, label=label, percent=None, resets_at=None, detail="unavailable")
@@ -259,6 +283,24 @@ def _bucket_window(
 
 def _model_id(bucket: dict) -> str | None:
     return _str_field(bucket, "modelId", "model_id", "model")
+
+
+def _bucket_identity(bucket: dict) -> str | None:
+    values = [
+        _model_id(bucket),
+        _str_field(bucket, "displayName", "display_name"),
+        _str_field(bucket, "bucketId", "bucket_id"),
+    ]
+    present = [value for value in values if value]
+    return " ".join(present) if present else None
+
+
+def _bucket_detail_name(bucket: dict) -> str | None:
+    return (
+        _model_id(bucket)
+        or _str_field(bucket, "displayName", "display_name")
+        or _str_field(bucket, "bucketId", "bucket_id")
+    )
 
 
 def _str_field(bucket: dict, *keys: str) -> str | None:
