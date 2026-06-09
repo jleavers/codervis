@@ -1,6 +1,19 @@
 (function () {
   const status = document.getElementById("status");
   const statusText = status.querySelector(".status-text");
+  const WidgetState = window.CodervisWidgetState;
+  const PROVIDERS = WidgetState.PROVIDERS;
+  let latestPayload = window.__INITIAL_PAYLOAD__ || {};
+  let storage = null;
+  try {
+    storage = window.localStorage;
+  } catch (_error) {
+    storage = null;
+  }
+  let widgetSettings = WidgetState.loadSettings(
+    storage,
+    WidgetState.defaultsFromPayload(latestPayload)
+  );
 
   function setStatus(state, text) {
     status.dataset.state = state;
@@ -104,12 +117,14 @@
     if (!section) return;
     (section.windows || []).forEach((w) => applyGauge(key, w));
 
+    const enabled = widgetSettings[key];
+    const presentation = WidgetState.providerPresentation(section, enabled);
     const src = document.getElementById("source-" + key);
     if (src) {
-      src.textContent = section.source;
-      src.dataset.state = section.source;
-      if (section.source_error) {
-        src.title = section.source_error;
+      src.textContent = presentation.source;
+      src.dataset.state = presentation.source;
+      if (presentation.sourceError) {
+        src.title = presentation.sourceError;
       } else {
         src.removeAttribute("title");
       }
@@ -122,52 +137,44 @@
     if (lastActivity) lastActivity.dataset.iso = section.last_activity || "";
 
     const errEl = document.getElementById("error-" + key);
-    if (errEl) errEl.textContent = section.source_error || "";
+    if (errEl) errEl.textContent = presentation.sourceError || "";
 
     const provRoot = document.getElementById("provider-" + key);
-    if (provRoot) provRoot.dataset.source = section.source;
+    if (provRoot) {
+      provRoot.dataset.source = presentation.source;
+      provRoot.dataset.widgetEnabled = enabled ? "true" : "false";
+    }
+
+    const toggle = document.getElementById("toggle-" + key);
+    if (toggle) toggle.checked = enabled;
   }
 
-  const PROVIDERS = ["claude", "codex", "gemini", "cursor", "copilot"];
-
   function summariseStatus(payload) {
-    const present = PROVIDERS.filter((k) => payload[k]);
-
-    const broken = present.find((k) => payload[k].source === "unavailable");
-    if (broken) {
-      setStatus("stale", broken + ": unavailable · " + (payload[broken].source_error || ""));
-      return;
-    }
-
-    const allOk = present.every((k) =>
-      payload[k].source === "live" || payload[k].source === "disabled"
-    );
-    if (allOk) {
-      const off = present.filter((k) => payload[k].source === "disabled");
-      setStatus("ok", off.length ? "live · " + off.join(",") + " off" : "live");
-      return;
-    }
-    setStatus("error", "error");
+    const summary = WidgetState.summariseStatus(payload, widgetSettings);
+    setStatus(summary.state, summary.text);
   }
 
   function apply(payload) {
+    latestPayload = payload;
+    widgetSettings = WidgetState.mergeSettings(
+      widgetSettings,
+      WidgetState.defaultsFromPayload(payload)
+    );
+    WidgetState.saveSettings(storage, widgetSettings);
     PROVIDERS.forEach((key) => applyProvider(key, payload[key]));
-
     paintRelativeFields();
     summariseStatus(payload);
   }
 
-  // Apply initial server-rendered values.
-  document.querySelectorAll(".gauge").forEach((g) => {
-    if (g.dataset.hasValue === "0") return;
-    const pct = parseFloat(g.dataset.percent || "0");
-    const { hue, sat, lit } = colorFor(pct);
-    g.style.setProperty("--pct", pct);
-    g.style.setProperty("--hue", hue.toFixed(1));
-    g.style.setProperty("--sat", sat.toFixed(1) + "%");
-    g.style.setProperty("--lit", lit.toFixed(1) + "%");
+  document.querySelectorAll(".widget-toggle-input").forEach((toggle) => {
+    toggle.addEventListener("change", () => {
+      widgetSettings[toggle.dataset.provider] = toggle.checked;
+      WidgetState.saveSettings(storage, widgetSettings);
+      apply(latestPayload);
+    });
   });
-  paintRelativeFields();
+
+  apply(latestPayload);
 
   function connect() {
     setStatus("stale", "connecting…");

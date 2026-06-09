@@ -80,10 +80,16 @@ body {
 .provider-head {
   display: flex;
   justify-content: space-between;
-  align-items: baseline;
+  align-items: center;
   margin-bottom: 14px;
   padding-bottom: 10px;
   border-bottom: 1px dashed var(--rule);
+}
+
+.provider-source {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .provider-title {
@@ -109,6 +115,66 @@ body {
 .source-chip[data-state="unavailable"] { color: var(--coral); border-color: rgba(248,113,113,0.4); }
 .source-chip[data-state="disabled"] { color: var(--ink-faint); }
 
+.widget-toggle {
+  position: relative;
+  display: inline-flex;
+  cursor: pointer;
+}
+
+.widget-toggle-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.widget-toggle-track {
+  width: 30px;
+  height: 17px;
+  padding: 2px;
+  border: 1px solid var(--ink-faint);
+  border-radius: 999px;
+  background: var(--rule);
+  transition: border-color 180ms ease, background 180ms ease;
+}
+
+.widget-toggle-track::after {
+  content: "";
+  display: block;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+  transition: transform 180ms ease, background 180ms ease, box-shadow 180ms ease;
+}
+
+.widget-toggle-input:checked + .widget-toggle-track {
+  border-color: rgba(163,230,53,0.45);
+  background: rgba(163,230,53,0.12);
+}
+
+.widget-toggle-input:checked + .widget-toggle-track::after {
+  transform: translateX(13px);
+  background: var(--lime);
+  box-shadow: 0 0 8px rgba(163,230,53,0.55);
+}
+
+.widget-toggle-input:focus-visible + .widget-toggle-track {
+  outline: 2px solid var(--amber);
+  outline-offset: 3px;
+}
+
+.provider[data-widget-enabled="false"] {
+  background: rgba(255,255,255,0.008);
+  border-color: rgba(82,92,102,0.55);
+}
+
+.provider[data-widget-enabled="false"] .provider-title,
+.provider[data-widget-enabled="false"] .gauge,
+.provider[data-widget-enabled="false"] .provider-foot {
+  opacity: 0.45;
+}
+
 .provider-foot {
   display: flex;
   flex-direction: column;
@@ -126,8 +192,7 @@ body {
   word-break: break-word;
 }
 
-.provider[data-source="unavailable"] .gauge,
-.provider[data-source="disabled"] .gauge {
+.provider[data-source="unavailable"] .gauge {
   opacity: 0.45;
 }
 

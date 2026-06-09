@@ -29,11 +29,16 @@ class QuotaClientStub:
     def __init__(self, snapshot=None, error: Exception | None = None) -> None:
         self._snapshot = snapshot
         self._error = error
+        self.calls = 0
 
     def get(self):
+        self.calls += 1
         if self._error is not None:
             raise self._error
         return self._snapshot
+
+    def credentials_present(self) -> bool:
+        return self.credentials_path.exists()
 
 
 def _window(percent: float, resets_at: datetime | None = None):
@@ -169,6 +174,7 @@ def test_api_usage_returns_live_payload_without_scaling(monkeypatch) -> None:
     assert response.status_code == 200
     data = response.json()
     assert data["claude"]["source"] == "live"
+    assert data["claude"]["enabled"] is True
     assert _win(data["claude"], "five_hour")["percent"] == 12.35
     assert _win(data["claude"], "seven_day")["percent"] == 67.89
     assert _win(data["claude"], "five_hour")["resets_at"] == "2026-05-20T12:00:00+00:00"
@@ -251,54 +257,158 @@ def test_payload_contains_unavailable_states_on_live_errors(monkeypatch) -> None
     assert _win(data["gemini"], "flash")["percent"] is None
 
 
-def test_codex_section_reports_disabled_when_client_is_absent(monkeypatch) -> None:
+def test_provider_defaults_do_not_suppress_live_clients(monkeypatch) -> None:
+    monkeypatch.setattr(main, "CLAUDE_ENABLED", False)
+    monkeypatch.setattr(main, "CODEX_ENABLED", False)
+    monkeypatch.setattr(main, "CURSOR_ENABLED", False)
+    monkeypatch.setattr(main, "COPILOT_ENABLED", False)
+    monkeypatch.setattr(main, "GEMINI_ENABLED", False)
+
+    monkeypatch.setattr(
+        main,
+        "_claude_activity",
+        ActivityStub(ClaudeActivitySnapshot(last_activity=None, data_root_exists=True)),
+    )
     monkeypatch.setattr(
         main,
         "_codex_activity",
-        ActivityStub(CodexActivitySnapshot(last_activity=None, data_root_exists=False)),
+        ActivityStub(CodexActivitySnapshot(last_activity=None, data_root_exists=True)),
     )
-    monkeypatch.setattr(main, "_codex", None)
 
-    data = main._codex_section()
+    claude = QuotaClientStub(
+        SimpleNamespace(
+            five_hour=_window(10),
+            seven_day=_window(20),
+            subscription_type="max",
+        )
+    )
+    codex = QuotaClientStub(
+        SimpleNamespace(
+            five_hour=_window(30),
+            seven_day=_window(40),
+            plan_type="pro",
+        )
+    )
+    monkeypatch.setattr(main, "_live", claude)
+    monkeypatch.setattr(main, "_codex", codex)
 
-    assert data["enabled"] is False
-    assert data["source"] == "disabled"
-    assert _win(data, "five_hour")["percent"] is None
-    assert _win(data, "seven_day")["percent"] is None
-    assert data["data_root_exists"] is False
+    cursor = QuotaClientStub(
+        SimpleNamespace(
+            requests=_named_window("requests", "Premium Requests (month)", 50),
+            spend=_named_window("spend", "Usage-Based Spend (month)", 60),
+            plan_type="pro",
+        )
+    )
+    copilot = QuotaClientStub(
+        SimpleNamespace(
+            premium=_named_window("premium", "Premium Requests (month)", 70),
+            secondary=_named_window("secondary", "Chat (month)", None),
+            plan_type="individual",
+        )
+    )
+    gemini = QuotaClientStub(
+        SimpleNamespace(
+            pro=_named_window("pro", "Pro Requests (day)", 80),
+            flash=_named_window("flash", "Flash Requests (day)", 90),
+            plan_type="pro",
+        )
+    )
+    _stub_cursor(monkeypatch, snapshot=cursor._snapshot)
+    _stub_copilot(monkeypatch, snapshot=copilot._snapshot)
+    _stub_gemini(monkeypatch, snapshot=gemini._snapshot)
+    monkeypatch.setattr(main, "_cursor", cursor)
+    monkeypatch.setattr(main, "_copilot", copilot)
+    monkeypatch.setattr(main, "_gemini", gemini)
+
+    data = main._build_payload()
+
+    for key in ("claude", "codex", "cursor", "copilot", "gemini"):
+        assert data[key]["enabled"] is False
+        assert data[key]["source"] == "live"
+    assert [client.calls for client in (claude, codex, cursor, copilot, gemini)] == [
+        1,
+        1,
+        1,
+        1,
+        1,
+    ]
 
 
-def test_cursor_section_reports_disabled_when_client_is_absent(monkeypatch) -> None:
-    _stub_cursor(monkeypatch, data_root_exists=False)
+def test_health_reports_configured_widget_defaults(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(main, "CLAUDE_ENABLED", False)
+    monkeypatch.setattr(main, "CODEX_ENABLED", True)
+    monkeypatch.setattr(main, "CURSOR_ENABLED", False)
+    monkeypatch.setattr(main, "COPILOT_ENABLED", True)
+    monkeypatch.setattr(main, "GEMINI_ENABLED", False)
 
-    data = main._cursor_section()
+    activity = SimpleNamespace(data_dir=tmp_path)
+    monkeypatch.setattr(main, "_claude_activity", activity)
+    monkeypatch.setattr(main, "_codex_activity", activity)
+    monkeypatch.setattr(main, "_cursor_activity", activity)
+    monkeypatch.setattr(main, "_copilot_activity", activity)
+    monkeypatch.setattr(main, "_gemini_activity", activity)
 
-    assert data["enabled"] is False
-    assert data["source"] == "disabled"
-    assert _win(data, "requests")["percent"] is None
-    assert _win(data, "spend")["percent"] is None
-    assert data["data_root_exists"] is False
+    credential = tmp_path / "credential"
+    credential.touch()
+    clients = [QuotaClientStub() for _ in range(5)]
+    for client in clients:
+        client.credentials_path = credential
+    monkeypatch.setattr(main, "_live", clients[0])
+    monkeypatch.setattr(main, "_codex", clients[1])
+    monkeypatch.setattr(main, "_cursor", clients[2])
+    monkeypatch.setattr(main, "_copilot", clients[3])
+    monkeypatch.setattr(main, "_gemini", clients[4])
+
+    data = TestClient(main.app).get("/healthz").json()
+
+    assert data["claude_enabled"] is False
+    assert data["codex_enabled"] is True
+    assert data["cursor_enabled"] is False
+    assert data["copilot_enabled"] is True
+    assert data["gemini_enabled"] is False
 
 
-def test_copilot_section_reports_disabled_when_client_is_absent(monkeypatch) -> None:
-    _stub_copilot(monkeypatch, data_root_exists=False)
+def test_index_renders_accessible_widget_toggles(monkeypatch) -> None:
+    def section(enabled: bool) -> dict:
+        return {
+            "enabled": enabled,
+            "windows": [],
+            "source": "live",
+            "source_error": None,
+            "subscription_type": None,
+            "last_activity": None,
+            "data_root_exists": True,
+        }
 
-    data = main._copilot_section()
+    payload = {
+        "claude": section(True),
+        "codex": section(False),
+        "gemini": section(True),
+        "cursor": section(True),
+        "copilot": section(True),
+        "server_time": "2026-06-08T00:00:00+00:00",
+    }
+    monkeypatch.setattr(main, "_build_payload", lambda: payload)
 
-    assert data["enabled"] is False
-    assert data["source"] == "disabled"
-    assert _win(data, "premium")["percent"] is None
-    assert _win(data, "secondary")["percent"] is None
-    assert data["data_root_exists"] is False
+    response = TestClient(main.app).get("/")
 
-
-def test_gemini_section_reports_disabled_when_client_is_absent(monkeypatch) -> None:
-    _stub_gemini(monkeypatch, data_root_exists=False)
-
-    data = main._gemini_section()
-
-    assert data["enabled"] is False
-    assert data["source"] == "disabled"
-    assert _win(data, "pro")["percent"] is None
-    assert _win(data, "flash")["percent"] is None
-    assert data["data_root_exists"] is False
+    assert response.status_code == 200
+    html = response.text
+    assert html.count('class="widget-toggle-input"') == 5
+    for key, title in (
+        ("claude", "Claude Code"),
+        ("codex", "Codex"),
+        ("gemini", "Gemini Code Assist"),
+        ("cursor", "Cursor"),
+        ("copilot", "GitHub Copilot"),
+    ):
+        assert f'id="toggle-{key}"' in html
+        assert f'data-provider="{key}"' in html
+        assert f'aria-label="Enable {title} widget"' in html
+    codex_start = html.index('id="provider-codex"')
+    gemini_start = html.index('id="provider-gemini"')
+    codex_card = html[codex_start:gemini_start]
+    assert 'data-source="disabled"' in codex_card
+    assert 'data-widget-enabled="false"' in codex_card
+    assert html.index("/static/widget-state.js") < html.index("/static/app.js")
+    assert "window.__INITIAL_PAYLOAD__" in html

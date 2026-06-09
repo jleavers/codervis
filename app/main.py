@@ -48,6 +48,7 @@ def _enabled(name: str) -> bool:
     )
 
 
+CLAUDE_ENABLED = _enabled("CLAUDE_ENABLED")
 CODEX_ENABLED = _enabled("CODEX_ENABLED")
 CURSOR_ENABLED = _enabled("CURSOR_ENABLED")
 COPILOT_ENABLED = _enabled("COPILOT_ENABLED")
@@ -59,19 +60,13 @@ templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 _live: LiveQuotaClient = client_from_env()
 _claude_activity: ClaudeActivityReader = claude_activity_reader_from_env()
-_codex: CodexLiveQuotaClient | None = codex_client_from_env() if CODEX_ENABLED else None
+_codex: CodexLiveQuotaClient = codex_client_from_env()
 _codex_activity: CodexActivityReader = codex_activity_reader_from_env()
-_cursor: CursorLiveQuotaClient | None = (
-    cursor_client_from_env() if CURSOR_ENABLED else None
-)
+_cursor: CursorLiveQuotaClient = cursor_client_from_env()
 _cursor_activity: CursorActivityReader = cursor_activity_reader_from_env()
-_copilot: CopilotLiveQuotaClient | CopilotBillingQuotaClient | None = (
-    copilot_client_from_env() if COPILOT_ENABLED else None
-)
+_copilot: CopilotLiveQuotaClient | CopilotBillingQuotaClient = copilot_client_from_env()
 _copilot_activity: CopilotActivityReader = copilot_activity_reader_from_env()
-_gemini: GeminiLiveQuotaClient | None = (
-    gemini_client_from_env() if GEMINI_ENABLED else None
-)
+_gemini: GeminiLiveQuotaClient = gemini_client_from_env()
 _gemini_activity: GeminiActivityReader = gemini_activity_reader_from_env()
 
 
@@ -103,6 +98,7 @@ def _claude_section() -> dict:
     try:
         live = _live.get()
         return {
+            "enabled": CLAUDE_ENABLED,
             "windows": [
                 _window_dict(
                     "five_hour", "5-Hour Window", live.five_hour.percent, live.five_hour.resets_at
@@ -119,6 +115,7 @@ def _claude_section() -> dict:
         }
     except LiveQuotaError as e:
         return {
+            "enabled": CLAUDE_ENABLED,
             "windows": [
                 _window_dict("five_hour", "5-Hour Window", None, None),
                 _window_dict("seven_day", "Weekly Window", None, None),
@@ -136,24 +133,10 @@ def _codex_section() -> dict:
     last_activity = (
         activity_snap.last_activity.isoformat() if activity_snap.last_activity else None
     )
-    if _codex is None:
-        return {
-            "enabled": False,
-            "windows": [
-                _window_dict("five_hour", "5-Hour Window", None, None),
-                _window_dict("seven_day", "Weekly Window", None, None),
-            ],
-            "source": "disabled",
-            "source_error": None,
-            "subscription_type": None,
-            "last_activity": last_activity,
-            "data_root_exists": activity_snap.data_root_exists,
-        }
-
     try:
         snap = _codex.get()
         return {
-            "enabled": True,
+            "enabled": CODEX_ENABLED,
             "windows": [
                 _window_dict(
                     "five_hour", "5-Hour Window", snap.five_hour.percent, snap.five_hour.resets_at
@@ -170,7 +153,7 @@ def _codex_section() -> dict:
         }
     except CodexLiveQuotaError as e:
         return {
-            "enabled": True,
+            "enabled": CODEX_ENABLED,
             "windows": [
                 _window_dict("five_hour", "5-Hour Window", None, None),
                 _window_dict("seven_day", "Weekly Window", None, None),
@@ -192,21 +175,10 @@ def _cursor_section() -> dict:
         _window_dict("requests", "Premium Requests (month)", None, None),
         _window_dict("spend", "Usage-Based Spend (month)", None, None),
     ]
-    if _cursor is None:
-        return {
-            "enabled": False,
-            "windows": placeholder,
-            "source": "disabled",
-            "source_error": None,
-            "subscription_type": None,
-            "last_activity": last_activity,
-            "data_root_exists": activity_snap.data_root_exists,
-        }
-
     try:
         snap = _cursor.get()
         return {
-            "enabled": True,
+            "enabled": CURSOR_ENABLED,
             "windows": [_window_from(snap.requests), _window_from(snap.spend)],
             "source": "live",
             "source_error": None,
@@ -216,7 +188,7 @@ def _cursor_section() -> dict:
         }
     except CursorLiveQuotaError as e:
         return {
-            "enabled": True,
+            "enabled": CURSOR_ENABLED,
             "windows": placeholder,
             "source": "unavailable",
             "source_error": str(e),
@@ -236,21 +208,10 @@ def _copilot_section() -> dict:
         _window_dict("premium", "Premium Requests (month)", None, None),
         _window_dict("secondary", secondary_label, None, None),
     ]
-    if _copilot is None:
-        return {
-            "enabled": False,
-            "windows": placeholder,
-            "source": "disabled",
-            "source_error": None,
-            "subscription_type": None,
-            "last_activity": last_activity,
-            "data_root_exists": activity_snap.data_root_exists,
-        }
-
     try:
         snap = _copilot.get()
         return {
-            "enabled": True,
+            "enabled": COPILOT_ENABLED,
             "windows": [_window_from(snap.premium), _window_from(snap.secondary)],
             "source": "live",
             "source_error": None,
@@ -260,7 +221,7 @@ def _copilot_section() -> dict:
         }
     except CopilotLiveQuotaError as e:
         return {
-            "enabled": True,
+            "enabled": COPILOT_ENABLED,
             "windows": placeholder,
             "source": "unavailable",
             "source_error": str(e),
@@ -279,21 +240,10 @@ def _gemini_section() -> dict:
         _window_dict("pro", "Pro Requests (day)", None, None),
         _window_dict("flash", "Flash Requests (day)", None, None),
     ]
-    if _gemini is None:
-        return {
-            "enabled": False,
-            "windows": placeholder,
-            "source": "disabled",
-            "source_error": None,
-            "subscription_type": None,
-            "last_activity": last_activity,
-            "data_root_exists": activity_snap.data_root_exists,
-        }
-
     try:
         snap = _gemini.get()
         return {
-            "enabled": True,
+            "enabled": GEMINI_ENABLED,
             "windows": [_window_from(snap.pro), _window_from(snap.flash)],
             "source": "live",
             "source_error": None,
@@ -303,7 +253,7 @@ def _gemini_section() -> dict:
         }
     except GeminiLiveQuotaError as e:
         return {
-            "enabled": True,
+            "enabled": GEMINI_ENABLED,
             "windows": placeholder,
             "source": "unavailable",
             "source_error": str(e),
@@ -361,18 +311,19 @@ async def healthz() -> dict:
     return {
         "ok": True,
         "data_root_exists": _claude_activity.data_dir.exists(),
+        "claude_enabled": CLAUDE_ENABLED,
         "claude_credentials_present": _live.credentials_path.exists(),
         "claude_activity_data_root_exists": _claude_activity.data_dir.exists(),
         "codex_data_root_exists": _codex_activity.data_dir.exists(),
-        "codex_enabled": _codex is not None,
-        "codex_credentials_present": _codex.credentials_path.exists() if _codex else False,
+        "codex_enabled": CODEX_ENABLED,
+        "codex_credentials_present": _codex.credentials_path.exists(),
         "cursor_data_root_exists": _cursor_activity.data_dir.exists(),
-        "cursor_enabled": _cursor is not None,
-        "cursor_credentials_present": _cursor.credentials_path.exists() if _cursor else False,
+        "cursor_enabled": CURSOR_ENABLED,
+        "cursor_credentials_present": _cursor.credentials_path.exists(),
         "copilot_data_root_exists": _copilot_activity.data_dir.exists(),
-        "copilot_enabled": _copilot is not None,
-        "copilot_credentials_present": _copilot.credentials_present() if _copilot else False,
+        "copilot_enabled": COPILOT_ENABLED,
+        "copilot_credentials_present": _copilot.credentials_present(),
         "gemini_data_root_exists": _gemini_activity.data_dir.exists(),
-        "gemini_enabled": _gemini is not None,
-        "gemini_credentials_present": _gemini.credentials_path.exists() if _gemini else False,
+        "gemini_enabled": GEMINI_ENABLED,
+        "gemini_credentials_present": _gemini.credentials_path.exists(),
     }
