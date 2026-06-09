@@ -153,3 +153,16 @@ test("status reports all widgets off", () => {
     text: "live · all widgets off",
   });
 });
+
+test("status restores an unavailable provider when it is re-enabled", () => {
+  const payload = {
+    codex: { source: "unavailable", source_error: "expired" },
+  };
+  const settings = Object.fromEntries(PROVIDERS.map((key) => [key, false]));
+  settings.codex = true;
+
+  assert.deepEqual(summariseStatus(payload, settings), {
+    state: "stale",
+    text: "codex: unavailable · expired",
+  });
+});
