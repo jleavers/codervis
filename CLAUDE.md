@@ -70,8 +70,6 @@ Live-only by design.
   `session_index.jsonl`, and files under `sessions/` and
   `archived_sessions/`. It does not read `auth.json` or session contents,
   and it does not influence quota.
-- If `CODEX_ENABLED` is falsy, `_codex` is `None` and the section
-  returns `source: "disabled"` (panel still rendered but dimmed).
 
 ### Cursor (`app/main.py:_cursor_section()`)
 
@@ -106,8 +104,6 @@ a **cookie** (not a bearer token).
   `last_activity` from safe file metadata only: the mtime of
   `state.vscdb` and the `User/History` and `User/workspaceStorage`
   directories. It never reads `state.vscdb` contents or the stored token.
-- If `CURSOR_ENABLED` is falsy, `_cursor` is `None` and the section
-  returns `source: "disabled"`.
 
 ### Copilot (`app/main.py:_copilot_section()`)
 
@@ -166,8 +162,6 @@ REST API for keychain-only setups (e.g. VS Code).
   `hosts.json`, `versions.json`, and any files under `logs/`. Copilot keeps
   no per-session transcript here, so this is a coarser "recently used" signal
   than the other agents. It never reads the stored token.
-- If `COPILOT_ENABLED` is falsy, `_copilot` is `None` and the section
-  returns `source: "disabled"`.
 
 ### Gemini (`app/main.py:_gemini_section()`)
 
@@ -205,13 +199,19 @@ to the container.
   `config/.migrated`, and files under `antigravity/brain`,
   `antigravity/annotations`, and `config/projects`. It never reads token
   contents or transcript/database contents.
-- If `GEMINI_ENABLED` is falsy, `_gemini` is `None` and the section returns
-  `source: "disabled"`.
 
-The frontend (`app/static/app.js`) shows each provider's source state
-as a chip in its column header. The SSE loop is in `main.py:stream()`.
-The frontend keeps relative-time labels alive between server pushes
-via a 1-second `setInterval`.
+`CLAUDE_ENABLED`, `CODEX_ENABLED`, `CURSOR_ENABLED`, `COPILOT_ENABLED`, and
+`GEMINI_ENABLED` are first-visit browser defaults only. All live clients are
+constructed unconditionally. Browser-local choices live in versioned
+`localStorage`; disabling a card must not stop SSE updates or change provider
+error handling.
+
+`app/static/widget-state.js` is the pure state/presentation module for storage
+validation, effective source state, and global status. The frontend
+(`app/static/app.js`) remains the single gauge-colour and DOM-update path for
+both initial payloads and SSE messages. The SSE loop is in `main.py:stream()`;
+relative-time labels stay live between server pushes via a 1-second
+`setInterval`.
 
 ## Load-bearing assumption: every live endpoint is undocumented
 
@@ -336,9 +336,8 @@ files or call the live undocumented quota endpoints.
 
 - The colour ramp (lime → amber → coral) is computed in
   `app/static/app.js:colorFor()` as HSL — hue glides 90° → 45° at 60%,
-  then 45° → 5° to 100%. The server-rendered initial paint and the
-  SSE-driven updates both go through this function, so keep them in
-  sync if you change the curve.
+  then 45° → 5° to 100%. Initial payload and SSE-driven updates both go
+  through this function, so keep them in sync if you change the curve.
 - Percentage values exposed to the frontend are floats 0–100. Claude/Codex
   live APIs already report that scale; Gemini reports remaining fractions, so
   convert exactly once in `gemini_quota.py`. Never multiply already-normalized

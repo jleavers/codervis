@@ -10,6 +10,7 @@ services:
       CURSOR_DATA_DIR: /data/cursor
       COPILOT_DATA_DIR: /data/copilot
       GEMINI_DATA_DIR: /data/gemini
+      CLAUDE_ENABLED: "${CLAUDE_ENABLED:-true}"
       CODEX_ENABLED: "${CODEX_ENABLED:-true}"
       CURSOR_ENABLED: "${CURSOR_ENABLED:-true}"
       COPILOT_ENABLED: "${COPILOT_ENABLED:-true}"

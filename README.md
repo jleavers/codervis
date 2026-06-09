@@ -48,6 +48,11 @@ directories read-only**, reads the tokens, and polls the endpoints. The browser
 gets live updates via Server-Sent Events; CSS animates the meter fill and the
 colour shifts as the percentage rises.
 
+Each provider header has a browser-local toggle. Switching a widget off keeps
+its card visible but dimmed, labels it `disabled`, and removes it from the
+overall status summary. Choices are stored in browser `localStorage`, survive
+container restarts, and do not affect other browsers.
+
 If a live endpoint is unreachable for any reason (expired token, network
 down, or the vendor changes the API), that panel renders an "unavailable"
 state. codervis does not estimate quota usage from local transcripts; it only
@@ -85,8 +90,7 @@ reads timestamp/metadata to show each agent's local last activity.
 - **Copilot token location varies by client.** File mode reads
   `apps.json`/`hosts.json` under the Copilot config dir. **VS Code keeps the
   token in the OS keychain, not a file**, so VS-Code-only users see
-  `unavailable` in file mode — use [PAT mode](#github-copilot-setup) instead
-  (or set `COPILOT_ENABLED=false`).
+  `unavailable` in file mode — use [PAT mode](#github-copilot-setup) instead.
 - **PAT mode shows usage-based $ spend as its second gauge** (not chat), and
   needs the plan cap to draw the premium-request percentage — set
   `COPILOT_PLAN` (or `COPILOT_PREMIUM_ALLOWANCE`). The billing report has no
@@ -101,8 +105,10 @@ reads timestamp/metadata to show each agent's local last activity.
   WAL-mode writes. If Docker's read-only mount prevents SQLite from opening
   the WAL sidecars directly, codervis reads from a short-lived temp snapshot
   inside the container.
-- If you don't use an agent, set its `*_ENABLED=false`. That panel remains
-  visible but dimmed with a `disabled` source state.
+- The `*_ENABLED` variables only choose the initial toggle state for a browser
+  with no saved preference. All provider clients are still constructed and
+  polled, so these variables do not suppress credential reads or upstream
+  calls.
 
 ## Prerequisites
 
@@ -132,10 +138,11 @@ Edit `.env`:
 | `CURSOR_HOME` | Host path to your Cursor data dir (the one containing `User/globalStorage/state.vscdb`). OS-specific — see below. | `~/.config/Cursor` |
 | `COPILOT_HOME` | Host path to your GitHub Copilot config dir (the one containing `apps.json`/`hosts.json`). OS-specific — see below. | `~/.config/github-copilot` |
 | `GEMINI_HOME` | Host path to your Gemini / Antigravity config dir (the one containing `antigravity-cli/antigravity-oauth-token`). | `~/.gemini` |
-| `CODEX_ENABLED` | Set to `false` to render the Codex panel dimmed with a `disabled` state. | `true` |
-| `CURSOR_ENABLED` | Set to `false` to render the Cursor panel dimmed with a `disabled` state. | `true` |
-| `COPILOT_ENABLED` | Set to `false` to render the Copilot panel dimmed with a `disabled` state. | `true` |
-| `GEMINI_ENABLED` | Set to `false` to render the Gemini panel dimmed with a `disabled` state. | `true` |
+| `CLAUDE_ENABLED` | First-visit browser widget default. | `true` |
+| `CODEX_ENABLED` | First-visit browser widget default. | `true` |
+| `CURSOR_ENABLED` | First-visit browser widget default. | `true` |
+| `COPILOT_ENABLED` | First-visit browser widget default. | `true` |
+| `GEMINI_ENABLED` | First-visit browser widget default. | `true` |
 | `COPILOT_GITHUB_TOKEN` | Fine-grained PAT (`Plan` read) → switches Copilot to PAT mode (billing REST API). Needed for VS-Code-only setups. See [Copilot setup](#github-copilot-setup). | _(unset → file mode)_ |
 | `COPILOT_GITHUB_USER` | GitHub login for PAT mode. Auto-detected from the token if unset. | _(auto)_ |
 | `COPILOT_PLAN` | Plan whose monthly premium-request cap is the gauge denominator in PAT mode: `free`/`pro`/`pro+`/`business`/`enterprise`. | `pro` |
@@ -249,9 +256,10 @@ GEMINI_HOME=C:/Users/yourname/.gemini
 
 (Forward slashes work fine inside `.env`.)
 
-If you don't use an agent, point its `*_HOME` at any existing directory and
-set its `*_ENABLED=false`. The panel will be dimmed with a `disabled` state
-and the bind mount won't be touched by the app.
+If you don't use an agent, point its `*_HOME` at an existing directory and set
+its `*_ENABLED=false` to make the widget initially dimmed. This is only a
+browser presentation default; the app still checks the provider credential
+path and polls any configured live client.
 
 ## Run
 
@@ -301,8 +309,9 @@ Assist):
 - **Gemini** shows **Pro Requests (day)** and **Flash Requests (day)** gauges
   from Code Assist request buckets, each with a daily reset timestamp when the
   upstream response includes one.
-- Per-panel header shows the source state (`live` / `unavailable` /
-  `disabled`); footer shows the plan and most recent local activity. Claude
+- Per-panel header shows the server source state (`live` / `unavailable`) or
+  the browser-local presentation state (`disabled`); footer shows the plan
+  and most recent local activity. Claude
   activity comes from project transcript timestamps; Codex from local
   history/session file metadata; Cursor from `state.vscdb` and
   History/workspace directory metadata; Copilot from `apps.json`/`hosts.json`
@@ -311,8 +320,8 @@ Assist):
   The footer shows an error string when a live quota call fails.
 
 The fill colour is computed from the percentage: lime under 50%, sliding
-through amber, to coral as you approach 100%. Panels in `unavailable` or
-`disabled` state are dimmed.
+through amber, to coral as you approach 100%. Unavailable gauges and
+browser-disabled cards are dimmed.
 
 ## File layout
 
@@ -334,7 +343,8 @@ through amber, to coral as you approach 100%. Panels in `unavailable` or
 │   │   └── index.html
 │   └── static/
 │       ├── style.css
-│       └── app.js
+│       ├── widget-state.js # Browser-local persistence and presentation state
+│       └── app.js          # Gauge rendering, DOM updates, and SSE handling
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
