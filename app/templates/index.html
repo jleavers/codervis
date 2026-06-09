@@ -26,11 +26,26 @@
         {"key": "cursor",  "title": "Cursor",         "data": data.cursor},
         {"key": "copilot", "title": "GitHub Copilot", "data": data.copilot}
       ] %}
-      <section class="provider" id="provider-{{ prov.key }}" data-source="{{ prov.data.source }}">
+      {% set display_source = prov.data.source if prov.data.enabled else "disabled" %}
+      <section class="provider"
+               id="provider-{{ prov.key }}"
+               data-source="{{ display_source }}"
+               data-widget-enabled="{{ 'true' if prov.data.enabled else 'false' }}">
         <header class="provider-head">
           <h1 class="provider-title">{{ prov.title }}</h1>
           <div class="provider-source">
-            <span id="source-{{ prov.key }}" class="source-chip" data-state="{{ prov.data.source }}">{{ prov.data.source }}</span>
+            <span id="source-{{ prov.key }}"
+                  class="source-chip"
+                  data-state="{{ display_source }}">{{ display_source }}</span>
+            <label class="widget-toggle">
+              <input id="toggle-{{ prov.key }}"
+                     class="widget-toggle-input"
+                     type="checkbox"
+                     data-provider="{{ prov.key }}"
+                     aria-label="Enable {{ prov.title }} widget"
+                     {% if prov.data.enabled %}checked{% endif %} />
+              <span class="widget-toggle-track" aria-hidden="true"></span>
+            </label>
           </div>
         </header>
 
@@ -60,7 +75,7 @@
         <footer class="provider-foot">
           <div>plan: <span id="subscription-{{ prov.key }}">{{ prov.data.subscription_type or '—' }}</span></div>
           <div>last activity: <span id="last-activity-{{ prov.key }}" class="last-activity" data-iso="{{ prov.data.last_activity or '' }}">—</span></div>
-          <div class="provider-error" id="error-{{ prov.key }}">{{ prov.data.source_error or '' }}</div>
+          <div class="provider-error" id="error-{{ prov.key }}">{% if prov.data.enabled %}{{ prov.data.source_error or '' }}{% endif %}</div>
         </footer>
       </section>
       {% endfor %}
@@ -68,8 +83,9 @@
   </main>
 
   <script>
-    window.__REFRESH_SECONDS__ = {{ refresh_seconds }};
+    window.__INITIAL_PAYLOAD__ = {{ data | tojson }};
   </script>
+  <script src="/static/widget-state.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

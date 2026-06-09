@@ -366,3 +366,49 @@ def test_health_reports_configured_widget_defaults(monkeypatch, tmp_path) -> Non
     assert data["cursor_enabled"] is False
     assert data["copilot_enabled"] is True
     assert data["gemini_enabled"] is False
+
+
+def test_index_renders_accessible_widget_toggles(monkeypatch) -> None:
+    def section(enabled: bool) -> dict:
+        return {
+            "enabled": enabled,
+            "windows": [],
+            "source": "live",
+            "source_error": None,
+            "subscription_type": None,
+            "last_activity": None,
+            "data_root_exists": True,
+        }
+
+    payload = {
+        "claude": section(True),
+        "codex": section(False),
+        "gemini": section(True),
+        "cursor": section(True),
+        "copilot": section(True),
+        "server_time": "2026-06-08T00:00:00+00:00",
+    }
+    monkeypatch.setattr(main, "_build_payload", lambda: payload)
+
+    response = TestClient(main.app).get("/")
+
+    assert response.status_code == 200
+    html = response.text
+    assert html.count('class="widget-toggle-input"') == 5
+    for key, title in (
+        ("claude", "Claude Code"),
+        ("codex", "Codex"),
+        ("gemini", "Gemini Code Assist"),
+        ("cursor", "Cursor"),
+        ("copilot", "GitHub Copilot"),
+    ):
+        assert f'id="toggle-{key}"' in html
+        assert f'data-provider="{key}"' in html
+        assert f'aria-label="Enable {title} widget"' in html
+    codex_start = html.index('id="provider-codex"')
+    gemini_start = html.index('id="provider-gemini"')
+    codex_card = html[codex_start:gemini_start]
+    assert 'data-source="disabled"' in codex_card
+    assert 'data-widget-enabled="false"' in codex_card
+    assert html.index("/static/widget-state.js") < html.index("/static/app.js")
+    assert "window.__INITIAL_PAYLOAD__" in html
