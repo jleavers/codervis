@@ -73,6 +73,9 @@ reads timestamp/metadata to show each agent's local last activity.
 - **Gemini requires `agy`'s file-backed credential.** Linux keyring-only
   sessions are intentionally unsupported: codervis does not expose the host
   D-Bus Secret Service to Docker.
+- **Codex may omit the weekly window after a period of inactivity.** In that
+  case the weekly gauge reads "—" while the reported 5-hour window and plan
+  remain live; codervis does not invent a zero utilization value.
 - **Cursor on the free plan** has no fixed premium-request cap and no
   usage-based billing, so both Cursor gauges honestly show "—" (the raw
   request count still appears under the meter). The gauges populate on

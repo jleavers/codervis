@@ -107,6 +107,14 @@ def test_codex_window_parses_epoch_milliseconds_reset() -> None:
     assert window.resets_at == datetime.fromtimestamp(1_700_000_000, tz=timezone.utc)
 
 
+def test_codex_window_rejects_missing_primary_window() -> None:
+    with pytest.raises(
+        codex_quota.CodexLiveQuotaError,
+        match="missing or invalid five_hour usage window",
+    ):
+        codex_quota._window("five_hour", "5-Hour Window", None)
+
+
 def test_codex_client_falls_back_to_alternate_usage_path(tmp_path, monkeypatch) -> None:
     (tmp_path / "auth.json").write_text(
         json.dumps(
@@ -166,6 +174,38 @@ def test_codex_client_falls_back_to_alternate_usage_path(tmp_path, monkeypatch) 
     assert seen_headers[0]["chatgpt-account-id"] == "acct_test"
     assert snapshot.five_hour.percent == 11.0
     assert snapshot.seven_day.percent == 75.0
+    assert snapshot.plan_type == "pro"
+
+
+def test_codex_client_allows_missing_secondary_window(tmp_path, monkeypatch) -> None:
+    (tmp_path / "auth.json").write_text(
+        json.dumps({"tokens": {"access_token": "fake-access-token"}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        codex_quota.urllib.request,
+        "urlopen",
+        lambda req, timeout: _JSONResponse(
+            {
+                "rate_limit": {
+                    "primary_window": {"utilization": 11},
+                    "plan_type": "pro",
+                }
+            }
+        ),
+    )
+    client = codex_quota.CodexLiveQuotaClient(
+        tmp_path,
+        host="https://example.test",
+        cache_ttl_seconds=0,
+    )
+
+    snapshot = client.get()
+
+    assert snapshot.five_hour.percent == 11.0
+    assert snapshot.seven_day.percent is None
+    assert snapshot.seven_day.resets_at is None
     assert snapshot.plan_type == "pro"
 
 

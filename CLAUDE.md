@@ -61,10 +61,12 @@ Live-only by design.
   `secondary_window` / `weekly` / `seven_day`) and percentages come from
   whichever of `utilization` / `percent_used` / `used_percent` /
   `percent_left` / `remaining_percent` is present.
-- On any failure (`CodexLiveQuotaError`) the section returns
-  `source: "unavailable"` with `percent: null` for both gauges and the
-  error string surfaced to the UI. The frontend dims the panel and
-  shows the error rather than synthesizing fake numbers.
+- If the upstream response omits the optional secondary/weekly window, that
+  gauge uses `percent: null` while the section remains `source: "live"` and
+  preserves the primary window and plan. Other failures
+  (`CodexLiveQuotaError`) return `source: "unavailable"` with `percent: null`
+  for both gauges and surface the error in the UI. The frontend never
+  synthesizes fake numbers.
 - **`app/codex_activity.py`** — `CodexActivityReader` reports Codex
   `last_activity` from safe local file metadata only: `history.jsonl`,
   `session_index.jsonl`, and files under `sessions/` and

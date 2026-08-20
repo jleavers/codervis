@@ -41,7 +41,7 @@ class QuotaClientStub:
         return self.credentials_path.exists()
 
 
-def _window(percent: float, resets_at: datetime | None = None):
+def _window(percent: float | None, resets_at: datetime | None = None):
     return SimpleNamespace(percent=percent, resets_at=resets_at)
 
 
@@ -206,6 +206,35 @@ def test_api_usage_returns_live_payload_without_scaling(monkeypatch) -> None:
     assert _win(data["gemini"], "flash")["percent"] == 15.0
     assert _win(data["gemini"], "flash")["detail"] == "gemini-3-flash-preview: 85% left"
     assert data["gemini"]["subscription_type"] == "Gemini Code Assist in Google One AI Pro"
+
+
+def test_codex_missing_weekly_window_stays_live(monkeypatch) -> None:
+    activity = datetime(2026, 5, 20, 9, 30, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        main,
+        "_codex_activity",
+        ActivityStub(CodexActivitySnapshot(last_activity=activity, data_root_exists=True)),
+    )
+    monkeypatch.setattr(
+        main,
+        "_codex",
+        QuotaClientStub(
+            SimpleNamespace(
+                five_hour=_window(33.333),
+                seven_day=_window(None),
+                plan_type="pro",
+            )
+        ),
+    )
+
+    data = main._codex_section()
+
+    assert data["source"] == "live"
+    assert data["source_error"] is None
+    assert _win(data, "five_hour")["percent"] == 33.33
+    assert _win(data, "seven_day")["percent"] is None
+    assert data["subscription_type"] == "pro"
+    assert data["last_activity"] == "2026-05-20T09:30:00+00:00"
 
 
 def test_payload_contains_unavailable_states_on_live_errors(monkeypatch) -> None:
