@@ -126,7 +126,6 @@ def test_api_usage_returns_live_payload_without_scaling(monkeypatch) -> None:
         "_codex",
         QuotaClientStub(
             SimpleNamespace(
-                five_hour=_window(33.333),
                 seven_day=_window(88.888, reset),
                 plan_type="pro",
             )
@@ -182,7 +181,7 @@ def test_api_usage_returns_live_payload_without_scaling(monkeypatch) -> None:
     assert data["claude"]["last_activity"] == "2026-05-20T09:30:00+00:00"
     assert data["codex"]["source"] == "live"
     assert data["codex"]["enabled"] is True
-    assert _win(data["codex"], "five_hour")["percent"] == 33.33
+    assert [window["name"] for window in data["codex"]["windows"]] == ["seven_day"]
     assert _win(data["codex"], "seven_day")["percent"] == 88.89
     assert data["codex"]["subscription_type"] == "pro"
     assert data["cursor"]["source"] == "live"
@@ -208,7 +207,7 @@ def test_api_usage_returns_live_payload_without_scaling(monkeypatch) -> None:
     assert data["gemini"]["subscription_type"] == "Gemini Code Assist in Google One AI Pro"
 
 
-def test_codex_missing_weekly_window_stays_live(monkeypatch) -> None:
+def test_codex_section_renders_one_weekly_window(monkeypatch) -> None:
     activity = datetime(2026, 5, 20, 9, 30, tzinfo=timezone.utc)
     monkeypatch.setattr(
         main,
@@ -220,8 +219,7 @@ def test_codex_missing_weekly_window_stays_live(monkeypatch) -> None:
         "_codex",
         QuotaClientStub(
             SimpleNamespace(
-                five_hour=_window(33.333),
-                seven_day=_window(None),
+                seven_day=_window(33.333),
                 plan_type="pro",
             )
         ),
@@ -231,8 +229,15 @@ def test_codex_missing_weekly_window_stays_live(monkeypatch) -> None:
 
     assert data["source"] == "live"
     assert data["source_error"] is None
-    assert _win(data, "five_hour")["percent"] == 33.33
-    assert _win(data, "seven_day")["percent"] is None
+    assert data["windows"] == [
+        {
+            "name": "seven_day",
+            "label": "Weekly Window",
+            "percent": 33.33,
+            "resets_at": None,
+            "detail": None,
+        }
+    ]
     assert data["subscription_type"] == "pro"
     assert data["last_activity"] == "2026-05-20T09:30:00+00:00"
 
@@ -270,7 +275,7 @@ def test_payload_contains_unavailable_states_on_live_errors(monkeypatch) -> None
     assert _win(data["claude"], "seven_day")["percent"] is None
     assert data["codex"]["source"] == "unavailable"
     assert data["codex"]["source_error"] == "codex upstream changed"
-    assert _win(data["codex"], "five_hour")["percent"] is None
+    assert [window["name"] for window in data["codex"]["windows"]] == ["seven_day"]
     assert _win(data["codex"], "seven_day")["percent"] is None
     assert data["cursor"]["source"] == "unavailable"
     assert data["cursor"]["source_error"] == "cursor upstream changed"
@@ -313,7 +318,6 @@ def test_provider_defaults_do_not_suppress_live_clients(monkeypatch) -> None:
     )
     codex = QuotaClientStub(
         SimpleNamespace(
-            five_hour=_window(30),
             seven_day=_window(40),
             plan_type="pro",
         )

@@ -13,14 +13,14 @@ accepts. codervis reads each one and polls the matching undocumented endpoint:
 | Agent | Credential (read-only) | Endpoint(s) | Windows |
 | --- | --- | --- | --- |
 | Claude Code | `~/.claude/.credentials.json` → `claudeAiOauth.accessToken` (bearer) | `GET claude.ai/api/oauth/usage` | 5-hour + weekly utilization |
-| Codex CLI | `~/.codex/auth.json` → `tokens.access_token` + `account_id` (bearer) | `GET chatgpt.com/backend-api/wham/usage` | 5-hour + weekly utilization |
+| Codex CLI | `~/.codex/auth.json` → `tokens.access_token` + `account_id` (bearer) | `GET chatgpt.com/backend-api/wham/usage` | weekly utilization |
 | Cursor | `…/Cursor/User/globalStorage/state.vscdb` → SQLite key `cursorAuth/accessToken` (cookie) | `GET cursor.com/api/usage` + `/api/dashboard/*` | monthly premium-requests + usage-based spend |
 | GitHub Copilot (file mode) | `…/github-copilot/apps.json` → `oauth_token` (`token` header) | `GET api.github.com/copilot_internal/user` | monthly premium-requests + chat |
 | GitHub Copilot (PAT mode) | fine-grained PAT (`Plan` read) you create, via `COPILOT_GITHUB_TOKEN` | `GET api.github.com/users/{user}/settings/billing/premium_request/usage` | monthly premium-requests + usage-based spend |
 | Gemini Code Assist / Antigravity | `~/.gemini/antigravity-cli/antigravity-oauth-token` → `token.access_token` (bearer) | `POST …/v1internal:retrieveUserQuotaSummary` (legacy fallback) | daily request quota by model family |
 
-Claude and Codex return per-window utilization as a percentage plus a reset
-timestamp. **Cursor** is different: it meters on a monthly billing cycle, its
+Claude and Codex return utilization as a percentage plus a reset timestamp.
+**Cursor** is different: it meters on a monthly billing cycle, its
 token lives in a SQLite database rather than a JSON dotfile, and it
 authenticates with a `Cookie: WorkosCursorSessionToken=<userId>::<jwt>` header
 instead of a bearer token. codervis derives two monthly gauges for it — premium
@@ -73,9 +73,9 @@ reads timestamp/metadata to show each agent's local last activity.
 - **Gemini requires `agy`'s file-backed credential.** Linux keyring-only
   sessions are intentionally unsupported: codervis does not expose the host
   D-Bus Secret Service to Docker.
-- **Codex may omit the weekly window after a period of inactivity.** In that
-  case the weekly gauge reads "—" while the reported 5-hour window and plan
-  remain live; codervis does not invent a zero utilization value.
+- **Codex currently reports its weekly quota as the primary window.** Codervis
+  shows that as a single weekly gauge. For parser compatibility, an explicit
+  legacy weekly/secondary window takes precedence when one is present.
 - **Cursor on the free plan** has no fixed premium-request cap and no
   usage-based billing, so both Cursor gauges honestly show "—" (the raw
   request count still appears under the meter). The gauges populate on
@@ -299,9 +299,9 @@ files and do not call the live quota endpoints.
 One panel per agent (Claude Code, Codex, Cursor, GitHub Copilot, Gemini Code
 Assist):
 
-- **Claude & Codex** each show a **5-Hour Window** gauge (percentage of your
-  5-hour rolling quota used) and a **Weekly Window** gauge (same, on a 7-day
-  window), each with a countdown to when it resets.
+- **Claude** shows **5-Hour Window** and **Weekly Window** gauges, each with a
+  countdown to when it resets.
+- **Codex** shows one **Weekly Window** gauge with its reset countdown.
 - **Cursor** shows a **Premium Requests (month)** gauge and a **Usage-Based
   Spend (month)** gauge, both on your monthly billing cycle. The line under
   each meter shows the raw figures (e.g. `42 / 500 reqs`, `$3.40 / $20.00`).
