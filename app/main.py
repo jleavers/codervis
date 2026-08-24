@@ -139,9 +139,6 @@ def _codex_section() -> dict:
             "enabled": CODEX_ENABLED,
             "windows": [
                 _window_dict(
-                    "five_hour", "5-Hour Window", snap.five_hour.percent, snap.five_hour.resets_at
-                ),
-                _window_dict(
                     "seven_day", "Weekly Window", snap.seven_day.percent, snap.seven_day.resets_at
                 ),
             ],
@@ -155,7 +152,6 @@ def _codex_section() -> dict:
         return {
             "enabled": CODEX_ENABLED,
             "windows": [
-                _window_dict("five_hour", "5-Hour Window", None, None),
                 _window_dict("seven_day", "Weekly Window", None, None),
             ],
             "source": "unavailable",

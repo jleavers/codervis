@@ -26,7 +26,6 @@ class CodexLiveWindow:
 
 @dataclass
 class CodexLiveSnapshot:
-    five_hour: CodexLiveWindow
     seven_day: CodexLiveWindow
     plan_type: str | None
     fetched_at: datetime
@@ -47,10 +46,11 @@ class CodexLiveQuotaClient:
     hammering the endpoint when many SSE clients are connected.
 
     The endpoint is undocumented — reverse-engineered from the codex-rs
-    backend client. A missing secondary window is represented as an
-    unreported gauge because inactive accounts may not have an active weekly
-    window. Other failures raise CodexLiveQuotaError; the caller is expected
-    to render an "unavailable" state rather than synthesizing fake numbers.
+    backend client. Current responses report the weekly limit as the primary
+    window and may omit the secondary window. Older responses can include an
+    explicit weekly/secondary window, which takes precedence when present.
+    Other failures raise CodexLiveQuotaError; the caller is expected to render
+    an "unavailable" state rather than synthesizing fake numbers.
     """
 
     def __init__(
@@ -136,7 +136,7 @@ class CodexLiveQuotaClient:
             raise CodexLiveQuotaError(f"response is not JSON: {e}") from e
 
         rate_limit = payload.get("rate_limit") if isinstance(payload.get("rate_limit"), dict) else {}
-        five_hour_raw = _pick_window(
+        primary_raw = _pick_window(
             payload,
             rate_limit,
             keys=("primary_window", "five_hour", "five_hour_window"),
@@ -146,21 +146,12 @@ class CodexLiveQuotaClient:
             rate_limit,
             keys=("secondary_window", "weekly", "seven_day", "weekly_window"),
         )
+        if seven_day_raw is None:
+            seven_day_raw = primary_raw
         rl_plan = rate_limit.get("plan_type")
-        seven_day = (
-            _window("seven_day", "Weekly Window", seven_day_raw)
-            if seven_day_raw is not None
-            else CodexLiveWindow(
-                name="seven_day",
-                label="Weekly Window",
-                percent=None,
-                resets_at=None,
-            )
-        )
 
         return CodexLiveSnapshot(
-            five_hour=_window("five_hour", "5-Hour Window", five_hour_raw),
-            seven_day=seven_day,
+            seven_day=_window("seven_day", "Weekly Window", seven_day_raw),
             plan_type=plan_type or rl_plan or payload.get("plan_type"),
             fetched_at=datetime.now(timezone.utc),
             raw=payload,

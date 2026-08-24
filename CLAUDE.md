@@ -56,16 +56,17 @@ Live-only by design.
   `tokens.access_token` and `tokens.account_id`, and hits
   `GET https://chatgpt.com/backend-api/wham/usage` with
   `Authorization: Bearer …` and `ChatGPT-Account-Id: …`. The response
-  shape is parsed defensively — primary/secondary windows may appear either
-  at the top level or under `rate_limit` (`primary_window` / `five_hour`,
-  `secondary_window` / `weekly` / `seven_day`) and percentages come from
+  shape is parsed defensively. Current responses report the weekly limit as
+  the primary window; older responses may include an explicit weekly or
+  secondary window. Both may appear at the top level or under `rate_limit`.
+  An explicit `secondary_window` / `weekly` / `seven_day` / `weekly_window`
+  takes precedence; otherwise `primary_window` / `five_hour` /
+  `five_hour_window` supplies the single weekly gauge. Percentages come from
   whichever of `utilization` / `percent_used` / `used_percent` /
   `percent_left` / `remaining_percent` is present.
-- If the upstream response omits the optional secondary/weekly window, that
-  gauge uses `percent: null` while the section remains `source: "live"` and
-  preserves the primary window and plan. Other failures
+- `_codex_section()` emits one `seven_day` ("Weekly Window") gauge. Failures
   (`CodexLiveQuotaError`) return `source: "unavailable"` with `percent: null`
-  for both gauges and surface the error in the UI. The frontend never
+  for that gauge and surface the error in the UI. The frontend never
   synthesizes fake numbers.
 - **`app/codex_activity.py`** — `CodexActivityReader` reports Codex
   `last_activity` from safe local file metadata only: `history.jsonl`,
