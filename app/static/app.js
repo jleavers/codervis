@@ -61,6 +61,12 @@
     const resets = root.querySelector(".val.resets");
     resets.dataset.iso = w.resets_at || "";
     resets.textContent = formatRelative(w.resets_at);
+    const resetTooltip = formatResetTooltip(w.resets_at);
+    if (resetTooltip) {
+      resets.title = resetTooltip;
+    } else {
+      resets.removeAttribute("title");
+    }
 
     const detail = document.getElementById("detail-" + provider + "-" + w.name);
     if (detail) {
@@ -87,6 +93,21 @@
     if (h > 0) return `in ${h}h ${m}m`;
     if (m > 0) return `in ${m}m ${s}s`;
     return `in ${s}s`;
+  }
+
+  function formatResetTooltip(iso) {
+    if (!iso) return "";
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return "";
+    return new Intl.DateTimeFormat(undefined, {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZoneName: "short",
+    }).format(date);
   }
 
   function paintRelativeFields() {
