@@ -1,5 +1,5 @@
 -r requirements.txt
 
-pytest>=8.0,<9
+pytest>=9.1.1,<10
 httpx2>=2.12,<3
 ruff==0.16.3
