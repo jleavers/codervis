@@ -1,0 +1,30 @@
+version: 2
+
+# Group routine updates so a quiet week produces one PR per ecosystem. Major
+# updates stay separate because they deserve individual review.
+updates:
+  # The actions used by .github/workflows/ci.yml.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # Python dependencies declared in requirements.txt and requirements-dev.txt.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # The python:3.14-slim base image in Dockerfile.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly

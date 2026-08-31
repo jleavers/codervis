@@ -1,0 +1,129 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A newer push to the same branch makes any in-flight run obsolete.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Starlette's TestClient currently hangs under Python 3.14. The Docker job
+  # still smoke-tests the production Python 3.14 image from Dockerfile.
+  PYTHON_VERSION: "3.13"
+  NODE_VERSION: "24"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+
+      # Start with Ruff's correctness rules. Enabling its broader opinionated
+      # rule set would require unrelated cleanup of the existing codebase.
+      - name: Run Ruff
+        run: ruff check --select E4,E7,E9,F .
+
+      - name: Byte-compile Python sources
+        run: python -m compileall -q app tests
+
+  test-unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Run Python unit tests
+        run: >-
+          python -m pytest -q
+          tests/test_activity_readers.py
+          tests/test_quota_parsers.py
+
+      - name: Run JavaScript unit tests
+        run: node --test tests/test_app.js tests/test_widget_state.js
+
+  test-integration:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Run FastAPI integration tests
+        run: python -m pytest -q tests/test_main_payload.py
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          # Keep the image in the local daemon so the smoke test can run it.
+          load: true
+          tags: codervis:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-test the image
+        run: |
+          container_id="$(docker run --detach --publish 127.0.0.1:8765:8000 codervis:ci)"
+          trap 'docker stop "$container_id"' EXIT
+          curl --fail --silent --show-error \
+            --retry 15 --retry-all-errors --retry-delay 1 \
+            http://127.0.0.1:8765/healthz
+
+      - name: Render Compose config
+        env:
+          USERPROFILE: /tmp/codervis-ci
+          APPDATA: /tmp/codervis-ci
+        run: docker compose --env-file .env.example config --quiet
