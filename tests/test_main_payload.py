@@ -112,6 +112,7 @@ def test_api_usage_returns_live_payload_without_scaling(monkeypatch) -> None:
             SimpleNamespace(
                 five_hour=_window(12.345, reset),
                 seven_day=_window(67.891),
+                seven_day_fable=_window(45.678, reset),
                 subscription_type="max",
             )
         ),
@@ -174,9 +175,20 @@ def test_api_usage_returns_live_payload_without_scaling(monkeypatch) -> None:
     data = response.json()
     assert data["claude"]["source"] == "live"
     assert data["claude"]["enabled"] is True
+    assert [window["name"] for window in data["claude"]["windows"]] == [
+        "five_hour",
+        "seven_day",
+        "seven_day_fable",
+    ]
     assert _win(data["claude"], "five_hour")["percent"] == 12.35
     assert _win(data["claude"], "seven_day")["percent"] == 67.89
+    assert _win(data["claude"], "seven_day_fable")["percent"] == 45.68
+    assert _win(data["claude"], "seven_day_fable")["label"] == "Weekly Window (Fable)"
     assert _win(data["claude"], "five_hour")["resets_at"] == "2026-05-20T12:00:00+00:00"
+    assert (
+        _win(data["claude"], "seven_day_fable")["resets_at"]
+        == "2026-05-20T12:00:00+00:00"
+    )
     assert data["claude"]["subscription_type"] == "max"
     assert data["claude"]["last_activity"] == "2026-05-20T09:30:00+00:00"
     assert data["codex"]["source"] == "live"
@@ -205,6 +217,53 @@ def test_api_usage_returns_live_payload_without_scaling(monkeypatch) -> None:
     assert _win(data["gemini"], "flash")["percent"] == 15.0
     assert _win(data["gemini"], "flash")["detail"] == "gemini-3-flash-preview: 85% left"
     assert data["gemini"]["subscription_type"] == "Gemini Code Assist in Google One AI Pro"
+
+
+def test_claude_section_renders_stable_fable_window(monkeypatch) -> None:
+    reset = datetime(2026, 9, 7, 8, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        main,
+        "_claude_activity",
+        ActivityStub(ClaudeActivitySnapshot(last_activity=None, data_root_exists=True)),
+    )
+    monkeypatch.setattr(
+        main,
+        "_live",
+        QuotaClientStub(
+            SimpleNamespace(
+                five_hour=_window(10),
+                seven_day=_window(20),
+                seven_day_fable=_window(30.125, reset),
+                subscription_type="max",
+            )
+        ),
+    )
+
+    data = main._claude_section()
+
+    assert data["windows"] == [
+        {
+            "name": "five_hour",
+            "label": "5-Hour Window",
+            "percent": 10.0,
+            "resets_at": None,
+            "detail": None,
+        },
+        {
+            "name": "seven_day",
+            "label": "Weekly Window",
+            "percent": 20.0,
+            "resets_at": None,
+            "detail": None,
+        },
+        {
+            "name": "seven_day_fable",
+            "label": "Weekly Window (Fable)",
+            "percent": 30.12,
+            "resets_at": "2026-09-07T08:00:00+00:00",
+            "detail": None,
+        },
+    ]
 
 
 def test_codex_section_renders_one_weekly_window(monkeypatch) -> None:
@@ -273,6 +332,7 @@ def test_payload_contains_unavailable_states_on_live_errors(monkeypatch) -> None
     assert data["claude"]["source_error"] == "claude upstream changed"
     assert _win(data["claude"], "five_hour")["percent"] is None
     assert _win(data["claude"], "seven_day")["percent"] is None
+    assert _win(data["claude"], "seven_day_fable")["percent"] is None
     assert data["codex"]["source"] == "unavailable"
     assert data["codex"]["source_error"] == "codex upstream changed"
     assert [window["name"] for window in data["codex"]["windows"]] == ["seven_day"]

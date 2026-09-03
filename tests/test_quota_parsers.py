@@ -78,6 +78,112 @@ def test_claude_window_rejects_missing_utilization() -> None:
         quota._window("five_hour", "5-Hour Window", {"resets_at": "2026-05-20T12:00:00Z"})
 
 
+def test_claude_client_reads_fable_window_from_same_usage_response(
+    tmp_path, monkeypatch
+) -> None:
+    (tmp_path / ".credentials.json").write_text(
+        json.dumps(
+            {
+                "claudeAiOauth": {
+                    "accessToken": "fake-access-token",
+                    "subscriptionType": "max",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    requests = []
+
+    def fake_urlopen(req, timeout):
+        requests.append(req)
+        return _JSONResponse(
+            {
+                "five_hour": {
+                    "utilization": 12.5,
+                    "resets_at": "2026-09-03T12:00:00Z",
+                },
+                "seven_day": {
+                    "utilization": 45,
+                    "resets_at": "2026-09-07T08:00:00Z",
+                },
+                "limits": [
+                    {
+                        "kind": "session",
+                        "group": "session",
+                        "percent": 12.5,
+                        "resets_at": "2026-09-03T12:00:00Z",
+                        "scope": None,
+                        "is_active": True,
+                    },
+                    {
+                        "kind": "weekly_all",
+                        "group": "weekly",
+                        "percent": 45,
+                        "resets_at": "2026-09-07T08:00:00Z",
+                        "scope": None,
+                        "is_active": False,
+                    },
+                    {
+                        "kind": "weekly_scoped",
+                        "group": "weekly",
+                        "percent": "23.75",
+                        "resets_at": "2026-09-07T08:00:01Z",
+                        "scope": {
+                            "model": {"id": None, "display_name": "Fable"},
+                            "surface": None,
+                        },
+                        "is_active": False,
+                    },
+                ],
+            }
+        )
+
+    monkeypatch.setattr(quota.urllib.request, "urlopen", fake_urlopen)
+    snapshot = quota.LiveQuotaClient(tmp_path, cache_ttl_seconds=0).get()
+
+    assert len(requests) == 1
+    assert requests[0].full_url.endswith(quota.USAGE_PATH)
+    assert snapshot.seven_day_fable.name == "seven_day_fable"
+    assert snapshot.seven_day_fable.label == "Weekly Window (Fable)"
+    assert snapshot.seven_day_fable.percent == 23.75
+    assert snapshot.seven_day_fable.resets_at == datetime(
+        2026, 9, 7, 8, 0, 1, tzinfo=timezone.utc
+    )
+
+
+@pytest.mark.parametrize("malformed_percent", ["not-a-number", "NaN", "Infinity", True])
+def test_claude_client_ignores_malformed_optional_fable_window(
+    tmp_path, monkeypatch, malformed_percent
+) -> None:
+    (tmp_path / ".credentials.json").write_text(
+        json.dumps({"claudeAiOauth": {"accessToken": "fake-access-token"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        quota.urllib.request,
+        "urlopen",
+        lambda req, timeout: _JSONResponse(
+            {
+                "five_hour": {"utilization": 12.5},
+                "seven_day": {"utilization": 45},
+                "limits": [
+                    {
+                        "kind": "weekly_scoped",
+                        "percent": malformed_percent,
+                        "scope": {"model": {"display_name": "Fable 5"}},
+                    }
+                ],
+            }
+        ),
+    )
+
+    snapshot = quota.LiveQuotaClient(tmp_path, cache_ttl_seconds=0).get()
+
+    assert snapshot.five_hour.percent == 12.5
+    assert snapshot.seven_day.percent == 45
+    assert snapshot.seven_day_fable is None
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [

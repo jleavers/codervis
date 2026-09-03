@@ -12,7 +12,7 @@ accepts. codervis reads each one and polls the matching undocumented endpoint:
 
 | Agent | Credential (read-only) | Endpoint(s) | Windows |
 | --- | --- | --- | --- |
-| Claude Code | `~/.claude/.credentials.json` → `claudeAiOauth.accessToken` (bearer) | `GET claude.ai/api/oauth/usage` | 5-hour + weekly utilization |
+| Claude Code | `~/.claude/.credentials.json` → `claudeAiOauth.accessToken` (bearer) | `GET claude.ai/api/oauth/usage` | 5-hour + all-model weekly + Fable weekly utilization |
 | Codex CLI | `~/.codex/auth.json` → `tokens.access_token` + `account_id` (bearer) | `GET chatgpt.com/backend-api/wham/usage` | weekly utilization |
 | Cursor | `…/Cursor/User/globalStorage/state.vscdb` → SQLite key `cursorAuth/accessToken` (cookie) | `GET cursor.com/api/usage` + `/api/dashboard/*` | monthly premium-requests + usage-based spend |
 | GitHub Copilot (file mode) | `…/github-copilot/apps.json` → `oauth_token` (`token` header) | `GET api.github.com/copilot_internal/user` | monthly premium-requests + chat |
@@ -76,6 +76,10 @@ reads timestamp/metadata to show each agent's local last activity.
 - **Codex currently reports its weekly quota as the primary window.** Codervis
   shows that as a single weekly gauge. For parser compatibility, an explicit
   legacy weekly/secondary window takes precedence when one is present.
+- **Claude's Fable limit is plan-dependent.** Codervis reads the
+  `weekly_scoped` Fable entry from the endpoint's `limits` list. If Anthropic
+  omits that optional entry or returns it malformed, the Fable gauge shows “—”
+  while the 5-hour and all-model weekly gauges remain live.
 - **Cursor on the free plan** has no fixed premium-request cap and no
   usage-based billing, so both Cursor gauges honestly show "—" (the raw
   request count still appears under the meter). The gauges populate on
@@ -299,8 +303,8 @@ files and do not call the live quota endpoints.
 One panel per agent (Claude Code, Codex, Cursor, GitHub Copilot, Gemini Code
 Assist):
 
-- **Claude** shows **5-Hour Window** and **Weekly Window** gauges, each with a
-  countdown to when it resets.
+- **Claude** shows **5-Hour Window**, **Weekly Window**, and **Weekly Window
+  (Fable)** gauges, each with a countdown when its reset time is available.
 - **Codex** shows one **Weekly Window** gauge with its reset countdown.
 - **Cursor** shows a **Premium Requests (month)** gauge and a **Usage-Based
   Spend (month)** gauge, both on your monthly billing cycle. The line under
