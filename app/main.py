@@ -97,6 +97,7 @@ def _claude_section() -> dict:
     )
     try:
         live = _live.get()
+        fable = getattr(live, "seven_day_fable", None)
         return {
             "enabled": CLAUDE_ENABLED,
             "windows": [
@@ -105,6 +106,12 @@ def _claude_section() -> dict:
                 ),
                 _window_dict(
                     "seven_day", "Weekly Window", live.seven_day.percent, live.seven_day.resets_at
+                ),
+                _window_dict(
+                    "seven_day_fable",
+                    "Weekly Window (Fable)",
+                    getattr(fable, "percent", None),
+                    getattr(fable, "resets_at", None),
                 ),
             ],
             "source": "live",
@@ -119,6 +126,7 @@ def _claude_section() -> dict:
             "windows": [
                 _window_dict("five_hour", "5-Hour Window", None, None),
                 _window_dict("seven_day", "Weekly Window", None, None),
+                _window_dict("seven_day_fable", "Weekly Window (Fable)", None, None),
             ],
             "source": "unavailable",
             "source_error": str(e),

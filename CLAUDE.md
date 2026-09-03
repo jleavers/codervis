@@ -35,11 +35,17 @@ Live-only by design:
   `claudeAiOauth.accessToken`, and hits
   `GET https://claude.ai/api/oauth/usage` with `Authorization: Bearer …`.
   Response has `five_hour.utilization` and `seven_day.utilization` as
-  percentages already — no token-count maths needed. Results are cached
-  in-memory for `QUOTA_CACHE_TTL_SECONDS` so all SSE clients share one
-  upstream fetch.
+  percentages already. Its optional `limits` list can also contain a
+  `weekly_scoped` entry whose `scope.model.display_name` identifies Fable;
+  that entry's `percent` is also already on a 0–100 scale. No token-count
+  maths is needed. Results are cached in-memory for
+  `QUOTA_CACHE_TTL_SECONDS` so all SSE clients share one upstream fetch.
+- `_claude_section()` always emits a stable `seven_day_fable` (“Weekly Window
+  (Fable)”) slot so initial unavailable/missing data can recover through SSE.
+  A missing or malformed optional Fable entry produces `percent: null` only
+  for that gauge and does not make the Claude section unavailable.
 - On any failure (`LiveQuotaError`) the section returns
-  `source: "unavailable"` with `percent: null` for both gauges and the
+  `source: "unavailable"` with `percent: null` for all three gauges and the
   error string surfaced to the UI. The app does not estimate quota usage
   locally.
 - **`app/claude_activity.py`** — `ClaudeActivityReader` reports Claude

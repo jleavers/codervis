@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 import urllib.error
@@ -27,6 +28,7 @@ class LiveWindow:
 class LiveSnapshot:
     five_hour: LiveWindow
     seven_day: LiveWindow
+    seven_day_fable: LiveWindow | None
     subscription_type: str | None
     fetched_at: datetime
     raw: dict
@@ -107,6 +109,7 @@ class LiveQuotaClient:
         return LiveSnapshot(
             five_hour=_window("five_hour", "5-Hour Window", payload.get("five_hour")),
             seven_day=_window("seven_day", "Weekly Window", payload.get("seven_day")),
+            seven_day_fable=_fable_window(payload),
             subscription_type=subscription,
             fetched_at=datetime.now(timezone.utc),
             raw=payload,
@@ -142,11 +145,43 @@ def _window(name: str, label: str, raw: dict | None) -> LiveWindow:
     return LiveWindow(name=name, label=label, percent=percent, resets_at=resets_at)
 
 
+def _fable_window(payload: dict) -> LiveWindow | None:
+    limits = payload.get("limits")
+    if not isinstance(limits, list):
+        return None
+
+    for raw in limits:
+        if not isinstance(raw, dict) or raw.get("kind") != "weekly_scoped":
+            continue
+        scope = raw.get("scope")
+        model = scope.get("model") if isinstance(scope, dict) else None
+        display_name = model.get("display_name") if isinstance(model, dict) else None
+        if not isinstance(display_name, str) or "fable" not in display_name.casefold():
+            continue
+        try:
+            return _window(
+                "seven_day_fable",
+                "Weekly Window (Fable)",
+                {
+                    "utilization": raw.get("percent"),
+                    "resets_at": raw.get("resets_at"),
+                },
+            )
+        except LiveQuotaError:
+            continue
+    return None
+
+
 def _float_field(value, field: str) -> float:
+    if isinstance(value, bool):
+        raise LiveQuotaError(f"{field} is not numeric")
     try:
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError) as e:
         raise LiveQuotaError(f"{field} is not numeric") from e
+    if not math.isfinite(parsed):
+        raise LiveQuotaError(f"{field} is not finite")
+    return parsed
 
 
 def client_from_env() -> LiveQuotaClient:
