@@ -62,17 +62,20 @@ Live-only by design.
   `tokens.access_token` and `tokens.account_id`, and hits
   `GET https://chatgpt.com/backend-api/wham/usage` with
   `Authorization: Bearer …` and `ChatGPT-Account-Id: …`. The response
-  shape is parsed defensively. Current responses report the weekly limit as
-  the primary window; older responses may include an explicit weekly or
-  secondary window. Both may appear at the top level or under `rate_limit`.
-  An explicit `secondary_window` / `weekly` / `seven_day` / `weekly_window`
-  takes precedence; otherwise `primary_window` / `five_hour` /
-  `five_hour_window` supplies the single weekly gauge. Percentages come from
-  whichever of `utilization` / `percent_used` / `used_percent` /
-  `percent_left` / `remaining_percent` is present.
-- `_codex_section()` emits one `seven_day` ("Weekly Window") gauge. Failures
+  shape is parsed defensively. Primary and secondary windows may appear at the
+  top level or under `rate_limit`, with legacy aliases for 5-hour and weekly
+  windows. The parser classifies 18,000-second/300-minute windows as 5-hour and
+  604,800-second/10,080-minute windows as weekly, then falls back to legacy
+  primary/secondary ordering when duration metadata is absent. A lone
+  durationless `primary_window` remains weekly for compatibility with the
+  earlier weekly-only response. Percentages come from whichever of
+  `utilization` / `percent_used` / `used_percent` / `percent_left` /
+  `remaining_percent` is present.
+- `_codex_section()` emits stable `five_hour` ("5-Hour Window") and `seven_day`
+  ("Weekly Window") gauges. An omitted upstream window remains live with
+  `percent: null`; failures
   (`CodexLiveQuotaError`) return `source: "unavailable"` with `percent: null`
-  for that gauge and surface the error in the UI. The frontend never
+  for both gauges and surface the error in the UI. The frontend never
   synthesizes fake numbers.
 - **`app/codex_activity.py`** — `CodexActivityReader` reports Codex
   `last_activity` from safe local file metadata only: `history.jsonl`,

@@ -278,6 +278,7 @@ def test_codex_client_falls_back_to_alternate_usage_path(tmp_path, monkeypatch) 
     ]
     assert seen_headers[0]["authorization"] == "Bearer fake-access-token"
     assert seen_headers[0]["chatgpt-account-id"] == "acct_test"
+    assert snapshot.five_hour.percent == 11.0
     assert snapshot.seven_day.percent == 75.0
     assert snapshot.plan_type == "pro"
 
@@ -315,11 +316,93 @@ def test_codex_client_uses_primary_as_weekly_when_secondary_is_null(
 
     snapshot = client.get()
 
+    assert snapshot.five_hour.percent is None
+    assert snapshot.five_hour.resets_at is None
     assert snapshot.seven_day.percent == 11.0
     assert snapshot.seven_day.resets_at == datetime.fromtimestamp(
         1_700_000_000, tz=timezone.utc
     )
     assert snapshot.plan_type == "pro"
+
+
+def test_codex_client_keeps_durationless_primary_as_weekly_when_alone(
+    tmp_path, monkeypatch
+) -> None:
+    (tmp_path / "auth.json").write_text(
+        json.dumps({"tokens": {"access_token": "fake-access-token"}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        codex_quota.urllib.request,
+        "urlopen",
+        lambda req, timeout: _JSONResponse(
+            {
+                "rate_limit": {
+                    "primary_window": {"used_percent": 22},
+                    "secondary_window": None,
+                    "plan_type": "pro",
+                }
+            }
+        ),
+    )
+    client = codex_quota.CodexLiveQuotaClient(
+        tmp_path,
+        host="https://example.test",
+        cache_ttl_seconds=0,
+    )
+
+    snapshot = client.get()
+
+    assert snapshot.five_hour.percent is None
+    assert snapshot.seven_day.percent == 22.0
+
+
+def test_codex_client_exposes_five_hour_and_weekly_windows(tmp_path, monkeypatch) -> None:
+    (tmp_path / "auth.json").write_text(
+        json.dumps({"tokens": {"access_token": "fake-access-token"}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        codex_quota.urllib.request,
+        "urlopen",
+        lambda req, timeout: _JSONResponse(
+            {
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 37,
+                        "limit_window_seconds": 604_800,
+                        "reset_at": 1_700_500_000,
+                    },
+                    "secondary_window": {
+                        "used_percent": 12.5,
+                        "windowDurationMins": 300,
+                        "reset_at": 1_700_000_000,
+                    },
+                    "plan_type": "pro",
+                }
+            }
+        ),
+    )
+    client = codex_quota.CodexLiveQuotaClient(
+        tmp_path,
+        host="https://example.test",
+        cache_ttl_seconds=0,
+    )
+
+    snapshot = client.get()
+
+    assert snapshot.five_hour.name == "five_hour"
+    assert snapshot.five_hour.percent == 12.5
+    assert snapshot.five_hour.resets_at == datetime.fromtimestamp(
+        1_700_000_000, tz=timezone.utc
+    )
+    assert snapshot.seven_day.name == "seven_day"
+    assert snapshot.seven_day.percent == 37.0
+    assert snapshot.seven_day.resets_at == datetime.fromtimestamp(
+        1_700_500_000, tz=timezone.utc
+    )
 
 
 def test_cursor_requests_window_uses_request_ratio() -> None:

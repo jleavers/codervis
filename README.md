@@ -13,7 +13,7 @@ accepts. codervis reads each one and polls the matching undocumented endpoint:
 | Agent | Credential (read-only) | Endpoint(s) | Windows |
 | --- | --- | --- | --- |
 | Claude Code | `~/.claude/.credentials.json` → `claudeAiOauth.accessToken` (bearer) | `GET claude.ai/api/oauth/usage` | 5-hour + all-model weekly + Fable weekly utilization |
-| Codex CLI | `~/.codex/auth.json` → `tokens.access_token` + `account_id` (bearer) | `GET chatgpt.com/backend-api/wham/usage` | weekly utilization |
+| Codex CLI | `~/.codex/auth.json` → `tokens.access_token` + `account_id` (bearer) | `GET chatgpt.com/backend-api/wham/usage` | 5-hour + weekly utilization |
 | Cursor | `…/Cursor/User/globalStorage/state.vscdb` → SQLite key `cursorAuth/accessToken` (cookie) | `GET cursor.com/api/usage` + `/api/dashboard/*` | monthly premium-requests + usage-based spend |
 | GitHub Copilot (file mode) | `…/github-copilot/apps.json` → `oauth_token` (`token` header) | `GET api.github.com/copilot_internal/user` | monthly premium-requests + chat |
 | GitHub Copilot (PAT mode) | fine-grained PAT (`Plan` read) you create, via `COPILOT_GITHUB_TOKEN` | `GET api.github.com/users/{user}/settings/billing/premium_request/usage` | monthly premium-requests + usage-based spend |
@@ -73,9 +73,12 @@ reads timestamp/metadata to show each agent's local last activity.
 - **Gemini requires `agy`'s file-backed credential.** Linux keyring-only
   sessions are intentionally unsupported: codervis does not expose the host
   D-Bus Secret Service to Docker.
-- **Codex currently reports its weekly quota as the primary window.** Codervis
-  shows that as a single weekly gauge. For parser compatibility, an explicit
-  legacy weekly/secondary window takes precedence when one is present.
+- **Codex quota windows can move between primary and secondary slots.** Codervis
+  classifies 5-hour and weekly windows from their reported duration, then falls
+  back to the legacy primary/secondary ordering when duration metadata is
+  absent. A lone durationless `primary_window` remains weekly for compatibility
+  with the earlier weekly-only response. If either window is omitted, its gauge
+  reads “—” while the other remains live.
 - **Claude's Fable limit is plan-dependent.** Codervis reads the
   `weekly_scoped` Fable entry from the endpoint's `limits` list. If Anthropic
   omits that optional entry or returns it malformed, the Fable gauge shows “—”
@@ -305,7 +308,8 @@ Assist):
 
 - **Claude** shows **5-Hour Window**, **Weekly Window**, and **Weekly Window
   (Fable)** gauges, each with a countdown when its reset time is available.
-- **Codex** shows one **Weekly Window** gauge with its reset countdown.
+- **Codex** shows **5-Hour Window** and **Weekly Window** gauges with their reset
+  countdowns. If Codex omits either window, that gauge reads “—”.
 - **Cursor** shows a **Premium Requests (month)** gauge and a **Usage-Based
   Spend (month)** gauge, both on your monthly billing cycle. The line under
   each meter shows the raw figures (e.g. `42 / 500 reqs`, `$3.40 / $20.00`).
