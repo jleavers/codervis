@@ -26,6 +26,7 @@ class CodexLiveWindow:
 
 @dataclass
 class CodexLiveSnapshot:
+    five_hour: CodexLiveWindow
     seven_day: CodexLiveWindow
     plan_type: str | None
     fetched_at: datetime
@@ -46,11 +47,11 @@ class CodexLiveQuotaClient:
     hammering the endpoint when many SSE clients are connected.
 
     The endpoint is undocumented — reverse-engineered from the codex-rs
-    backend client. Current responses report the weekly limit as the primary
-    window and may omit the secondary window. Older responses can include an
-    explicit weekly/secondary window, which takes precedence when present.
-    Other failures raise CodexLiveQuotaError; the caller is expected to render
-    an "unavailable" state rather than synthesizing fake numbers.
+    backend client. Window positions have changed over time, so duration
+    metadata is used to distinguish the 5-hour and weekly limits when it is
+    present. A missing window is represented as an unreported gauge. Other
+    failures raise CodexLiveQuotaError; the caller is expected to render an
+    "unavailable" state rather than synthesizing fake numbers.
     """
 
     def __init__(
@@ -136,22 +137,30 @@ class CodexLiveQuotaClient:
             raise CodexLiveQuotaError(f"response is not JSON: {e}") from e
 
         rate_limit = payload.get("rate_limit") if isinstance(payload.get("rate_limit"), dict) else {}
-        primary_raw = _pick_window(
+        primary_entry = _pick_window(
             payload,
             rate_limit,
             keys=("primary_window", "five_hour", "five_hour_window"),
         )
-        seven_day_raw = _pick_window(
+        secondary_entry = _pick_window(
             payload,
             rate_limit,
             keys=("secondary_window", "weekly", "seven_day", "weekly_window"),
         )
-        if seven_day_raw is None:
-            seven_day_raw = primary_raw
+        primary_key, primary_raw = primary_entry or (None, None)
+        _, secondary_raw = secondary_entry or (None, None)
+        five_hour_raw, seven_day_raw = _classify_windows(
+            primary_raw,
+            secondary_raw,
+            primary_key=primary_key,
+        )
+        if five_hour_raw is None and seven_day_raw is None:
+            raise CodexLiveQuotaError("missing Codex usage windows")
         rl_plan = rate_limit.get("plan_type")
 
         return CodexLiveSnapshot(
-            seven_day=_window("seven_day", "Weekly Window", seven_day_raw),
+            five_hour=_optional_window("five_hour", "5-Hour Window", five_hour_raw),
+            seven_day=_optional_window("seven_day", "Weekly Window", seven_day_raw),
             plan_type=plan_type or rl_plan or payload.get("plan_type"),
             fetched_at=datetime.now(timezone.utc),
             raw=payload,
@@ -167,13 +176,73 @@ class CodexLiveQuotaClient:
             return snap
 
 
-def _pick_window(*containers: dict, keys: tuple[str, ...]) -> dict | None:
+def _pick_window(*containers: dict, keys: tuple[str, ...]) -> tuple[str, dict] | None:
     for container in containers:
         for k in keys:
             v = container.get(k)
             if isinstance(v, dict):
-                return v
+                return k, v
     return None
+
+
+def _classify_windows(
+    primary: dict | None,
+    secondary: dict | None,
+    *,
+    primary_key: str | None,
+) -> tuple[dict | None, dict | None]:
+    if (
+        primary is not None
+        and secondary is None
+        and primary_key == "primary_window"
+        and _window_duration_seconds(primary) is None
+    ):
+        return None, primary
+
+    five_hour: dict | None = None
+    seven_day: dict | None = None
+    unclassified: list[tuple[str, dict]] = []
+
+    for position, raw in (("primary", primary), ("secondary", secondary)):
+        if raw is None:
+            continue
+        duration = _window_duration_seconds(raw)
+        if duration == 18_000:
+            five_hour = raw
+        elif duration == 604_800:
+            seven_day = raw
+        else:
+            unclassified.append((position, raw))
+
+    for position, raw in unclassified:
+        if position == "primary" and five_hour is None:
+            five_hour = raw
+        elif position == "secondary" and seven_day is None:
+            seven_day = raw
+        elif five_hour is None:
+            five_hour = raw
+        elif seven_day is None:
+            seven_day = raw
+
+    return five_hour, seven_day
+
+
+def _window_duration_seconds(raw: dict) -> float | None:
+    for key in ("limit_window_seconds", "window_duration_seconds"):
+        value = raw.get(key)
+        if isinstance(value, (int, float)):
+            return float(value)
+    for key in ("windowDurationMins", "window_duration_mins", "window_minutes"):
+        value = raw.get(key)
+        if isinstance(value, (int, float)):
+            return float(value) * 60
+    return None
+
+
+def _optional_window(name: str, label: str, raw: dict | None) -> CodexLiveWindow:
+    if raw is None:
+        return CodexLiveWindow(name=name, label=label, percent=None, resets_at=None)
+    return _window(name, label, raw)
 
 
 def _window(name: str, label: str, raw: dict | None) -> CodexLiveWindow:
