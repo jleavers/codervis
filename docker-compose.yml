@@ -12,9 +12,9 @@ services:
       GEMINI_DATA_DIR: /data/gemini
       CLAUDE_ENABLED: "${CLAUDE_ENABLED:-true}"
       CODEX_ENABLED: "${CODEX_ENABLED:-true}"
-      CURSOR_ENABLED: "${CURSOR_ENABLED:-true}"
-      COPILOT_ENABLED: "${COPILOT_ENABLED:-true}"
-      GEMINI_ENABLED: "${GEMINI_ENABLED:-true}"
+      CURSOR_ENABLED: false
+      COPILOT_ENABLED: false
+      GEMINI_ENABLED: false
       # Copilot PAT mode (for VS Code users whose token isn't in a file).
       # If COPILOT_GITHUB_TOKEN is set, the documented billing REST API is used
       # instead of the apps.json/hosts.json + copilot_internal path.
