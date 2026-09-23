@@ -125,5 +125,4 @@ jobs:
       - name: Render Compose config
         env:
           USERPROFILE: /tmp/codervis-ci
-          APPDATA: /tmp/codervis-ci
         run: docker compose --env-file .env.example config --quiet

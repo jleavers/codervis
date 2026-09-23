@@ -32,23 +32,16 @@ test("loadSettings preserves booleans and fills invalid entries from defaults", 
     [STORAGE_KEY]: JSON.stringify({
       claude: false,
       codex: "false",
-      cursor: true,
     }),
   });
   const defaults = {
     claude: true,
-    codex: false,
-    gemini: false,
-    cursor: false,
-    copilot: true,
+    codex: true,
   };
 
   assert.deepEqual(loadSettings(storage, defaults), {
     claude: false,
-    codex: false,
-    gemini: false,
-    cursor: true,
-    copilot: true,
+    codex: true,
   });
 });
 
@@ -72,21 +65,15 @@ test("loadSettings survives malformed JSON and unavailable storage", () => {
 test("mergeSettings retains choices and fills missing provider defaults", () => {
   assert.deepEqual(
     mergeSettings(
-      { claude: false, codex: true },
+      { claude: false },
       {
         claude: true,
         codex: false,
-        gemini: false,
-        cursor: true,
-        copilot: false,
       }
     ),
     {
       claude: false,
-      codex: true,
-      gemini: false,
-      cursor: true,
-      copilot: false,
+      codex: false,
     }
   );
 });
@@ -95,17 +82,14 @@ test("defaultsFromPayload accepts only boolean enabled fields", () => {
   assert.deepEqual(
     defaultsFromPayload({
       claude: { enabled: false },
-      codex: { enabled: true },
-      gemini: { enabled: "false" },
+      codex: { enabled: "false" },
     }),
     {
       claude: false,
       codex: true,
-      gemini: true,
-      cursor: true,
-      copilot: true,
     }
   );
+  assert.deepEqual(defaultsFromPayload({}), { claude: true, codex: true });
 });
 
 test("disabled presentation hides source errors and enabled presentation restores them", () => {
@@ -134,9 +118,6 @@ test("status ignores disabled unavailable providers", () => {
     summariseStatus(payload, {
       claude: true,
       codex: false,
-      gemini: false,
-      cursor: false,
-      copilot: false,
     }),
     { state: "ok", text: "live" }
   );
