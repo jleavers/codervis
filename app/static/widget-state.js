@@ -6,7 +6,7 @@
     root.CodervisWidgetState = api;
   }
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
-  const PROVIDERS = ["claude", "codex", "gemini", "cursor", "copilot"];
+  const PROVIDERS = ["claude", "codex"];
   const STORAGE_KEY = "codervis.widget-enabled.v1";
 
   function defaultsFromPayload(payload) {
