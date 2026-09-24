@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import http.client
 import json
 import math
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -11,9 +13,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 
+from . import degrade
+
 
 CLAUDE_AI_HOST = "https://claude.ai"
 USAGE_PATH = "/api/oauth/usage"
+
+# A credential value is sent as an HTTP header. http.client rejects CR, LF and
+# NUL in a header value by raising a ValueError whose message quotes the whole
+# value, so a hand-assembled credentials file would otherwise put the bearer
+# token into an exception. Reject those characters here, where the value is
+# never quoted back.
+_ILLEGAL_HEADER_VALUE = re.compile(r"[\r\n\x00]")
 
 
 @dataclass
@@ -35,7 +46,16 @@ class LiveSnapshot:
 
 
 class LiveQuotaError(Exception):
-    pass
+    """A Claude quota failure, tagged with a fixed degrade classification.
+
+    `code` is one of `app.degrade`'s codes. The payload boundary uses it to pick
+    the message it serves; the message passed here is for developers reading a
+    traceback and is never served or logged.
+    """
+
+    def __init__(self, message: str, *, code: str = degrade.UNCLASSIFIED) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class LiveQuotaClient:
@@ -46,6 +66,11 @@ class LiveQuotaClient:
     the file on every call so we ride along on the host's refresh cadence.
     A short in-memory result cache avoids hammering the endpoint when many
     SSE clients are connected.
+
+    Parsing stays deliberately tolerant, and every failure it can name becomes
+    a LiveQuotaError with a classification. It is not the enforcing boundary,
+    though: `app/main.py` treats this client as untrusted and contains whatever
+    else it raises or returns.
     """
 
     def __init__(
@@ -69,17 +94,30 @@ class LiveQuotaClient:
     def _read_token(self) -> tuple[str, str | None]:
         try:
             raw = self.credentials_path.read_text(encoding="utf-8")
-        except OSError as e:
-            raise LiveQuotaError(f"cannot read credentials file: {e}") from e
+        except (OSError, ValueError) as e:
+            raise LiveQuotaError(
+                f"cannot read credentials file: {type(e).__name__}", code=degrade.CREDENTIALS
+            ) from e
         try:
             data = json.loads(raw)
-        except json.JSONDecodeError as e:
-            raise LiveQuotaError(f"credentials file is not JSON: {e}") from e
-        oauth = data.get("claudeAiOauth") or {}
+        except (ValueError, RecursionError) as e:
+            raise LiveQuotaError(
+                "credentials file is not usable JSON", code=degrade.CREDENTIALS
+            ) from e
+        oauth = data.get("claudeAiOauth") if isinstance(data, dict) else None
+        oauth = oauth if isinstance(oauth, dict) else {}
         token = oauth.get("accessToken")
-        if not token:
-            raise LiveQuotaError("no accessToken in credentials file")
-        return token, oauth.get("subscriptionType")
+        if not isinstance(token, str) or not token:
+            raise LiveQuotaError(
+                "no accessToken in credentials file", code=degrade.CREDENTIALS
+            )
+        if _ILLEGAL_HEADER_VALUE.search(token):
+            raise LiveQuotaError(
+                "accessToken contains a character that cannot be sent as a header",
+                code=degrade.CREDENTIALS,
+            )
+        subscription = oauth.get("subscriptionType")
+        return token, subscription if isinstance(subscription, str) else None
 
     def _fetch(self) -> LiveSnapshot:
         token, subscription = self._read_token()
@@ -94,17 +132,34 @@ class LiveQuotaClient:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
                 if resp.status != 200:
-                    raise LiveQuotaError(f"unexpected status {resp.status}")
+                    raise LiveQuotaError(
+                        f"unexpected status {resp.status}", code=degrade.HTTP
+                    )
                 body = resp.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as e:
-            raise LiveQuotaError(f"HTTP {e.code}: {e.reason}") from e
+            code = degrade.AUTH if e.code in (401, 403) else degrade.HTTP
+            raise LiveQuotaError(f"HTTP {e.code}", code=code) from e
         except urllib.error.URLError as e:
-            raise LiveQuotaError(f"network error: {e.reason}") from e
+            raise LiveQuotaError("network error", code=degrade.TRANSPORT) from e
+        except ValueError as e:
+            # http.client quotes the offending header value, which is the
+            # bearer token. Name the type only.
+            raise LiveQuotaError(
+                f"request could not be sent: {type(e).__name__}", code=degrade.CREDENTIALS
+            ) from e
+        except (OSError, http.client.HTTPException) as e:
+            # A fault raised from getresponse()/read() — a reset connection, a
+            # short read, a bad status line — is not a URLError.
+            raise LiveQuotaError(
+                f"transport error: {type(e).__name__}", code=degrade.TRANSPORT
+            ) from e
 
         try:
             payload = json.loads(body)
-        except json.JSONDecodeError as e:
-            raise LiveQuotaError(f"response is not JSON: {e}") from e
+        except (ValueError, RecursionError) as e:
+            raise LiveQuotaError("response is not usable JSON", code=degrade.SHAPE) from e
+        if not isinstance(payload, dict):
+            raise LiveQuotaError("response is not a JSON object", code=degrade.SHAPE)
 
         return LiveSnapshot(
             five_hour=_window("five_hour", "5-Hour Window", payload.get("five_hour")),
@@ -127,9 +182,13 @@ class LiveQuotaClient:
 
 def _window(name: str, label: str, raw: dict | None) -> LiveWindow:
     if not isinstance(raw, dict):
-        raise LiveQuotaError(f"missing or invalid {name} usage window")
+        raise LiveQuotaError(
+            f"missing or invalid {name} usage window", code=degrade.SHAPE
+        )
     if "utilization" not in raw:
-        raise LiveQuotaError(f"missing {name}.utilization in usage response")
+        raise LiveQuotaError(
+            f"missing {name}.utilization in usage response", code=degrade.SHAPE
+        )
     percent = _float_field(raw.get("utilization"), f"{name}.utilization")
     resets_raw = raw.get("resets_at")
     resets_at: datetime | None = None
@@ -140,7 +199,7 @@ def _window(name: str, label: str, raw: dict | None) -> LiveWindow:
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             resets_at = dt.astimezone(timezone.utc)
-        except ValueError:
+        except (ValueError, OverflowError, OSError):
             resets_at = None
     return LiveWindow(name=name, label=label, percent=percent, resets_at=resets_at)
 
@@ -174,13 +233,13 @@ def _fable_window(payload: dict) -> LiveWindow | None:
 
 def _float_field(value, field: str) -> float:
     if isinstance(value, bool):
-        raise LiveQuotaError(f"{field} is not numeric")
+        raise LiveQuotaError(f"{field} is not numeric", code=degrade.SHAPE)
     try:
         parsed = float(value)
-    except (TypeError, ValueError) as e:
-        raise LiveQuotaError(f"{field} is not numeric") from e
+    except (TypeError, ValueError, OverflowError) as e:
+        raise LiveQuotaError(f"{field} is not numeric", code=degrade.SHAPE) from e
     if not math.isfinite(parsed):
-        raise LiveQuotaError(f"{field} is not finite")
+        raise LiveQuotaError(f"{field} is not finite", code=degrade.SHAPE)
     return parsed
 
 
