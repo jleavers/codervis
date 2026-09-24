@@ -1,3 +1,12 @@
+# Every service can be made to log by a peer that reaches the port, so each log is capped
+# (#20). json-file is named rather than inherited, because max-size is its option and a daemon
+# whose default driver lacks it would refuse to create the containers.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   codervis:
     build: .
@@ -31,6 +40,7 @@ services:
       egress:
         condition: service_healthy
     restart: unless-stopped
+    logging: *logging
 
   # The dashboard's only route out: a CONNECT-only proxy that admits claude.ai and chatgpt.com,
   # plus whatever EGRESS_ALLOW adds (app/egress.py). It sees host names, never a token.
@@ -53,6 +63,7 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     restart: unless-stopped
+    logging: *logging
 
   # Publishes the dashboard and copies bytes to and from it (app/ingress.py).
   ingress:
@@ -70,6 +81,7 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     restart: unless-stopped
+    logging: *logging
 
 networks:
   # No default route: joining it adds a path to `egress` and `ingress` and nothing else.

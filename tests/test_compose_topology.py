@@ -95,6 +95,17 @@ def test_only_the_relay_publishes_a_port_and_it_targets_the_dashboard(config: di
     assert command[command.index("--target") + 1] == "codervis:8000"
 
 
+@pytest.mark.parametrize("service", ["codervis", "egress", "ingress"])
+def test_every_service_rotates_its_log(config: dict, service: str) -> None:
+    """A peer that can reach the port can make every service log on its behalf, so no
+    service's log may grow without bound (#20)."""
+    logging = config["services"][service].get("logging") or {}
+    assert logging.get("driver") == "json-file"
+    options = logging.get("options") or {}
+    assert options.get("max-size")
+    assert options.get("max-file")
+
+
 @pytest.mark.parametrize("service", ["egress", "ingress"])
 def test_the_gateway_services_run_with_nothing_to_spare(config: dict, service: str) -> None:
     """They hold no credential and are the two processes with a leg on the outside."""

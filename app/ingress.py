@@ -3,8 +3,13 @@
 Docker ignores a published port on a container whose networks are all ``internal``, so the
 dashboard cannot publish its own port without also getting a default route, which would leave
 the egress proxy advisory. This relay joins the internal network and an outside one, publishes
-the port, and copies bytes to and from the dashboard. It reads nothing, holds no credential and
-can reach one address.
+the port, and copies bytes to and from the dashboard. It holds no credential and can reach one
+address.
+
+It reads only as far as the end of the first request head, and only to bound what a peer can
+cost: uvicorn arms no timer until it has sent a response, so a socket that sends nothing, or
+drips its head, would otherwise hold a slot forever (#20). Once the head is in, nothing is
+timed, because an SSE response lasts as long as the browser tab.
 """
 
 from __future__ import annotations
@@ -23,6 +28,9 @@ log = logging.getLogger("app.ingress")
 DEFAULT_BIND = "127.0.0.1"
 DEFAULT_PORT = 8000
 CONNECT_TIMEOUT_S = 10.0
+# How long a client may take to send its first complete request head, and how large it may be.
+REQUEST_TIMEOUT_S = 10.0
+MAX_REQUEST_HEAD_BYTES = 16 * 1024
 # Each open browser tab holds one SSE connection, so this sits far above any real use while
 # still refusing a flood before it runs the process out of descriptors.
 MAX_CONNECTIONS = 256
@@ -42,10 +50,12 @@ class Relay:
         target_port: int,
         *,
         connect_timeout_s: float = CONNECT_TIMEOUT_S,
+        request_timeout_s: float = REQUEST_TIMEOUT_S,
         max_connections: int = MAX_CONNECTIONS,
     ) -> None:
         self._target = (target_host, target_port)
         self._connect_timeout_s = connect_timeout_s
+        self._request_timeout_s = request_timeout_s
         self._max_connections = max_connections
         self._recovered_at = max_connections * 3 // 4
         self._accepted = 0
@@ -79,6 +89,22 @@ class Relay:
             await close(writer)
 
     async def _serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        # The dashboard is not dialled until the head is complete, so a silent peer costs one
+        # slot for REQUEST_TIMEOUT_S and nothing downstream.
+        try:
+            async with asyncio.timeout(self._request_timeout_s):
+                head = await reader.readuntil(b"\r\n\r\n")
+        except TimeoutError:
+            await reply(writer, response(408, "Request Timeout", "no request in time\n"))
+            return
+        except asyncio.LimitOverrunError:
+            await reply(
+                writer,
+                response(431, "Request Header Fields Too Large", "request head too large\n"),
+            )
+            return
+        except asyncio.IncompleteReadError:
+            return
         host, port = self._target
         try:
             async with asyncio.timeout(self._connect_timeout_s):
@@ -90,6 +116,9 @@ class Relay:
             await reply(writer, response(502, "Bad Gateway", "the dashboard is not answering\n"))
             return
         try:
+            # Anything the client sent after the head is still in `reader` and relays below.
+            target_writer.write(head)
+            await target_writer.drain()
             await tunnel(reader, writer, target_reader, target_writer)
         finally:
             await close(target_writer)
@@ -100,7 +129,7 @@ async def serve(
 ) -> asyncio.Server:
     """Start the relay and return the server."""
     relay = Relay(target_host, target_port)
-    return await asyncio.start_server(relay.handle, bind, port)
+    return await asyncio.start_server(relay.handle, bind, port, limit=MAX_REQUEST_HEAD_BYTES)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

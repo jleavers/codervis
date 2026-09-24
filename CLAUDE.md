@@ -110,10 +110,16 @@ relative-time labels stay live between server pushes via a 1-second
   the reserved `egress-probe.invalid`.
 - **`ingress`** — `app/ingress.py`, a byte relay that publishes
   `DASHBOARD_PORT` and forwards to `codervis:8000`. It is needed because Docker
-  ignores `ports:` on an internal-only container.
+  ignores `ports:` on an internal-only container. It is also the front door's
+  resource bound: at most 256 connections, and a client must send a complete
+  first request head (at most 16 KiB) within 10 s or get 408/431 before the
+  dashboard is dialled. uvicorn itself arms no timer until it has sent a
+  response. After the head, nothing is timed, so SSE is unaffected.
 
 `egress` and `ingress` join `inside` and `outside`, run as uid 65534 with a
 read-only root filesystem and all capabilities dropped, and hold no credential.
+All three services log to json-file capped at 3 × 10 MB (`x-logging` in the
+compose file), since a peer that reaches the port can make each of them log.
 `python -m app.egress check`, run in the `codervis` container, verifies both
 halves of the bound: the proxy filters by name and admits the configured
 upstream hosts, and there is no direct route round it.

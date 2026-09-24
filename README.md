@@ -241,5 +241,8 @@ flags that are useful for quick diagnosis.
   the egress allow-list, and only over HTTPS. The proxy sees host names, never
   the TLS session or the tokens inside it. This bounds where a token can be
   sent; it does not change who can reach the published port.
+- Whoever can reach the port is bounded in what they can cost: `ingress` holds
+  at most 256 connections, and it drops a client that has not sent a complete
+  request within 10 seconds. Every service's log is capped at 3 × 10 MB.
 - The dashboard never logs the tokens. If you regenerated `usage-debug.log`
   during setup, delete it.
