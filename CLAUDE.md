@@ -318,6 +318,14 @@ The pytest suite uses FastAPI's `TestClient`, direct parser imports, stubbed
 quota clients, and temporary directories. It must not read host credential
 files or call the live undocumented quota endpoints.
 
+Neither may you. Every command above runs on the host that holds the two live
+tokens this dashboard displays, so the environment agent tooling runs in is set
+once, in `.claude/settings.json` — sandboxed shell, reads blocked outside the
+working directories, the host's secret stores denied by name — rather than
+restated by each document that ships an instruction. The rule, what it does not
+cover, and the reason it exists are under "The execution context you run in" in
+`AGENTS.md`; `tests/test_agent_tooling_context.py` pins it.
+
 Handlers read published snapshots, so a test that swaps a client in must
 publish before asking for a payload — `tests/test_main_payload.py` gives each
 test its own refreshers and calls `_publish()`. `TestClient(app)` starts the
