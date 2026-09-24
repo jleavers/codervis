@@ -66,9 +66,12 @@ class ClaudeActivityReader:
             if dt is not None and (last_activity is None or dt > last_activity):
                 last_activity = dt
             if time.monotonic() >= deadline:
-                # Out of budget. What is already cached per file makes the next
-                # scan cheaper, so a truncated scan catches up rather than
-                # losing the rest of the tree for good.
+                # Out of time. The per-file (mtime, size) cache makes the files
+                # already done nearly free next time, so a scan cut short here
+                # gets further on the next pass rather than losing the tail for
+                # good. The max_files cut below is not like that -- it stops at
+                # the same prefix every time -- which is why its default is set
+                # far above any real tree.
                 break
         return ClaudeActivitySnapshot(
             last_activity=last_activity,
@@ -84,6 +87,10 @@ class ClaudeActivityReader:
             for path in projects.rglob("*.jsonl"):
                 if path.is_file():
                     found.append(path)
+                # Per match, not per entry: rglob("*.jsonl") filters by name
+                # without statting, so entries that do not match cost almost
+                # nothing and the deadline is what bounds a huge tree of them.
+                # (Codex's reader walks "*" and does have to count every entry.)
                 if len(found) >= self.max_files or time.monotonic() >= deadline:
                     break
         except OSError:

@@ -42,9 +42,11 @@ directories; it must not call upstream quota endpoints or read host tokens.
   success. `refresh_once()` must keep catching `Exception` whole; an escape
   would kill the worker and freeze that source.
 - `app/budget.py` owns the deadline and byte cap every payload-feeding read
-  runs under — `read_capped()` for upstream bodies, `bounded_lines()` for
-  transcript records. Any new read of something someone else writes gets the
-  same treatment.
+  runs under — `read_capped()` for upstream bodies, `read_text_capped()` for
+  the credential files, `bounded_lines()` for transcript records. Any new read
+  of something someone else writes gets the same treatment, and its knob goes
+  in the "Read budgets" table in `README.md`, plus `.env.example` and
+  `docker-compose.yml`.
 - `app/quota.py` owns the Claude live client and must convert any upstream,
   auth, parse, or file-read failure into `LiveQuotaError`, including a
   `BudgetExceeded` from a body that is too large or too slow.

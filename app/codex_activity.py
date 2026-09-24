@@ -54,31 +54,34 @@ class CodexActivityReader:
         data_root_exists = self.data_dir.exists()
         last_activity: datetime | None = None
         if data_root_exists:
-            seen = 0
-            for path in self._activity_paths():
+            for path in self._activity_paths(deadline):
                 dt = _mtime(path)
                 if dt is not None and (last_activity is None or dt > last_activity):
                     last_activity = dt
-                seen += 1
-                if seen >= self.max_files or time.monotonic() >= deadline:
-                    break
         return CodexActivitySnapshot(
             last_activity=last_activity,
             data_root_exists=data_root_exists,
         )
 
-    def _activity_paths(self) -> Iterator[Path]:
+    def _activity_paths(self, deadline: float) -> Iterator[Path]:
         for name in ACTIVITY_FILES:
             path = self.data_dir / name
             if path.is_file():
                 yield path
 
+        # The budget is spent on every entry the walk *touches*, not on every
+        # entry it yields: rglob("*") stats each one, so a tree of directories
+        # with no files in it would otherwise cost the whole walk for free.
+        seen = 0
         for name in ACTIVITY_DIRS:
             root = self.data_dir / name
             if not root.is_dir():
                 continue
             try:
                 for path in root.rglob("*"):
+                    seen += 1
+                    if seen > self.max_files or time.monotonic() >= deadline:
+                        return
                     if path.is_file():
                         yield path
             except OSError:

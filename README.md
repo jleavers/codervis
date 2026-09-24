@@ -113,6 +113,7 @@ that cannot be parsed is ignored in favour of the default.
 | `QUOTA_TIMEOUT_SECONDS` | urllib's timeout, per socket operation. | `8` |
 | `QUOTA_TOTAL_DEADLINE_SECONDS` | Deadline across a whole quota fetch, including both of Codex's candidate paths. This is what bounds a sender that trickles bytes forever, which the per-operation timeout cannot. | `10` |
 | `QUOTA_MAX_RESPONSE_BYTES` | Most an upstream usage response may be. | `1048576` |
+| `CREDENTIALS_MAX_BYTES` | Most `.credentials.json` / `auth.json` may be. They are read on every refresh and sit in the same writable tree as the transcripts. | `1048576` |
 | `ACTIVITY_SCAN_DEADLINE_SECONDS` | Deadline across a whole local activity scan. A scan that runs out reports what it found and catches up next time. | `5` |
 | `ACTIVITY_MAX_LINE_BYTES` | Most one transcript record may be. A longer one is skipped; the rest of the file is still read. | `1048576` |
 | `ACTIVITY_MAX_FILE_BYTES` | Most that is read from one transcript file. | `16777216` |

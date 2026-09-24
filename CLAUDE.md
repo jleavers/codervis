@@ -34,9 +34,12 @@ This is load-bearing, so keep it whole:
   that back in the hands of whoever sends requests.
 - **A refresher publishes failure exactly as it publishes success**, so a
   failing provider is retried on the cadence rather than on every tick.
-  `refresh_once()` catches `Exception` whole on purpose: an escape kills the
+  `refresh_once()` catches `Exception` whole because an escape kills the
   worker thread and freezes that source at its last snapshot forever.
-- **Every payload-feeding read has a deadline and a byte cap** (`app/budget.py`).
+- **Every payload-feeding read has a deadline and a byte cap** (`app/budget.py`)
+  — the upstream body, the credential file, and each transcript file. Their
+  knobs are the "Read budgets" table in `README.md`, which is the one place
+  they are listed; the cadence knobs are in the table above it.
   urllib's timeout is per socket operation, so a sender that keeps trickling
   renews it indefinitely; only `read_capped()`'s total deadline ends that, and
   `bounded_lines()` is what stops one unterminated transcript record growing
@@ -214,10 +217,10 @@ quota clients, and temporary directories. It must not read host credential
 files or call the live undocumented quota endpoints.
 
 Handlers read published snapshots, so a test that swaps a client in must
-publish before asking for a payload: `tests/test_main_payload.py` gives each
-test its own refreshers and calls `_publish()`. `TestClient(app)` outside a
-`with` block does not run the lifespan, so no background thread starts in
-tests. `tests/test_payload_budget.py` pins the budgets and the refresher.
+publish before asking for a payload — `tests/test_main_payload.py` gives each
+test its own refreshers and calls `_publish()`. `TestClient(app)` starts the
+refresher threads only as a context manager (`with TestClient(app)`).
+`tests/test_payload_budget.py` pins the budgets and the refresher.
 
 ## Local dev gotchas
 

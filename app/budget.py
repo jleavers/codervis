@@ -69,6 +69,26 @@ def read_capped(resp, *, max_bytes: int, deadline: float) -> bytes:
         chunks.append(chunk)
 
 
+def read_text_capped(path, *, max_bytes: int) -> str:
+    """Read a whole small file, refusing anything past ``max_bytes``.
+
+    The credential files are payload-feeding reads too -- ``subscriptionType``
+    and ``plan_type`` come straight out of them -- and they sit in the same
+    tree as the transcripts, which anything that can write under ``~/.claude``
+    or ``~/.codex`` chooses the contents of. A multi-gigabyte file here would
+    otherwise be slurped whole and then doubled by ``json.loads``.
+
+    There is no deadline: a blocking read of a hung mount cannot portably be
+    given one. It is bounded by running off the event loop, where it delays
+    its own source's refresh and nothing else.
+    """
+    with open(path, "rb") as f:
+        raw = f.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise BudgetExceeded(f"credentials file exceeded {max_bytes} bytes")
+    return raw.decode("utf-8", errors="replace")
+
+
 def bounded_lines(
     stream: BinaryIO,
     *,
@@ -87,7 +107,11 @@ def bounded_lines(
     buf = bytearray()
     read_total = 0
     skipping = False
-    while read_total < max_file_bytes:
+    hit_file_cap = False
+    while True:
+        if read_total >= max_file_bytes:
+            hit_file_cap = True
+            break
         chunk = stream.read(min(CHUNK_BYTES, max_file_bytes - read_total))
         if not chunk:
             break
@@ -111,7 +135,11 @@ def bounded_lines(
             # it now, and skip to the next newline rather than keep building.
             buf.clear()
             skipping = True
-    if buf and not skipping:
+    # A leftover buffer is a complete final record only if the file actually
+    # ended. If the cap is what stopped the read, it is a record cut in half,
+    # and handing it over as if it were whole invites a truncated value being
+    # treated as real.
+    if buf and not skipping and not hit_file_cap:
         yield bytes(buf)
 
 

@@ -46,6 +46,9 @@ class SourceSnapshot(Generic[T]):
 
 _PENDING: SourceSnapshot = SourceSnapshot(ok=False, value=None, error=None, at=None)
 
+# No source is read more often than this, whatever it is asked for.
+MIN_INTERVAL_SECONDS = 0.01
+
 
 class SourceRefresher(Generic[T]):
     """Runs one blocking ``fetch`` on a cadence and publishes what it returned."""
@@ -58,10 +61,17 @@ class SourceRefresher(Generic[T]):
     ) -> None:
         self.name = name
         self._fetch = fetch
-        self.interval_seconds = max(0.0, interval_seconds)
+        # A floor rather than just a non-negative: a zero interval is a hot
+        # loop against the source by construction, which is the thing this
+        # class exists to make impossible.
+        self.interval_seconds = max(MIN_INTERVAL_SECONDS, interval_seconds)
         self._lock = threading.Lock()
         self._snapshot: SourceSnapshot[T] = _PENDING
-        self._stop = threading.Event()
+        # Each thread gets its own stop flag, created in start(). A single
+        # shared Event would let a later start() clear the flag of a thread
+        # that stop() failed to join, reviving it -- two live threads, both
+        # fetching, only the newer one stoppable.
+        self._stop: threading.Event | None = None
         self._thread: threading.Thread | None = None
 
     def snapshot(self) -> SourceSnapshot[T]:
@@ -93,12 +103,18 @@ class SourceRefresher(Generic[T]):
         return published
 
     def start(self) -> None:
-        """Start the refresher's thread. Idempotent."""
+        """Start the refresher's thread. Idempotent, and refuses to double up.
+
+        If a previous thread was asked to stop but is still wedged in a read,
+        this does nothing: it is already stopping, and a second thread would
+        double the source's call volume for as long as the first took to die.
+        """
         if self._thread is not None and self._thread.is_alive():
             return
-        self._stop.clear()
+        stop = threading.Event()
+        self._stop = stop
         self._thread = threading.Thread(
-            target=self._run, name=f"refresh:{self.name}", daemon=True
+            target=self._run, args=(stop,), name=f"refresh:{self.name}", daemon=True
         )
         self._thread.start()
 
@@ -107,19 +123,23 @@ class SourceRefresher(Generic[T]):
 
         The join is best-effort on purpose: a read wedged in the kernel would
         otherwise hold shutdown open for as long as it wants to. The thread is
-        a daemon, so leaving it behind is safe.
+        a daemon, so leaving it behind is safe -- and the reference is kept, so
+        a later start() can see it is still alive and decline to add a second.
         """
-        self._stop.set()
-        thread, self._thread = self._thread, None
+        if self._stop is not None:
+            self._stop.set()
+        thread = self._thread
         if thread is not None:
             thread.join(timeout)
+            if not thread.is_alive():
+                self._thread = None
 
-    def _run(self) -> None:
-        while not self._stop.is_set():
+    def _run(self, stop: threading.Event) -> None:
+        while not stop.is_set():
             self.refresh_once()
             # A gap rather than a period: a fetch that overruns its interval
             # still cannot turn into a hot loop against the source.
-            self._stop.wait(self.interval_seconds)
+            stop.wait(self.interval_seconds)
 
 
 def wait_for_first_publish(

@@ -638,3 +638,171 @@ def test_env_budget_honours_the_old_name_for_the_same_number(monkeypatch) -> Non
 
     monkeypatch.setenv("CODERVIS_TEST_NEW", "9")
     assert env_float("CODERVIS_TEST_NEW", 30.0, fallback="CODERVIS_TEST_OLD") == 9.0
+
+
+# ------------------------------------------------ lifespan and thread safety
+
+
+def test_lifespan_starts_and_stops_every_source(monkeypatch) -> None:
+    """The refreshers are the change; nothing else runs them in production."""
+    from fastapi.testclient import TestClient
+
+    calls = {"n": 0}
+
+    def counted():
+        calls["n"] += 1
+        raise quota.LiveQuotaError("down")
+
+    sources = tuple(SourceRefresher(f"s{i}", counted, 30.0) for i in range(4))
+    monkeypatch.setattr(main, "_SOURCES", sources)
+    monkeypatch.setattr(main, "_claude_quota_source", sources[0])
+    monkeypatch.setattr(main, "_claude_activity_source", sources[1])
+    monkeypatch.setattr(main, "_codex_quota_source", sources[2])
+    monkeypatch.setattr(main, "_codex_activity_source", sources[3])
+    monkeypatch.setattr(main, "STARTUP_REFRESH_WAIT_SECONDS", 2.0)
+
+    def live_threads() -> int:
+        return sum(1 for t in threading.enumerate() if t.name.startswith("refresh:s"))
+
+    with TestClient(main.app) as client:
+        assert live_threads() == 4
+        # The startup wait means the first request is served real outcomes.
+        assert all(s.snapshot().published for s in sources)
+        response = client.get("/api/usage")
+        assert response.status_code == 200
+        assert response.json()["claude"]["source"] == "unavailable"
+
+    deadline = time.monotonic() + 5.0
+    while live_threads() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert live_threads() == 0, "the lifespan must stop what it started"
+    assert calls["n"] >= 4
+
+
+def test_start_after_a_stop_that_could_not_join_does_not_double_up() -> None:
+    """Two live threads would double the source's call volume.
+
+    `stop()` cannot kill a thread wedged in a read, so it gives up joining. A
+    later `start()` has to notice that thread is still there.
+    """
+    release = threading.Event()
+    running = threading.Event()
+
+    def wedged():
+        running.set()
+        release.wait(10.0)
+
+    refresher = SourceRefresher("wedged", wedged, 0.01)
+    refresher.start()
+    try:
+        assert running.wait(2.0)
+        refresher.stop(timeout=0.05)  # cannot join: the fetch is still wedged
+
+        refresher.start()
+        live = [t for t in threading.enumerate() if t.name == "refresh:wedged"]
+
+        assert len(live) == 1, f"{len(live)} threads are fetching this source"
+    finally:
+        release.set()
+        refresher.stop(timeout=2.0)
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if not [t for t in threading.enumerate() if t.name == "refresh:wedged"]:
+            break
+        time.sleep(0.01)
+    assert not [t for t in threading.enumerate() if t.name == "refresh:wedged"]
+
+
+def test_refresher_refuses_a_hot_loop_interval() -> None:
+    assert SourceRefresher("x", lambda: None, 0.0).interval_seconds > 0
+    assert SourceRefresher("x", lambda: None, -5.0).interval_seconds > 0
+
+
+# ------------------------------------------------------ credential budgets
+
+
+@pytest.mark.parametrize(
+    ("client_class", "filename", "error", "key"),
+    [
+        (
+            quota.LiveQuotaClient,
+            ".credentials.json",
+            quota.LiveQuotaError,
+            "claudeAiOauth",
+        ),
+        (
+            codex_quota.CodexLiveQuotaClient,
+            "auth.json",
+            codex_quota.CodexLiveQuotaError,
+            "tokens",
+        ),
+    ],
+)
+def test_credentials_file_is_capped(tmp_path, client_class, filename, error, key) -> None:
+    """The credential files are payload-feeding reads in the same writable tree."""
+    (tmp_path / filename).write_text(
+        json.dumps({key: {"accessToken": "x" * 20_000}}), encoding="utf-8"
+    )
+    client = client_class(
+        tmp_path, host="https://example.test", max_credentials_bytes=1024
+    )
+
+    with pytest.raises(error, match="credentials read budget"):
+        client.get()
+
+
+def test_a_credentials_file_inside_the_cap_still_works(tmp_path, monkeypatch) -> None:
+    _claude_credentials(tmp_path)
+    monkeypatch.setattr(
+        quota.urllib.request,
+        "urlopen",
+        lambda req, timeout: _Body(
+            json.dumps(
+                {"five_hour": {"utilization": 1}, "seven_day": {"utilization": 2}}
+            ).encode("utf-8")
+        ),
+    )
+
+    snapshot = quota.LiveQuotaClient(
+        tmp_path, host="https://example.test", max_credentials_bytes=1024
+    ).get()
+
+    assert snapshot.five_hour.percent == 1
+
+
+# ------------------------------------------------------- walk budgets
+
+
+def test_codex_walk_is_bounded_by_entries_touched_not_files_yielded(tmp_path) -> None:
+    """A tree of directories used to cost the whole walk for free."""
+    sessions = tmp_path / "sessions"
+    for i in range(200):
+        (sessions / f"d{i}").mkdir(parents=True)
+
+    reader = CodexActivityReader(tmp_path, scan_deadline_seconds=30.0, max_files=5)
+    walked: list[object] = []
+    real_rglob = type(sessions).rglob
+
+    def counting_rglob(self, pattern):
+        for path in real_rglob(self, pattern):
+            walked.append(path)
+            yield path
+
+    original = type(sessions).rglob
+    type(sessions).rglob = counting_rglob
+    try:
+        reader.snapshot()
+    finally:
+        type(sessions).rglob = original
+
+    assert len(walked) <= 6, f"walked {len(walked)} entries with max_files=5"
+
+
+def test_bounded_lines_does_not_yield_a_record_the_file_cap_cut_in_half() -> None:
+    """A truncated record that happened to parse would be treated as real."""
+    stream = io.BytesIO(b'{"timestamp":"2026-05-20T08:00:00Z"}\n{"timestamp":"2026')
+
+    records = list(bounded_lines(stream, max_line_bytes=1 << 20, max_file_bytes=40))
+
+    assert records == [b'{"timestamp":"2026-05-20T08:00:00Z"}']

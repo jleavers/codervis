@@ -9,7 +9,15 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .budget import BudgetExceeded, deadline_in, env_float, env_int, read_capped, remaining
+from .budget import (
+    BudgetExceeded,
+    deadline_in,
+    env_float,
+    env_int,
+    read_capped,
+    read_text_capped,
+    remaining,
+)
 
 
 CHATGPT_HOST = "https://chatgpt.com"
@@ -68,12 +76,14 @@ class CodexLiveQuotaClient:
         timeout_seconds: float = 8.0,
         total_deadline_seconds: float = 10.0,
         max_response_bytes: int = 1024 * 1024,
+        max_credentials_bytes: int = 1024 * 1024,
     ) -> None:
         self.data_dir = Path(data_dir)
         self.host = host.rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.total_deadline_seconds = total_deadline_seconds
         self.max_response_bytes = max_response_bytes
+        self.max_credentials_bytes = max_credentials_bytes
 
     @property
     def credentials_path(self) -> Path:
@@ -81,7 +91,11 @@ class CodexLiveQuotaClient:
 
     def _read_token(self) -> tuple[str, str | None, str | None]:
         try:
-            raw = self.credentials_path.read_text(encoding="utf-8")
+            raw = read_text_capped(
+                self.credentials_path, max_bytes=self.max_credentials_bytes
+            )
+        except BudgetExceeded as e:
+            raise CodexLiveQuotaError(f"credentials read budget: {e}") from e
         except OSError as e:
             raise CodexLiveQuotaError(f"cannot read credentials file: {e}") from e
         try:
@@ -347,4 +361,5 @@ def client_from_env() -> CodexLiveQuotaClient:
         timeout_seconds=env_float("QUOTA_TIMEOUT_SECONDS", 8.0),
         total_deadline_seconds=env_float("QUOTA_TOTAL_DEADLINE_SECONDS", 10.0),
         max_response_bytes=env_int("QUOTA_MAX_RESPONSE_BYTES", 1024 * 1024),
+        max_credentials_bytes=env_int("CREDENTIALS_MAX_BYTES", 1024 * 1024),
     )
