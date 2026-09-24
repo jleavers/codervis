@@ -100,11 +100,17 @@ def test_read_capped_refuses_the_first_byte_past_the_cap() -> None:
 def test_read_capped_stops_a_sender_that_never_stops() -> None:
     endless = _Endless()
 
+    started = time.monotonic()
+    # The cap is well above what 0.2 s of this sender can deliver, so the
+    # deadline is what must end it -- but it is a cap a lost deadline can still
+    # reach in seconds. A 1 GiB cap here would take ~44 minutes instead, so a
+    # deadline regression would wedge the suite rather than fail it.
     with pytest.raises(BudgetExceeded):
-        read_capped(endless, max_bytes=1 << 30, deadline=time.monotonic() + 0.2)
+        read_capped(endless, max_bytes=1 << 20, deadline=time.monotonic() + 0.2)
+    held = time.monotonic() - started
 
-    # Bounded by the deadline, not by the cap: without one this never returns.
-    assert endless.served < (1 << 30)
+    assert held < 5.0, "the deadline, not the byte cap, is what ended this"
+    assert endless.served < (1 << 20)
 
 
 def test_read_capped_prefers_read1_so_the_deadline_is_checked_between_recvs() -> None:
@@ -1137,3 +1143,119 @@ def test_a_snapshot_with_no_monotonic_stamp_still_ages_on_the_wall_clock() -> No
     )
 
     assert not source.current().ok
+
+
+def test_a_recorded_failure_does_not_grow_a_traceback_on_every_build(
+    stub_sources, monkeypatch
+) -> None:
+    """The same exception object is re-raised on every payload build.
+
+    Each raise appends a frame to that *same* object, so the chain would grow
+    without bound exactly where this design is supposed to hold: a source that
+    published a failure and then wedged is never republished, so nothing ever
+    replaces the snapshot holding it.
+    """
+    def failing():
+        raise quota.LiveQuotaError("upstream down")
+
+    source = SourceRefresher("claude-quota", failing, 30.0)
+    source.refresh_once()
+    monkeypatch.setattr(main, "_claude_quota_source", source)
+
+    def traceback_entries() -> int:
+        tb, n = source.snapshot().error.__traceback__, 0
+        while tb is not None:
+            n += 1
+            tb = tb.tb_next
+        return n
+
+    for _ in range(200):
+        payload = main._build_payload()
+
+    assert payload["claude"]["source"] == "unavailable"
+    assert traceback_entries() <= 2, (
+        "the stored exception grew a frame per payload build"
+    )
+
+
+def test_a_pending_source_is_still_reported_when_its_error_is_falsy() -> None:
+    """The guard is the snapshot's `ok`, not whether an exception is truthy."""
+
+    class Falsy(Exception):
+        def __bool__(self) -> bool:
+            return False
+
+    assert isinstance(main._recorded(Falsy("x"), "pending"), Falsy)
+    assert isinstance(main._recorded(None, "pending"), main._NotPublished)
+
+
+def test_healthz_does_not_stall_other_routes(monkeypatch) -> None:
+    """`/healthz` stats the same bind mounts every other read moved off the loop.
+
+    A hung `~/.claude` would otherwise block the event loop here and stall
+    every route, including `/api/usage`, which does no I/O of its own.
+    """
+    import types
+    from pathlib import Path
+
+    class SlowPath(type(Path("/"))):
+        def exists(self, *args, **kwargs):
+            time.sleep(1.5)
+            return True
+
+    slow = SlowPath("/tmp")
+    for name, attr in (
+        ("_claude_activity", "data_dir"),
+        ("_codex_activity", "data_dir"),
+        ("_live", "credentials_path"),
+        ("_codex", "credentials_path"),
+    ):
+        monkeypatch.setattr(main, name, types.SimpleNamespace(**{attr: slow}))
+
+    async def drive() -> float:
+        health = asyncio.create_task(main.healthz())
+        await asyncio.sleep(0.05)  # let it reach the first stat
+        started = time.monotonic()
+        main._build_payload()
+        elapsed = time.monotonic() - started
+        await health
+        return elapsed
+
+    assert asyncio.run(drive()) < 0.5, "a payload waited behind /healthz's stats"
+
+
+@pytest.mark.parametrize(
+    "client_module, error_type, credentials",
+    (
+        (quota, quota.LiveQuotaError, ".credentials.json"),
+        (codex_quota, codex_quota.CodexLiveQuotaError, "auth.json"),
+    ),
+)
+def test_a_credential_read_failure_names_the_type_and_not_the_message(
+    tmp_path, monkeypatch, client_module, error_type, credentials
+) -> None:
+    """An OSError's text is the path it failed on, and can be anything.
+
+    `AGENTS.md` forbids an exception's own text reaching the payload, a log
+    line or a test's output. Only `.code` is read today, so this is latent --
+    but it is one edit from becoming a leak.
+    """
+    marker = "SECRET-MARKER-sk-ant-do-not-surface"
+
+    def exploding_read(*args, **kwargs):
+        raise OSError(marker)
+
+    monkeypatch.setattr(client_module, "read_text_capped", exploding_read)
+    client = (
+        quota.LiveQuotaClient(tmp_path, host="https://example.test")
+        if client_module is quota
+        else codex_quota.CodexLiveQuotaClient(tmp_path, host="https://example.test")
+    )
+    (tmp_path / credentials).write_text("{}", encoding="utf-8")
+
+    with pytest.raises(error_type) as raised:
+        client.get()
+
+    assert marker not in str(raised.value)
+    assert "OSError" in str(raised.value)
+    assert raised.value.code == degrade.CREDENTIALS

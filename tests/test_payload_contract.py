@@ -30,6 +30,7 @@ from fastapi.testclient import TestClient
 from app import degrade, main
 from app.claude_activity import ClaudeActivityReader
 from app.codex_activity import CodexActivityReader
+from app.budget import BudgetExceeded
 from app.refresh import SourceRefresher
 from app.codex_quota import CodexLiveQuotaClient, CodexLiveQuotaError
 from app.quota import LiveQuotaClient, LiveQuotaError
@@ -229,6 +230,10 @@ def transport_faults() -> dict[str, BaseException]:
         "key-error": KeyError("five_hour"),
         "attribute-error": AttributeError("'NoneType' object has no attribute 'get'"),
         "unicode-error": UnicodeEncodeError("utf-8", "\ud800", 0, 1, "surrogate"),
+        # The read budget cutting off a body that is too large or still
+        # trickling at the deadline. The transfer never completed, so it
+        # belongs with the transport faults rather than the shape ones.
+        "budget-exceeded": BudgetExceeded("upstream body exceeded 1048576 bytes"),
     }
 
 
@@ -255,6 +260,7 @@ def transport_fault_codes() -> dict[str, str]:
         "timeout-error",
         "ssl-error",
         "url-error",
+        "budget-exceeded",
     )
     # A ValueError out of the send path is how http.client rejects a header it
     # cannot put on the wire, which is a credential problem — and the exception
@@ -879,6 +885,34 @@ class _FailingClientStub:
 
     def get(self) -> object:
         raise self._error
+
+
+@pytest.mark.parametrize(
+    ("provider", "error"),
+    (
+        ("claude", LiveQuotaError("x", code=degrade.STALE)),
+        ("codex", CodexLiveQuotaError("x", code=degrade.STALE)),
+    ),
+)
+def test_the_stale_classification_is_never_claimed_by_a_client(
+    deployment, monkeypatch, provider, error
+) -> None:
+    """Only the refresher knows whether a source stopped being refreshed.
+
+    A client tagging itself `stale` — by a copied constant or a future edit —
+    would report "provider data is no longer being refreshed" about a source
+    that is being refreshed on its cadence, and send an operator looking for a
+    wedged thread that does not exist.
+    """
+    attribute = "_live" if provider == "claude" else "_codex"
+    monkeypatch.setattr(main, attribute, _FailingClientStub(error))
+
+    payload = main._build_payload()
+
+    assert_payload_in_schema(payload)
+    assert payload[provider]["source"] == "unavailable"
+    assert payload[provider]["source_error"] != degrade.MESSAGES[degrade.STALE]
+    assert payload[provider]["source_error"] == degrade.MESSAGES[degrade.UNCLASSIFIED]
 
 
 @pytest.mark.parametrize(

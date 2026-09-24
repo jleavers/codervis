@@ -327,6 +327,26 @@ _CODEX_WINDOWS = (
 )
 
 
+def _recorded(error: Exception | None, pending: str) -> Exception:
+    """The failure a refresher recorded, ready to raise here.
+
+    Its traceback is cleared first. The same exception object is re-raised on
+    every payload build for as long as its snapshot stands, and each raise
+    appends a frame to the *same* object -- so the chain would grow without
+    bound in precisely the case this design exists to survive: a source that
+    published a failure and then wedged is never republished (`current()`
+    leaves an already-failed snapshot alone), so nothing ever replaces it.
+    Nothing reads the traceback: the log records the type name and the
+    classification comes from `isinstance`.
+
+    `is not None` rather than `or`, because the snapshot's own flag is `ok`;
+    whether an exception happens to be truthy is beside the point.
+    """
+    if error is not None:
+        return error.with_traceback(None)
+    return _NotPublished(pending)
+
+
 class _NotPublished(Exception):
     """A source has not published an outcome yet.
 
@@ -502,7 +522,7 @@ def _activity_fields(provider: str, source: SourceRefresher) -> tuple[str | None
     published = source.current()
     try:
         if not published.ok:
-            raise published.error or _NotPublished("activity source has not published")
+            raise _recorded(published.error, "activity source has not published")
         snapshot = published.value
         fields = (
             _iso(getattr(snapshot, "last_activity", None)),
@@ -538,7 +558,7 @@ def _provider_section(
     published = source.current()
     try:
         if not published.ok:
-            raise published.error or _NotPublished("source has not published")
+            raise _recorded(published.error, "source has not published")
         snapshot = published.value
         if snapshot is None:
             raise _SchemaError("client returned no snapshot")
@@ -719,14 +739,29 @@ async def stream(request: Request) -> StreamingResponse:
 
 
 @app.get("/healthz")
-async def healthz() -> dict:
+def _data_root_flags() -> dict:
+    """The `stat()`s behind `/healthz`. Blocking, so it is called off the loop."""
+    claude_root = _claude_activity.data_dir.exists()
     return {
-        "ok": True,
-        "data_root_exists": _claude_activity.data_dir.exists(),
+        "data_root_exists": claude_root,
         "claude_enabled": CLAUDE_ENABLED,
         "claude_credentials_present": _live.credentials_path.exists(),
-        "claude_activity_data_root_exists": _claude_activity.data_dir.exists(),
+        "claude_activity_data_root_exists": claude_root,
         "codex_data_root_exists": _codex_activity.data_dir.exists(),
         "codex_enabled": CODEX_ENABLED,
         "codex_credentials_present": _codex.credentials_path.exists(),
     }
+
+
+async def healthz() -> dict:
+    """Whether the data this dashboard needs is where it was told to look.
+
+    The four `exists()` calls are the one place left that touches the bind
+    mounts from a request. They go to a thread because they are `stat()`s on
+    `/data/claude` and `/data/codex`, the mounts everything else about this
+    app now reads only in a refresher: a hung mount would otherwise block the
+    event loop here and stall every other route -- including `/api/usage`,
+    which does no I/O of its own. A thread cannot cancel a wedged `stat()`
+    either, but it wedges alone.
+    """
+    return {"ok": True, **await asyncio.to_thread(_data_root_flags)}

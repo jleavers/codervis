@@ -46,10 +46,14 @@ MESSAGES: dict[str, str] = {
     INTERNAL: "internal error",
 }
 
-# The codes the boundary is allowed to *serve*. ACTIVITY is diagnostic only: a
-# failed activity read degrades to `last_activity: null`, so its message must
-# never become a quota section's `source_error`, however a client tagged itself.
-SERVABLE: frozenset[str] = frozenset(MESSAGES) - {ACTIVITY}
+# The codes a *client* may claim. ACTIVITY is diagnostic only: a failed
+# activity read degrades to `last_activity: null`, so its message must never
+# become a quota section's `source_error`, however a client tagged itself.
+# STALE is excluded for the same reason from the other direction: only the
+# refresher knows whether a source stopped being refreshed, and a client
+# tagging itself with it would report that about a source refreshing perfectly
+# well. The boundary sets STALE itself, before this set is consulted.
+SERVABLE: frozenset[str] = frozenset(MESSAGES) - {ACTIVITY, STALE}
 
 VOCABULARY: frozenset[str] = frozenset(MESSAGES.values())
 
