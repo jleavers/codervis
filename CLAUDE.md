@@ -122,9 +122,10 @@ Live-only by design:
   quota usage locally.
 - **`app/claude_activity.py`** — `ClaudeActivityReader` reports Claude
   `last_activity` from timestamp fields in local project transcript files.
-  That it does not read `.credentials.json` is enforced by `app/activity_gate.py`
-  (see "The activity readers' access gate" below), not by this reader's own
-  care: its gate admits the `projects` subtree only, for `stat` and `read`.
+  It does not inspect usage fields or influence quota. That it does not read
+  `.credentials.json` is enforced by `app/activity_gate.py` (see "The activity
+  readers' access gate" below), not by this reader's own care: its gate admits
+  the `projects` subtree only, for `stat` and `read`.
   It reads transcripts in binary through `bounded_lines()`, under a
   per-record cap, a per-file cap and a whole-scan deadline, because anything
   that can write under `~/.claude/projects` chooses what it reads. Its per-file
@@ -188,9 +189,12 @@ one process, and the Codex reader published that file's mtime as
 - **the operation**: `STAT` for Codex, `STAT | READ` for Claude. An operation
   a reader was not granted is refused on an allow-listed path too;
 - **the no-link rule**: every component below the root is checked with `lstat`
-  and a read `open`s with `O_NOFOLLOW`, so a link is never followed out of the
-  tree, and a symlinked subtree root is no longer an existence oracle. The
-  root itself may be a link; it is the operator's own configuration.
+  and a read `open`s with `O_NOFOLLOW`, so a symbolic link is never followed
+  out of the tree and a symlinked subtree root is no longer an existence
+  oracle; a file with more than one name is refused too, since a hard link is
+  the same escape with nothing to see on the path. The root itself may be a
+  link; it is the operator's own configuration. The module docstring says
+  which race `O_NOFOLLOW` does and does not cover.
 
 The gate records what it admitted and what it refused, per scan.
 **That record is the test suite's only way to see a regression**: a reader

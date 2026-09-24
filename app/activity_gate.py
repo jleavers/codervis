@@ -19,10 +19,17 @@ reaches the filesystem through nothing else. The gate owns:
   `STAT | READ` for Claude, which parses transcript records. An operation the
   reader was not granted is refused even on an allow-listed path;
 - **the no-link rule**: every component below the root is examined with
-  `lstat`, so a link is seen as a link rather than followed to whatever it
-  names, and a read `open`s with `O_NOFOLLOW` so the final component cannot be
-  swapped for one after it was checked. The root itself may be a link: it is
-  the operator's own configuration. Nothing below it may be.
+  `lstat`, so a symbolic link is seen as a link rather than followed to
+  whatever it names, and a read `open`s with `O_NOFOLLOW` so the final
+  component cannot be swapped for one after it was checked. `O_NOFOLLOW`
+  covers that final component only: a directory between the root and the file,
+  swapped for a link after its `lstat`, is still resolved by the kernel.
+  Closing that would mean resolving every component by `dir_fd`, which is a
+  lot of machinery for a race that hands somebody who can already write in
+  this tree one timestamp. A file with more than one name is refused as well,
+  because a hard link is the same walk out with no symlink on the path. The
+  root itself may be a link: it is the operator's own configuration. Nothing
+  below it may be.
 
 The gate also records what it admitted and what it refused, per scan, which is
 what lets `tests/test_activity_readers.py` assert the set of paths a reader
@@ -61,9 +68,11 @@ MAX_RECORDED = 4096
 class PathRefused(Exception):
     """The gate would not reach this path, or not this way.
 
-    Its message names the reason and never the path: `AGENTS.md`'s safety rule
-    is that an exception's own text must not reach the payload or a log line,
-    and an operator's project directory names are what the oracle leaked.
+    Its message names the reason and never the path, and where an `OSError`
+    prompted it, it is raised `from None`, because that exception's text and
+    its `.filename` are the path: `AGENTS.md`'s safety rule is that an
+    exception's own text must not reach the payload or a log line, and an
+    operator's project directory names are what the oracle leaked.
     """
 
 
@@ -98,9 +107,6 @@ class AccessRecord:
 
     def operations(self, path: str) -> frozenset[str]:
         return frozenset(op for op, seen in self._entries if seen == path)
-
-    def __contains__(self, key: object) -> bool:
-        return key in self._entries
 
     def __len__(self) -> int:
         return len(self._entries)
@@ -148,6 +154,7 @@ class ActivityGate:
             raise ValueError(f"unknown operations: {sorted(unknown)}")
         self.admitted = AccessRecord(max_recorded)
         self.refused = AccessRecord(max_recorded)
+        self._checked_dirs: set[Path] = set()
 
     # ------------------------------------------------------------- the record
 
@@ -155,6 +162,7 @@ class ActivityGate:
         """Begin a scan's record. What is kept is what the last scan touched."""
         self.admitted.clear()
         self.refused.clear()
+        self._checked_dirs.clear()
 
     # --------------------------------------------------------- the operations
 
@@ -195,7 +203,12 @@ class ActivityGate:
         try:
             fd = os.open(path, flags)
         except OSError:
-            raise self._refuse(path, "could not be opened without following a link")
+            # `from None`: an OSError's text and its `.filename` are the path
+            # it failed on, and a chained exception rides along on the one
+            # raised here. The reason is all a caller may carry.
+            raise self._refuse(
+                path, "could not be opened without following a link"
+            ) from None
         try:
             if not stat_module.S_ISREG(os.fstat(fd).st_mode):
                 raise self._refuse(path, "was not a regular file when opened")
@@ -275,7 +288,12 @@ class ActivityGate:
         In order: the reader was granted this operation; the path is lexically
         inside an allow-listed part of this reader's own root; every directory
         between the root and it is a directory rather than a link; and the path
-        itself is a regular file rather than a link to one.
+        itself is one regular file rather than a link to one, of either kind.
+
+        A directory admitted once is not examined again for the rest of the
+        scan. Every file in it would otherwise re-`lstat` the whole chain above
+        it, and all the repeat could catch is the part of the check
+        `O_NOFOLLOW` does not hold anyway (see the module docstring).
         """
         if operation not in self.operations:
             raise self._refuse(path, "operation not granted to this reader")
@@ -286,13 +304,23 @@ class ActivityGate:
         walked = self.root
         for name in parts[:-1]:
             walked = walked / name
+            if walked in self._checked_dirs:
+                continue
             if not stat_module.S_ISDIR(self._lstat(walked).st_mode):
                 raise self._refuse(walked, "not a directory reached without a link")
+            self._checked_dirs.add(walked)
             self.admitted.add(WALK, self._relative(walked))
 
         st = self._lstat(path)
         if not stat_module.S_ISREG(st.st_mode):
             raise self._refuse(path, "not a regular file reached without a link")
+        if st.st_nlink != 1:
+            # A hard link is a second name for one file, and a name inside the
+            # allow-list for a file outside it passes every check above: there
+            # is no symlink on the path, and what it names really is a regular
+            # file. Nothing either agent writes in these trees has a second
+            # name, and refusing one costs only that file's timestamp.
+            raise self._refuse(path, "has more than one name")
         self.admitted.add(operation, self._relative(path))
         return st
 
@@ -316,7 +344,7 @@ class ActivityGate:
         try:
             return os.lstat(path)
         except OSError:
-            raise self._refuse(path, "could not be examined")
+            raise self._refuse(path, "could not be examined") from None
 
     def _refuse(self, path: str | Path, reason: str) -> PathRefused:
         self.refused.add(reason, self._relative(path))

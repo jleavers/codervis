@@ -77,7 +77,8 @@ directories; it must not call upstream quota endpoints or read host tokens.
   allow-listed subtrees of that reader's own data root, the operation it was
   granted (`STAT` for Codex, `STAT | READ` for Claude), and the rule that no
   link is ever followed — `lstat` on every component below the root,
-  `O_NOFOLLOW` on every read. It is the only way either reader reaches the
+  `O_NOFOLLOW` on every read, and a refusal for any file with more than one
+  name, because a hard link walks out of the tree with no symlink to see. It is the only way either reader reaches the
   filesystem; keep it that way, and put a new reader's paths on its allow-list
   rather than opening them directly. It records what it admitted and refused
   per scan, which is what the tests assert on. A refusal is not a failure: the
@@ -85,8 +86,8 @@ directories; it must not call upstream quota endpoints or read host tokens.
   a reason and never a path, because an operator's project directory names are
   what the old oracle leaked.
 - `app/claude_activity.py` owns Claude last-activity reporting. It reads only
-  project transcript timestamps and must not compute quota or fallback usage
-  statistics. That it cannot read `.credentials.json` is the gate's doing, not
+  project transcript timestamps, must not inspect usage fields, and must not
+  compute quota or fallback usage statistics. That it cannot read `.credentials.json` is the gate's doing, not
   the reader's: its `ActivityGate` admits the `projects` subtree only.
 - `app/codex_quota.py` owns the Codex live client and must convert any failure
   into `CodexLiveQuotaError` so the UI can show `source: "unavailable"`. One

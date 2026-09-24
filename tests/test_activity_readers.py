@@ -133,7 +133,8 @@ def test_codex_reader_stats_known_files_and_opens_nothing(roots) -> None:
     }
     # The operation, not just the path: session *contents* are off limits even
     # though the session file itself is on the allow-list.
-    assert all(op == "stat" for op, path in reader.gate.admitted.entries if "." in path)
+    assert reader.gate.admitted.operations("sessions/session.jsonl") == {"stat"}
+    assert reader.gate.admitted.truncated is False
     assert "auth.json" not in reader.gate.admitted.paths
     assert snapshot.last_activity == SESSION_TIME
 
@@ -175,6 +176,7 @@ def test_a_link_planted_under_codex_does_not_reach_the_claude_credentials(
 
     assert snapshot.last_activity == SESSION_TIME
     assert snapshot.last_activity != CREDENTIAL_TIME
+    assert reader.gate.admitted.truncated is False
     assert "sessions/x.jsonl" not in reader.gate.admitted.paths
     assert ("not a regular file reached without a link", "sessions/x.jsonl") in (
         reader.gate.refused.entries
@@ -216,6 +218,7 @@ def test_a_linked_transcript_does_not_reach_the_credential_file(roots) -> None:
     # The credential file parses, and carries a later timestamp than the real
     # transcript: following the link would show in the answer.
     assert snapshot.last_activity == TRANSCRIPT_TIME
+    assert reader.gate.admitted.truncated is False
     assert "projects/demo/leak.jsonl" not in reader.gate.admitted.paths
 
 
@@ -235,6 +238,78 @@ def test_a_symlinked_project_directory_is_not_descended(roots, tmp_path) -> None
     assert ("not a regular file reached without a link", "projects/linked") in (
         reader.gate.refused.entries
     )
+
+
+def test_a_hard_link_does_not_reach_the_claude_credentials_either(roots) -> None:
+    """The same walk out, with no symlink anywhere on the path.
+
+    A hard link inside the allow-list is a second name for a file outside it:
+    there is nothing to see on the path, and what it names really is a regular
+    file. It is refused because it has more than one name.
+    """
+    claude, codex = roots
+    try:
+        os.link(claude / ".credentials.json", codex / "sessions" / "hard.jsonl")
+    except OSError as exc:  # pragma: no cover - same filesystem in CI and dev
+        pytest.skip(f"the fixture filesystem refused a hard link: {exc.errno}")
+
+    reader = CodexActivityReader(codex)
+    snapshot = reader.snapshot()
+
+    assert snapshot.last_activity == SESSION_TIME
+    assert snapshot.last_activity != CREDENTIAL_TIME
+    assert reader.gate.admitted.truncated is False
+    assert "sessions/hard.jsonl" not in reader.gate.admitted.paths
+    assert ("has more than one name", "sessions/hard.jsonl") in (
+        reader.gate.refused.entries
+    )
+
+
+def test_a_hard_linked_transcript_is_not_read(roots) -> None:
+    claude, _ = roots
+    try:
+        os.link(
+            claude / ".credentials.json",
+            claude / "projects" / "demo" / "hard.jsonl",
+        )
+    except OSError as exc:  # pragma: no cover - same filesystem in CI and dev
+        pytest.skip(f"the fixture filesystem refused a hard link: {exc.errno}")
+
+    reader = ClaudeActivityReader(claude)
+    snapshot = reader.snapshot()
+
+    # The credential file parses as a transcript and its `timestamp` field is
+    # later than the real one, so reading it would show in the answer.
+    assert snapshot.last_activity == TRANSCRIPT_TIME
+    assert reader.gate.admitted.truncated is False
+    assert "projects/demo/hard.jsonl" not in reader.gate.admitted.paths
+
+
+def test_a_symlinked_projects_root_is_not_an_existence_oracle_either(
+    roots, tmp_path
+) -> None:
+    """The Claude half of the oracle: `projects` itself replaced by a link."""
+    claude, _ = roots
+    real_projects = claude / "projects"
+    real_projects.rename(tmp_path / "moved-projects")
+
+    def answer(target: Path) -> tuple[object, frozenset[str], tuple]:
+        if real_projects.is_symlink():
+            real_projects.unlink()
+        real_projects.symlink_to(target)
+        reader = ClaudeActivityReader(claude)
+        snapshot = reader.snapshot()
+        return (
+            snapshot.last_activity,
+            reader.gate.admitted.paths,
+            reader.gate.refused.entries,
+        )
+
+    hit = answer(tmp_path / "moved-projects")
+    miss = answer(tmp_path / "no-such-directory-name")
+
+    assert hit == miss
+    assert hit[0] is None
 
 
 # ---------------------------------------------- the gate is the only way out

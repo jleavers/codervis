@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import time
+import traceback
 
 import pytest
 
@@ -131,19 +132,71 @@ def test_an_unknown_operation_is_a_construction_error(tmp_path) -> None:
         ActivityGate(tmp_path, operations={"delete"})
 
 
-def test_a_refusal_never_carries_the_path_it_refused(gate, tmp_path) -> None:
+@pytest.mark.parametrize("plant", ["symlink", "missing", "unreadable-parent"])
+def test_a_refusal_never_carries_the_path_it_refused(gate, tmp_path, plant) -> None:
     """`AGENTS.md`: an exception's own text must not reach a log or the payload.
 
     The operator's project directory names are exactly what the oracle leaked.
+    A chained `OSError` is the path too -- its text and its `.filename` -- so
+    the whole rendered traceback is what this checks, not just the message.
     """
     secret = tmp_path / "sessions" / "an-operators-project-name.jsonl"
-    secret.symlink_to(tmp_path / "auth.json")
+    if plant == "symlink":
+        secret.symlink_to(tmp_path / "auth.json")
+    elif plant == "unreadable-parent":
+        secret = secret.parent / "deep" / "gone" / secret.name
 
     with pytest.raises(PathRefused) as caught:
         gate.stat(secret)
 
-    assert "an-operators-project-name" not in str(caught.value)
-    assert str(tmp_path) not in str(caught.value)
+    rendered = "".join(
+        traceback.format_exception(
+            type(caught.value), caught.value, caught.value.__traceback__
+        )
+    )
+    assert "an-operators-project-name" not in rendered
+    assert str(tmp_path) not in rendered
+    # `from None`, so an OSError that prompted this is never rendered with it.
+    assert caught.value.__cause__ is None
+    assert (
+        caught.value.__context__ is None or caught.value.__suppress_context__
+    ), "a chained OSError renders as the path it failed on"
+
+
+def test_a_file_with_a_second_name_is_refused(gate, tmp_path) -> None:
+    """A hard link is the walk out of the tree with no symlink on the path."""
+    outside = tmp_path / "auth.json"
+    try:
+        os.link(outside, tmp_path / "sessions" / "hard.jsonl")
+    except OSError as exc:  # pragma: no cover - same filesystem in CI and dev
+        pytest.skip(f"the fixture filesystem refused a hard link: {exc.errno}")
+
+    with pytest.raises(PathRefused):
+        gate.stat(tmp_path / "sessions" / "hard.jsonl")
+    with pytest.raises(PathRefused):
+        with gate.open_bytes(tmp_path / "sessions" / "hard.jsonl"):
+            pass  # pragma: no cover - the gate refuses first
+    assert ("has more than one name", "sessions/hard.jsonl") in gate.refused.entries
+
+
+def test_a_directory_is_examined_once_a_scan(gate, tmp_path, monkeypatch) -> None:
+    """Re-walking the chain above every file is what this used to cost."""
+    (tmp_path / "sessions" / "deep" / "b.jsonl").write_text("b", encoding="utf-8")
+    seen: list[str] = []
+    real_lstat = os.lstat
+    monkeypatch.setattr(
+        os, "lstat", lambda p, *a, **k: (seen.append(str(p)), real_lstat(p, *a, **k))[1]
+    )
+
+    gate.start_scan()
+    gate.stat(tmp_path / "sessions" / "deep" / "a.jsonl")
+    gate.stat(tmp_path / "sessions" / "deep" / "b.jsonl")
+    monkeypatch.undo()
+
+    assert seen.count(str(tmp_path / "sessions")) == 1
+    assert seen.count(str(tmp_path / "sessions" / "deep")) == 1
+    # ... and the file itself is still examined every time it is admitted.
+    assert seen.count(str(tmp_path / "sessions" / "deep" / "a.jsonl")) == 1
 
 
 def test_a_walk_yields_regular_files_and_skips_links(gate, tmp_path) -> None:
