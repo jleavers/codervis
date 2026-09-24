@@ -22,7 +22,8 @@ docker compose down
 curl http://localhost:8765/healthz
 curl http://localhost:8765/api/usage
 python -m pytest
-python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py
+python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/egress.py app/ingress.py
+docker compose exec codervis python -m app.egress check
 ```
 
 Install test dependencies with `python -m pip install -r requirements-dev.txt`.
@@ -42,6 +43,10 @@ directories; it must not call upstream quota endpoints or read host tokens.
 - `app/codex_activity.py` owns Codex last-activity reporting. It should derive
   timestamps from safe file metadata only and must not read `auth.json` or
   session contents.
+- `app/egress.py` is the allow-listing `CONNECT` proxy that is the dashboard
+  container's only route out; `app/ingress.py` publishes the dashboard's port,
+  because the dashboard sits on an internal-only network. Keep that container
+  off every non-internal network and free of `ports:`.
 - `app/static/app.js` is the single source of truth for gauge color calculation
   on both initial paint and SSE updates.
 - `tests/` contains automated coverage for parser tolerance, unavailable
@@ -52,6 +57,9 @@ directories; it must not call upstream quota endpoints or read host tokens.
 - Never log or print OAuth tokens from `.credentials.json`, `auth.json`, `.env`,
   debug captures, or Docker output.
 - Preserve read-only bind mounts for `/data/claude` and `/data/codex`.
+- Preserve the egress bound: the `codervis` service joins internal networks
+  only, and `DEFAULT_ALLOW` in `app/egress.py` names only hosts the live
+  clients call.
 - Do not add token refresh or OAuth flow logic here; the host CLIs own that.
 - Do not multiply live utilization values by 100. The live APIs are expected
   to already be on a 0-100 scale.

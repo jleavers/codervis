@@ -2,8 +2,10 @@ services:
   codervis:
     build: .
     container_name: codervis
-    ports:
-      - "${DASHBOARD_PORT:-8765}:8000"
+    # Internal network only, so the dashboard has no default route: its one way off the host
+    # is the `egress` proxy below, and only to the hosts on its allow-list. No `ports:` here --
+    # Docker ignores a published port on an internal-only container, so `ingress` publishes it.
+    networks: [inside]
     environment:
       CLAUDE_DATA_DIR: /data/claude
       CODEX_DATA_DIR: /data/codex
@@ -15,7 +17,63 @@ services:
       CODEX_ACTIVITY_CACHE_TTL_SECONDS: "${CODEX_ACTIVITY_CACHE_TTL_SECONDS:-5}"
       CLAUDE_AI_HOST: "${CLAUDE_AI_HOST:-https://claude.ai}"
       CHATGPT_HOST: "${CHATGPT_HOST:-https://chatgpt.com}"
+      # urllib reads these; both cases, because clients disagree about which one they honour.
+      HTTP_PROXY: http://egress:3128
+      HTTPS_PROXY: http://egress:3128
+      http_proxy: http://egress:3128
+      https_proxy: http://egress:3128
+      NO_PROXY: localhost,127.0.0.1,::1
+      no_proxy: localhost,127.0.0.1,::1
     volumes:
       - "${CLAUDE_HOME:-~/.claude}:/data/claude:ro"
       - "${CODEX_HOME:-~/.codex}:/data/codex:ro"
+    depends_on:
+      egress:
+        condition: service_healthy
     restart: unless-stopped
+
+  # The dashboard's only route out: a CONNECT-only proxy that admits claude.ai and chatgpt.com,
+  # plus whatever EGRESS_ALLOW adds (app/egress.py). It sees host names, never a token.
+  egress:
+    build: .
+    command: ["python", "-m", "app.egress", "serve", "--bind", "0.0.0.0", "--port", "3128"]
+    networks: [inside, outside]
+    environment:
+      EGRESS_ALLOW: "${EGRESS_ALLOW:-}"
+    # The proxy's own contract rather than a port probe: a name on no list must come back 403.
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.egress", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+      start_interval: 1s
+    user: "65534:65534"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+  # Publishes the dashboard and copies bytes to and from it (app/ingress.py).
+  ingress:
+    build: .
+    command:
+      ["python", "-m", "app.ingress", "--bind", "0.0.0.0", "--port", "8000", "--target", "codervis:8000"]
+    networks: [inside, outside]
+    ports:
+      - "${DASHBOARD_PORT:-8765}:8000"
+    depends_on:
+      codervis:
+        condition: service_started
+    user: "65534:65534"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+networks:
+  # No default route: joining it adds a path to `egress` and `ingress` and nothing else.
+  inside:
+    internal: true
+  # The only network with a route off the host, joined by the two gateway services alone.
+  outside: {}

@@ -21,6 +21,15 @@ directories read-only**, reads the tokens, and polls the endpoints. The browser
 gets live updates via Server-Sent Events; CSS animates the meter fill and the
 colour shifts as the percentage rises.
 
+**Outbound traffic is allow-listed.** The dashboard's container sits on an
+internal Docker network with no route off the host. Its only way out is the
+`egress` service, a CONNECT-only proxy that admits `claude.ai` and
+`chatgpt.com` and nothing else. A redirect, a host override or a compromised
+dependency therefore cannot carry a token anywhere else, and plain `http://` is
+refused outright. Docker cannot publish a port from an internal-only container,
+so the port you open in the browser belongs to `ingress`, a relay that forwards
+to the dashboard. Neither gateway service holds a credential.
+
 Each provider header has a browser-local toggle. Switching a widget off keeps
 its card visible but dimmed, labels it `disabled`, and removes it from the
 overall status summary. Choices are stored in browser `localStorage`, survive
@@ -84,8 +93,9 @@ Edit `.env`:
 | `QUOTA_CACHE_TTL_SECONDS` | Server-side cache for the upstream calls. Keep ≥ refresh interval. | `30` |
 | `CLAUDE_ACTIVITY_CACHE_TTL_SECONDS` | Server-side cache for Claude local transcript timestamp scans. | `5` |
 | `CODEX_ACTIVITY_CACHE_TTL_SECONDS` | Server-side cache for Codex local activity metadata scans. | `5` |
-| `CLAUDE_AI_HOST` | Override the Claude host (rarely needed). | `https://claude.ai` |
-| `CHATGPT_HOST` | Override the Codex host (rarely needed). | `https://chatgpt.com` |
+| `CLAUDE_AI_HOST` | Override the Claude host (rarely needed). Must be `https://`; add the host to `EGRESS_ALLOW`. | `https://claude.ai` |
+| `CHATGPT_HOST` | Override the Codex host (rarely needed). Must be `https://`; add the host to `EGRESS_ALLOW`. | `https://chatgpt.com` |
+| `EGRESS_ALLOW` | Extra hosts the egress proxy admits, comma- or space-separated. `host` means port 443, `host:port` names another, and `.example.com` admits the domain and everything under it. It extends the built-in `claude.ai` and `chatgpt.com`; it never replaces them. | empty |
 
 ### Windows note
 
@@ -115,6 +125,23 @@ Open <http://localhost:8765> (or whichever port you set). The default Compose
 port mapping also exposes the dashboard on your LAN at
 `http://<your-host-ip>:8765`.
 
+To confirm the egress bound from inside the dashboard's container:
+
+```bash
+docker compose exec codervis python -m app.egress check
+```
+
+```text
+[ OK ] http://egress:3128 refused egress-probe.invalid (403)
+[ OK ] CLAUDE_AI_HOST: claude.ai:443 admitted
+[ OK ] CHATGPT_HOST: chatgpt.com:443 admitted
+[ OK ] example.com:443 unreachable directly: no route round the proxy
+```
+
+The admission probes open a TCP connection to each host through the proxy and
+send nothing. To change the allow-list, edit `EGRESS_ALLOW` in `.env` and run
+`docker compose up -d egress`.
+
 To stop:
 
 ```bash
@@ -128,11 +155,15 @@ Install development dependencies, then run the suite:
 ```bash
 python -m pip install -r requirements-dev.txt
 python -m pytest
-python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py
+python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/egress.py app/ingress.py
 ```
 
 The tests use temporary directories and stubbed upstream clients. They do not
-read your real credential files and do not call the live quota endpoints.
+read your real credential files and do not call the live quota endpoints. The
+proxy and relay tests use loopback sockets only.
+`tests/test_compose_topology.py` renders `docker-compose.yml` with
+`docker compose config`, which needs the Docker CLI but no daemon. It is skipped
+where Docker is not installed.
 
 ## What you see
 
@@ -162,6 +193,8 @@ browser-disabled cards are dimmed.
 │   ├── claude_activity.py # Claude local activity timestamp reader
 │   ├── codex_quota.py   # Codex live client → chatgpt.com/backend-api/wham/usage
 │   ├── codex_activity.py # Codex local activity metadata reader
+│   ├── egress.py        # Allow-listing CONNECT proxy: the dashboard's only route out
+│   ├── ingress.py       # Relay that publishes the dashboard's port
 │   ├── templates/
 │   │   └── index.html
 │   └── static/
@@ -188,6 +221,9 @@ browser-disabled cards are dimmed.
 | `claude_credentials_present: false` from `/healthz` | Bind mount didn't pick up the credentials file. Verify `CLAUDE_HOME` points at your real `.claude` directory. |
 | `codex_credentials_present: false` from `/healthz` | Same, for `CODEX_HOME` / `~/.codex/auth.json`. |
 | Browser shows `reconnecting…` | The container restarted; SSE will reconnect on its own. |
+| Chip shows `unavailable` with `Tunnel connection failed: 403 Forbidden` | The host is not on the egress allow-list: a `CLAUDE_AI_HOST`/`CHATGPT_HOST` override without a matching `EGRESS_ALLOW` entry, or the vendor redirected to another host. `docker compose logs egress` names the host it refused. |
+| Chip shows `unavailable` with `HTTP Error 405: Method Not Allowed` | A host override uses `http://`. Egress is HTTPS only. |
+| `docker compose up` reports `dependency failed to start` | The `egress` proxy is unhealthy, and the dashboard waits for it. Check `docker compose logs egress`. |
 
 `/healthz` returns JSON with `data_root_exists` and `credentials_present`
 flags that are useful for quick diagnosis.
@@ -201,5 +237,9 @@ flags that are useful for quick diagnosis.
   **Don't expose this port to the public internet** — anyone who can
   reach it can read your usage. If you need remote access, put it behind
   a reverse proxy with auth.
+- Outbound traffic from the dashboard's container can only reach the hosts on
+  the egress allow-list, and only over HTTPS. The proxy sees host names, never
+  the TLS session or the tokens inside it. This bounds where a token can be
+  sent; it does not change who can reach the published port.
 - The dashboard never logs the tokens. If you regenerated `usage-debug.log`
   during setup, delete it.
