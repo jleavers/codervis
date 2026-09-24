@@ -17,6 +17,8 @@ carrying its own environment prefix or reads as work still to do.
 from __future__ import annotations
 
 import json
+import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -32,24 +34,50 @@ CREDENTIAL_STORES = ("~/.claude", "~/.codex")
 # boundary is `blockReadsOutsideWorkingDirectories`, which needs no list.
 OTHER_SECRET_STORES = ("~/.ssh", "~/.aws", "~/.config/gh", "~/.docker")
 
+# The two undocumented endpoints the live clients call, which the suite must never reach.
+LIVE_QUOTA_HOSTS = ("claude.ai", "chatgpt.com")
+
 PLANS_DIR = ROOT / "docs" / "superpowers" / "plans"
 WORKFLOW = ROOT / ".claude" / "workflows" / "security-sweep.js"
 
-# Files a clone gets that an agent may execute. `.git` and the gitignored run directories are
-# excluded; everything else committed is fair game, because an agent reads what it is given.
+TEXT_SUFFIXES = {".md", ".js", ".json", ".yml", ".yaml", ".py", ".sh", ".toml", ".ini"}
+
+# A fixed name under shared `/tmp`, which any other local principal can create and fill
+# before the command that reads it runs. The pattern is deliberately blunt rather than a list
+# of the spellings two plans happened to use: the next author will use a third.
+FIXED_TMP_PATH = re.compile(r"(?<![\w/])/tmp/[\w.${}-]+")
+
+
 def _shipped_text_files() -> list[Path]:
-    out = []
-    for path in ROOT.rglob("*"):
-        if not path.is_file():
-            continue
-        parts = path.relative_to(ROOT).parts
-        if parts[0] in {".git", ".issuebot"}:
-            continue
-        if parts[:2] in {(".claude", "worktrees"), (".claude", "security-sweeps")}:
-            continue
-        if path.suffix in {".md", ".js", ".json", ".yml", ".yaml", ".py", ".sh"}:
-            out.append(path)
-    return out
+    """What a clone gets, which is what an agent reads: the tracked files, and only those.
+
+    `git ls-files` rather than a walk, so a developer's `.venv`, a pytest cache or an
+    untracked scratch file cannot fail this suite -- and so a file that is committed cannot
+    escape it by living somewhere the walk's exclusions happened to cover.
+    """
+    listed = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    ).stdout
+    paths = [ROOT / name for name in listed.split("\0") if name]
+    assert paths, "git ls-files returned nothing; is this a checkout?"
+    return [p for p in paths if p.suffix in TEXT_SUFFIXES and p.is_file()]
+
+
+def _const_body(source: str, name: str) -> str:
+    """The template-literal body of ``const <name> = `...` ``, so a check can be scoped to it.
+
+    These templates quote code spans, so the closing backtick is the first one that is not
+    escaped -- `source.index("`")` would stop at ``\\`app/quota.py\\```.
+    """
+    start = source.index(f"const {name} = `") + len(f"const {name} = `")
+    end = re.compile(r"(?<!\\)`").search(source, start)
+    assert end is not None, f"const {name} has no closing backtick"
+    return source[start : end.start()]
 
 
 @pytest.fixture(scope="module")
@@ -102,8 +130,24 @@ def test_the_credential_stores_are_denied_to_sandboxed_commands(settings: dict) 
     """`permissions.deny` binds the file tools; the credential layer binds the shell too."""
     files = settings.get("sandbox", {}).get("credentials", {}).get("files", [])
     denied = {entry.get("path") for entry in files if entry.get("mode") == "deny"}
-    for store in CREDENTIAL_STORES:
+    for store in CREDENTIAL_STORES + OTHER_SECRET_STORES:
         assert store in denied, f"sandboxed commands are not denied {store}"
+
+
+def test_sandboxed_egress_cannot_reach_the_live_quota_endpoints(settings: dict) -> None:
+    """The one allow-list in this file, and the two hosts that must never join it.
+
+    `CLAUDE.md` and `AGENTS.md` both say the suite must not call the undocumented quota
+    endpoints. Under the sandbox that stops being a promise: the hosts are simply not
+    reachable, and adding them here would quietly take the enforcement back.
+    """
+    allowed = settings["sandbox"]["network"]["allowedDomains"]
+    assert allowed, "an empty allow-list makes every sandboxed fetch a prompt"
+    for host in LIVE_QUOTA_HOSTS:
+        assert not any(host in entry for entry in allowed), (
+            f"{host} is the live quota endpoint's host; it does not belong in the sandbox's "
+            "allow-list"
+        )
 
 
 def test_no_shipped_document_names_a_fixed_path_in_shared_tmp() -> None:
@@ -114,15 +158,16 @@ def test_no_shipped_document_names_a_fixed_path_in_shared_tmp() -> None:
     shipped document should name one -- and under the rule above, nothing needs to: the
     environment a command runs in is the harness's business, not each document's.
     """
+    this_file = Path(__file__).resolve()
     offenders = []
     for path in _shipped_text_files():
-        if path == Path(__file__):  # the scanner spells the needle it looks for
+        if path.resolve() == this_file:  # the scanner has to spell what it looks for
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         for number, line in enumerate(text.splitlines(), start=1):
-            if "/tmp/uv-cache" in line or "UV_CACHE_DIR" in line:
-                offenders.append(f"{path.relative_to(ROOT)}:{number}")
-    assert not offenders, f"fixed /tmp cache path in shipped text: {offenders}"
+            for match in FIXED_TMP_PATH.finditer(line):
+                offenders.append(f"{path.relative_to(ROOT)}:{number}: {match.group(0)}")
+    assert not offenders, f"fixed path in shared /tmp in shipped text: {offenders}"
 
 
 def test_no_plan_reads_as_work_still_to_do() -> None:
@@ -132,10 +177,13 @@ def test_no_plan_reads_as_work_still_to_do() -> None:
     providers that were deleted -- so neither has any business carrying an unticked box or
     telling a reader to execute it task by task.
     """
-    live = [p for p in PLANS_DIR.rglob("*.md") if "archive" not in p.relative_to(PLANS_DIR).parts]
+    plans = list(PLANS_DIR.rglob("*.md"))
+    assert plans, f"no plans under {PLANS_DIR}; has this check outlived its subject?"
+
+    live = [p for p in plans if "archive" not in p.relative_to(PLANS_DIR).parts]
     assert not live, f"a plan outside the archive reads as pending: {live}"
 
-    for path in PLANS_DIR.rglob("*.md"):
+    for path in plans:
         text = path.read_text(encoding="utf-8")
         name = path.relative_to(ROOT)
         assert "- [ ]" not in text, f"{name} still carries an unticked box"
@@ -149,7 +197,15 @@ def test_every_sweep_agent_is_told_its_input_is_data() -> None:
     prompt is built without it.
     """
     source = WORKFLOW.read_text(encoding="utf-8")
-    assert "data, not instructions" in source
+
+    # The rule itself, and then the fact that the shared preamble interpolates it. Checking
+    # only that the sentence appears somewhere would stay green if `WHERE` stopped carrying
+    # it and the fragment were left behind unused.
+    fragment = _const_body(source, "DATA_NOT_INSTRUCTIONS")
+    assert "data, not instructions" in fragment
+    for reader in ("Issue and PR bodies", "comments", "CI logs"):
+        assert reader in fragment, f"the rule does not name {reader}"
+    assert "${DATA_NOT_INSTRUCTIONS}" in _const_body(source, "WHERE")
 
     prompts = [
         line for line in source.splitlines()

@@ -112,17 +112,22 @@ jobs:
 
       - name: Render Compose config
         env:
-          USERPROFILE: /tmp/codervis-ci
+          # The runner's own temp directory, not a fixed name in shared /tmp: this job
+          # writes nothing there, but the egress job below writes credential-shaped files,
+          # and one rule for both is easier to keep than an exception.
+          USERPROFILE: ${{ runner.temp }}/codervis-ci
         run: docker compose --env-file .env.example config --quiet
 
   egress:
     name: Egress bound
     runs-on: ubuntu-latest
     # Synthetic credential files only. Nothing below sends them anywhere: `check` opens CONNECT
-    # tunnels and closes them unused, and /healthz makes no upstream call.
+    # tunnels and closes them unused, and /healthz makes no upstream call. They go in the
+    # runner's temp directory rather than a fixed name in shared /tmp, which anyone who can
+    # write /tmp can create first and hand back.
     env:
-      CLAUDE_HOME: /tmp/codervis-ci/claude
-      CODEX_HOME: /tmp/codervis-ci/codex
+      CLAUDE_HOME: ${{ runner.temp }}/codervis-ci/claude
+      CODEX_HOME: ${{ runner.temp }}/codervis-ci/codex
       DASHBOARD_PORT: 8765
     steps:
       - uses: actions/checkout@v7
