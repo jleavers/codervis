@@ -72,6 +72,14 @@ link out of them.
   and refreshes `~/.claude/.credentials.json`, and the card reads `unavailable`
   with `upstream rejected the stored credential`. Open Claude Code from a
   terminal on the host, then wait for the next dashboard refresh.
+- **A hard-linked data directory reads as no activity.** The activity readers
+  refuse any file with more than one name, because a second name inside the
+  allow-list can be a file outside it and nothing on the path shows which.
+  If a snapshot or deduplication tool (`rsnapshot`, `rsync --link-dest`,
+  `cp -al`, `jdupes -L`, `rdfind`) has hard-linked the files under `~/.claude`
+  or `~/.codex`, that provider's footer reads "no recent activity" however
+  recently you used it. Quota gauges are unaffected. `find ~/.claude/projects
+  -type f -links +1` lists what is being skipped.
 - Read-only bind mounts: codervis never writes to `~/.claude` or `~/.codex`.
 - The `*_ENABLED` variables only choose the initial toggle state for a browser
   with no saved preference. All provider clients are still constructed and

@@ -14,6 +14,7 @@ import traceback
 import pytest
 
 from app.activity_gate import (
+    OUTSIDE_THE_ROOT,
     READ,
     STAT,
     AccessRecord,
@@ -55,6 +56,10 @@ def test_a_file_the_allow_list_does_not_name_is_refused(gate, tmp_path) -> None:
 def test_a_path_outside_the_root_is_refused(gate, tmp_path) -> None:
     with pytest.raises(PathRefused):
         gate.stat(tmp_path.parent / "history.jsonl")
+
+    # Not even in the record: it holds names from inside the data root, which
+    # is the operator's own configuration, and nothing else.
+    assert gate.refused.entries == (("outside the allow-list", OUTSIDE_THE_ROOT),)
 
 
 def test_a_dot_dot_is_not_walked_back_out_of_the_root(gate, tmp_path) -> None:

@@ -64,6 +64,10 @@ OPERATIONS = frozenset({STAT, READ})
 #: test that asserts a path was *not* touched must check ``truncated`` too.
 MAX_RECORDED = 4096
 
+#: What the record calls a path that is not under the reader's data root at
+#: all. See ``ActivityGate._relative``.
+OUTSIDE_THE_ROOT = "(outside the data root)"
+
 
 class PathRefused(Exception):
     """The gate would not reach this path, or not this way.
@@ -240,6 +244,10 @@ class ActivityGate:
         resolved -- which is what stops the walk stepping outside the tree, and
         stops "did this scan take longer / find a timestamp" answering whether
         a guessed path exists.
+
+        Enumeration is not one of the operations: putting a subtree on a
+        reader's allow-list is what grants the walk of it, because no reader
+        can be given a subtree it may not enumerate and still use it.
         """
         if tree not in self.trees:
             raise self._refuse(self.root / tree, "outside the allow-list")
@@ -255,9 +263,11 @@ class ActivityGate:
 
         stack = [root]
         while stack:
+            current = stack.pop()
             try:
-                scan = os.scandir(stack.pop())
+                scan = os.scandir(current)
             except OSError:
+                self.refused.add("could not be examined", self._relative(current))
                 continue
             with scan:
                 for entry in scan:
@@ -275,6 +285,9 @@ class ActivityGate:
                             )
                             continue
                     except OSError:
+                        self.refused.add(
+                            "could not be examined", self._relative(entry.path)
+                        )
                         continue
                     if suffix is not None and not entry.name.endswith(suffix):
                         continue
@@ -351,9 +364,17 @@ class ActivityGate:
         return PathRefused(reason)
 
     def _relative(self, path: str | Path) -> str:
-        """The path as the record names it: relative to the root where it can be."""
+        """The path as the record names it, relative to the root.
+
+        A path that is not under the root at all is recorded as a fixed
+        string rather than verbatim, so that the record is under the same
+        discipline as `PathRefused`: it holds names the operator's own
+        configuration put inside the data root, and nothing else. There is
+        nothing to learn from the literal path anyway -- the record's reader
+        already knows it was refused for being outside.
+        """
         path = Path(path)
         try:
             return path.relative_to(self.root).as_posix()
         except ValueError:
-            return path.as_posix()
+            return OUTSIDE_THE_ROOT

@@ -173,6 +173,13 @@ change provider error handling.
 sections sit on: the first owns *when* a source is read, the second owns *how
 much* a single read may cost. Neither knows anything about quota shapes.
 
+`app/static/widget-state.js` is the pure state/presentation module for storage
+validation, effective source state, and global status. The frontend
+(`app/static/app.js`) remains the single gauge-colour and DOM-update path for
+both initial payloads and SSE messages. The SSE loop is in `main.py:stream()`;
+relative-time labels stay live between server pushes via a 1-second
+`setInterval`.
+
 ### The activity readers' access gate
 
 `app/activity_gate.py` owns *what* an activity reader may reach, and is the
@@ -196,6 +203,13 @@ one process, and the Codex reader published that file's mtime as
   link; it is the operator's own configuration. The module docstring says
   which race `O_NOFOLLOW` does and does not cover.
 
+The hard-link rule has one operator-visible cost, and it is in README's
+Caveats: a data root whose files have been hard-linked by a snapshot or
+deduplication tool reports no activity, because every name in it is a second
+name. Refusing is the right default — the gate cannot tell which of two names
+is the one inside the tree — but it is indistinguishable from "no activity",
+so it belongs in the docs rather than in a surprised operator's inbox.
+
 The gate records what it admitted and what it refused, per scan.
 **That record is the test suite's only way to see a regression**: a reader
 that opens credential files returns the same timestamp as one that does not,
@@ -203,13 +217,6 @@ so `tests/test_activity_readers.py` asserts the touched set and the
 operations, and watches the process's own filesystem calls to check nothing
 went round the gate. Assert on the record there, never on the timestamp alone,
 and keep new reader I/O going through the gate.
-
-`app/static/widget-state.js` is the pure state/presentation module for storage
-validation, effective source state, and global status. The frontend
-(`app/static/app.js`) remains the single gauge-colour and DOM-update path for
-both initial payloads and SSE messages. The SSE loop is in `main.py:stream()`;
-relative-time labels stay live between server pushes via a 1-second
-`setInterval`.
 
 ## Network boundary
 

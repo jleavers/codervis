@@ -185,6 +185,23 @@ def test_a_link_planted_under_codex_does_not_reach_the_claude_credentials(
     assert all(not p.startswith("/") for p in reader.gate.admitted.paths)
 
 
+def test_an_allow_listed_name_that_is_a_link_is_refused(roots) -> None:
+    """`history.jsonl` itself replaced by a link: on the allow-list by name."""
+    claude, codex = roots
+    (codex / "history.jsonl").unlink()
+    (codex / "history.jsonl").symlink_to(claude / ".credentials.json")
+
+    reader = CodexActivityReader(codex)
+    snapshot = reader.snapshot()
+
+    assert snapshot.last_activity == SESSION_TIME
+    assert reader.gate.admitted.truncated is False
+    assert "history.jsonl" not in reader.gate.admitted.paths
+    assert ("not a regular file reached without a link", "history.jsonl") in (
+        reader.gate.refused.entries
+    )
+
+
 def test_a_symlinked_subtree_root_is_not_an_existence_oracle(roots) -> None:
     """The answer must not differ by whether the guessed target exists."""
     claude, codex = roots
@@ -364,7 +381,11 @@ def _assert_within(seen, root: Path, *, files=(), trees=()) -> None:
             pytest.fail(f"{kind} outside this reader's data root: {path}")
         parts = rel.parts
         if not parts:
-            continue  # the data root itself
+            # The data root itself, and only its metadata: a `scandir` of the
+            # root would hand back `DirEntry`s for the credential file, whose
+            # own `stat()` this watcher cannot see.
+            assert kind == "stat", f"{kind} of the data root itself"
+            continue
         if len(parts) == 1 and parts[0] in files:
             continue
         assert parts[0] in trees, f"{kind} of {rel}, which TB-ACTIVITY does not admit"
