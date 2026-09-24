@@ -136,7 +136,11 @@ def _percent(value: object) -> float | None:
     # float artefact a hair outside the range — 100.0 - -1e-9 upstream, or
     # 100.004 — from blacking the whole card out for a value that renders as a
     # legal 100.0, while a genuinely out-of-range 600.0 is still refused.
-    served = round(parsed, PERCENT_DECIMALS)
+    # `+ 0.0` normalises -0.0 to 0.0. round(-0.0001, 2) is -0.0, which passes
+    # the range check (-0.0 == 0.0) but renders differently on each side: the
+    # template's "%.1f" gives "-0.0%" while JavaScript's toFixed(1) gives
+    # "0.0", so the first paint and the first SSE update would disagree.
+    served = round(parsed, PERCENT_DECIMALS) + 0.0
     if not MIN_PERCENT <= served <= MAX_PERCENT:
         raise _SchemaError("percent is outside the declared range")
     return served

@@ -178,8 +178,9 @@ to degrade visibly.
   parsing, not the enforcing boundary: the boundary in `app/main.py` is what
   guarantees the payload schema, and `tests/test_payload_contract.py` runs both
   clients through the same matrix of transport faults, hostile bodies and
-  hostile credential files. A case added there is offered to both providers; one
-  that names a shape only one provider has skips explicitly for the other rather
+  hostile credential files. A case added there must run for both providers. The
+  only exception is a case naming a shape one provider cannot have, which must
+  skip explicitly for the other so the gap is visible in the test report rather
   than quietly testing a single client, which is how Codex drifted.
 
 ## Commands

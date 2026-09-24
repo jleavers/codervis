@@ -569,6 +569,10 @@ def test_hostile_response_body_stays_in_schema(deployment, provider, case) -> No
     # The other provider is a separate source and stays live.
     other = "codex" if provider == "claude" else "claude"
     assert main._build_payload()[other]["source"] == "live", serialized
+    # And through the routes, which is where the acceptance criterion is
+    # written: GET / and /api/usage answer 200 for every case in the matrix.
+    assert_payload_in_schema(json.loads(_usage_body()))
+    assert SECRET not in _index_html()
 
 
 @pytest.mark.parametrize("provider", PROVIDERS)
@@ -872,6 +876,22 @@ def test_a_percent_is_range_checked_on_the_value_it_serves(raw, expected) -> Non
     assert main._percent(raw) == expected
 
 
+def test_a_percent_that_rounds_to_zero_is_not_negative_zero() -> None:
+    """-0.0 passes the range check but renders differently on each side.
+
+    The template's "%.1f" gives "-0.0%" and JavaScript's toFixed(1) gives
+    "0.0", so serving it would make the first paint and the first SSE update
+    disagree — the one thing the single serialization is there to prevent.
+    `-0.0 == 0.0` in Python, so asserting equality cannot see this.
+    """
+    for raw in (-0.0001, -0.0, -0.004):
+        served = main._percent(raw)
+        assert served == 0.0
+        assert math.copysign(1.0, served) == 1.0, f"{raw!r} served as negative zero"
+        assert repr(served) == "0.0"
+        assert f"{served:.1f}" == "0.0"
+
+
 @pytest.mark.parametrize("raw", (100.01, -0.01, 600.0, -500.0, 1e9))
 def test_a_percent_that_does_not_round_into_range_is_refused(raw) -> None:
     # Rounding must not become clamping: an upstream value that is genuinely
@@ -1024,6 +1044,11 @@ def test_a_control_character_in_a_plan_string_is_scrubbed_not_just_bounded() -> 
 
     assert cleaned == "pro   X-Evil: 1 alert(1)"
     assert main._UNPRINTABLE.search(cleaned) is None
+    # A string that is nothing but control characters scrubs to whitespace,
+    # which is still truthy. Without the strip it would be served as a plan
+    # name of three spaces instead of dropped.
+    assert main._text("\x00\r\n") is None
+    assert main._text("   ") is None
 
 
 @pytest.mark.parametrize("provider", PROVIDERS)
@@ -1167,9 +1192,14 @@ def test_the_serializer_refuses_a_payload_it_cannot_serialize_strictly() -> None
         assert recovered["codex"]["source"] == "unavailable"
 
 
-def test_a_serializer_failure_is_logged_and_carries_no_exception_text() -> None:
+def test_a_serializer_failure_is_logged_and_carries_no_exception_text(
+    monkeypatch,
+) -> None:
     # Both cards read "internal error" here. Without a log line there is no way
     # to tell a serializer fault from a genuine dual-provider outage.
+    # Start from "nothing logged yet" rather than inheriting whatever the
+    # previous test left in the once-per-state map.
+    monkeypatch.setattr(main, "_logged_degrade", {})
     records = _captured_records(
         lambda: main._payload_json({"claude": f"unserializable {SECRET}", "x": object()})
     )
@@ -1317,6 +1347,7 @@ def test_a_hostile_host_override_stays_in_schema(deployment, provider, case) -> 
     other = "codex" if provider == "claude" else "claude"
     assert payload[other]["source"] == "live"
     assert_payload_in_schema(json.loads(_usage_body()))
+    assert SECRET not in _index_html()
 
 
 # ─── What the boundary is allowed to log ─────────────────────────────────────
