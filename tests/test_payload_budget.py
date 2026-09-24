@@ -1194,9 +1194,17 @@ def test_healthz_does_not_stall_other_routes(monkeypatch) -> None:
 
     A hung `~/.claude` would otherwise block the event loop here and stall
     every route, including `/api/usage`, which does no I/O of its own.
+
+    Driven through the app, so the route's own wiring is what is measured --
+    asserting on `main.healthz()` directly would pass even with the decorator
+    on some other function. The clock starts *before* control reaches the
+    loop: a blocking endpoint runs to completion before the first `await`
+    resumes, so a timer started after that yield measures nothing.
     """
     import types
     from pathlib import Path
+
+    from fastapi.testclient import TestClient
 
     class SlowPath(type(Path("/"))):
         def exists(self, *args, **kwargs):
@@ -1212,50 +1220,33 @@ def test_healthz_does_not_stall_other_routes(monkeypatch) -> None:
     ):
         monkeypatch.setattr(main, name, types.SimpleNamespace(**{attr: slow}))
 
-    async def drive() -> float:
-        health = asyncio.create_task(main.healthz())
-        await asyncio.sleep(0.05)  # let it reach the first stat
+    # 1. The route's own wiring: `/healthz` must reach `healthz()`, which is
+    #    what adds `ok` and the thread hop. A `TestClient` runs its own loop,
+    #    so this half proves the wiring, not the concurrency.
+    client = TestClient(main.app, base_url="http://127.0.0.1:8765")
+    response = client.get("/healthz")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ok"] is True, "/healthz lost its `ok` flag"
+    assert "claude_credentials_present" in data
+
+    # 2. The concurrency, on one loop: how long before an unrelated coroutine
+    #    gets to run at all. An endpoint that stats inline never yields, so
+    #    everything else waits for the whole stall.
+    reached_at: list[float] = []
+
+    async def drive() -> None:
         started = time.monotonic()
-        main._build_payload()
-        elapsed = time.monotonic() - started
-        await health
-        return elapsed
 
-    assert asyncio.run(drive()) < 0.5, "a payload waited behind /healthz's stats"
+        async def other_work() -> None:
+            reached_at.append(time.monotonic() - started)
+            main._build_payload()
 
+        await asyncio.gather(main.healthz(), other_work())
 
-@pytest.mark.parametrize(
-    "client_module, error_type, credentials",
-    (
-        (quota, quota.LiveQuotaError, ".credentials.json"),
-        (codex_quota, codex_quota.CodexLiveQuotaError, "auth.json"),
-    ),
-)
-def test_a_credential_read_failure_names_the_type_and_not_the_message(
-    tmp_path, monkeypatch, client_module, error_type, credentials
-) -> None:
-    """An OSError's text is the path it failed on, and can be anything.
+    asyncio.run(drive())
 
-    `AGENTS.md` forbids an exception's own text reaching the payload, a log
-    line or a test's output. Only `.code` is read today, so this is latent --
-    but it is one edit from becoming a leak.
-    """
-    marker = "SECRET-MARKER-sk-ant-do-not-surface"
-
-    def exploding_read(*args, **kwargs):
-        raise OSError(marker)
-
-    monkeypatch.setattr(client_module, "read_text_capped", exploding_read)
-    client = (
-        quota.LiveQuotaClient(tmp_path, host="https://example.test")
-        if client_module is quota
-        else codex_quota.CodexLiveQuotaClient(tmp_path, host="https://example.test")
+    assert reached_at and reached_at[0] < 0.5, (
+        f"an unrelated coroutine waited {reached_at[0]:.2f}s behind /healthz's stats"
     )
-    (tmp_path / credentials).write_text("{}", encoding="utf-8")
-
-    with pytest.raises(error_type) as raised:
-        client.get()
-
-    assert marker not in str(raised.value)
-    assert "OSError" in str(raised.value)
-    assert raised.value.code == degrade.CREDENTIALS

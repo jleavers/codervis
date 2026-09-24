@@ -738,7 +738,6 @@ async def stream(request: Request) -> StreamingResponse:
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 
 
-@app.get("/healthz")
 def _data_root_flags() -> dict:
     """The `stat()`s behind `/healthz`. Blocking, so it is called off the loop."""
     claude_root = _claude_activity.data_dir.exists()
@@ -753,6 +752,7 @@ def _data_root_flags() -> dict:
     }
 
 
+@app.get("/healthz")
 async def healthz() -> dict:
     """Whether the data this dashboard needs is where it was told to look.
 
