@@ -188,10 +188,17 @@ _codex_activity: CodexActivityReader = codex_activity_reader_from_env()
 # refresher holding a stale client.
 
 def _quota_read_seconds(client) -> float:
-    """Longest a healthy quota fetch may take: its deadline, plus one socket wait.
+    """What the *network* part of a healthy quota fetch may cost.
 
     The total deadline is checked between reads, so a read already in flight
-    when it passes still runs to its own per-operation timeout.
+    when it passes still runs to its own per-operation timeout -- hence the
+    second term. It is not a hard ceiling: urllib applies that timeout per
+    socket operation, so a drip-fed status line or header can spend several
+    before `read_capped()` first looks at the deadline. That is not a *healthy*
+    fetch, and letting it go stale is the wanted outcome.
+
+    The credential read is deliberately excluded: it has no deadline to add,
+    and it is the read this limit exists to catch hanging.
     """
     return client.total_deadline_seconds + client.timeout_seconds
 

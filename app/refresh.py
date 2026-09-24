@@ -62,17 +62,19 @@ class SourceSnapshot(Generic[T]):
         """False only for the placeholder served before the first refresh."""
         return self.at is not None
 
-    def age_seconds(self, now: datetime | None = None) -> float | None:
+    def age_seconds(self) -> float | None:
         """How long ago this was published, or None before the first publish.
 
         The larger of the two clocks' answers, so that whichever one has been
         disturbed, the snapshot is treated as the older of the two -- the safe
         direction, since the cost of being wrong is serving numbers that have
-        stopped being updated as though they were current.
+        stopped being updated as though they were current. Both clocks are read
+        here rather than passed in: an injectable "now" would override only the
+        wall half and quietly make the two disagree.
         """
         if self.at is None:
             return None
-        wall_age = ((now or datetime.now(timezone.utc)) - self.at).total_seconds()
+        wall_age = (datetime.now(timezone.utc) - self.at).total_seconds()
         if self.monotonic_at is None:
             return wall_age
         return max(wall_age, time.monotonic() - self.monotonic_at)

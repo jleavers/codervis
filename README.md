@@ -122,8 +122,8 @@ deadline, a source whose last successful refresh has gone stale is also
 reported `unavailable` rather than serving numbers that have stopped being
 updated. "Stale" is three of its own refresh intervals, or its interval plus
 its read budget plus 30 s, whichever is larger — so raising a deadline below
-raises that limit with it, and a slow-but-working source is never reported
-unavailable for being slow. The
+raises that limit with it, so a source is not reported unavailable for
+spending its whole budget. The
 shipped values suit the real endpoints, and a value that cannot be parsed is
 ignored in favour of the default.
 

@@ -846,37 +846,55 @@ def test_a_successful_snapshot_stops_being_live_once_it_stops_being_refreshed() 
     assert source.snapshot().ok and source.snapshot().value == "old"
 
 
-def test_a_stale_source_degrades_that_provider_only(stub_sources, monkeypatch) -> None:
-    """AC5 for the wedge-after-success case, end to end through the payload."""
+@pytest.mark.parametrize(
+    "name, provider, other",
+    [
+        ("_claude_quota_source", "claude", "codex"),
+        ("_codex_quota_source", "codex", "claude"),
+    ],
+)
+def test_a_stale_quota_source_degrades_that_provider_only(
+    stub_sources, monkeypatch, name, provider, other
+) -> None:
+    """AC5 for the wedge-after-success case, end to end, for each provider.
+
+    Staling only one of the two would leave the other's handler free to go back
+    to `snapshot()` unnoticed, which is how this test read before.
+    """
     live = SimpleNamespace(
         five_hour=SimpleNamespace(percent=41.0, resets_at=None),
         seven_day=SimpleNamespace(percent=12.0, resets_at=None),
         subscription_type="pro",
+        plan_type="pro",
     )
-    claude = SourceRefresher("claude-quota", lambda: live, 30.0, stale_after_seconds=90.0)
-    claude.refresh_once()
-    monkeypatch.setattr(main, "_claude_quota_source", claude)
+    source = SourceRefresher(name, lambda: live, 30.0, stale_after_seconds=90.0)
+    source.refresh_once()
+    monkeypatch.setattr(main, name, source)
 
-    # Codex publishes its own failure, so the assertion below is about it
-    # keeping that failure rather than about it never having run.
-    main._codex_quota_source.refresh_once()
+    # The other provider publishes its own failure, so the assertion below is
+    # about it keeping that failure rather than about it never having run.
+    other_source = getattr(main, f"_{other}_quota_source")
+    other_source.refresh_once()
 
-    assert main._build_payload()["claude"]["source"] == "live"
+    assert main._build_payload()[provider]["source"] == "live"
 
-    claude._snapshot = SourceSnapshot(
+    source._snapshot = SourceSnapshot(
         ok=True,
         value=live,
         error=None,
         at=datetime.now(timezone.utc) - timedelta(seconds=600),
+        monotonic_at=time.monotonic() - 600,
     )
     payload = main._build_payload()
 
-    assert payload["claude"]["source"] == "unavailable"
-    assert [w["percent"] for w in payload["claude"]["windows"]] == [None, None, None]
-    assert "600s ago" in payload["claude"]["source_error"]
-    # The other provider is untouched by its neighbour going stale.
-    assert payload["codex"]["source"] == "unavailable"
-    assert "upstream down" in payload["codex"]["source_error"]
+    assert payload[provider]["source"] == "unavailable", (
+        f"{provider} served numbers from a source that stopped being refreshed"
+    )
+    assert all(w["percent"] is None for w in payload[provider]["windows"])
+    assert "600s ago" in payload[provider]["source_error"]
+    # The neighbour is untouched by this one going stale.
+    assert payload[other]["source"] == "unavailable"
+    assert "upstream down" in payload[other]["source_error"]
 
 
 def test_a_stale_activity_scan_reports_no_activity_rather_than_an_old_time(
@@ -969,6 +987,40 @@ def test_every_sources_staleness_limit_clears_its_own_worst_case() -> None:
         )
 
 
+def test_each_source_takes_its_limit_from_its_own_budgets(monkeypatch) -> None:
+    """The wiring, not the margin the shipped defaults happen to leave.
+
+    At shipped values a quota source's limit is the interval-multiple floor
+    either way, so an assertion at defaults cannot see whether `app/main.py`
+    passes the budget at all. Raising the two deadlines the cadence-only form
+    used to flap on is what makes the wiring observable.
+    """
+    import importlib
+
+    monkeypatch.setenv("QUOTA_TOTAL_DEADLINE_SECONDS", "90")
+    monkeypatch.setenv("ACTIVITY_SCAN_DEADLINE_SECONDS", "40")
+    reloaded = importlib.reload(main)
+    try:
+        limits = {s.name: s.stale_after_seconds for s in reloaded._SOURCES}
+        # Cadence-only would give 90 s and 35 s; both sit inside the raised budgets.
+        assert limits["claude-quota"] == stale_after(30.0, 90.0 + 8.0)
+        assert limits["codex-quota"] == stale_after(30.0, 90.0 + 8.0)
+        assert limits["claude-activity"] == stale_after(5.0, 40.0)
+        assert limits["codex-activity"] == stale_after(5.0, 40.0)
+        for source in reloaded._SOURCES:
+            budget = 98.0 if "quota" in source.name else 40.0
+            assert source.stale_after_seconds > source.interval_seconds + budget, (
+                f"{source.name} would be called stale inside its own read budget"
+            )
+    finally:
+        # Put the env back *before* the reload that restores shipped values,
+        # so the module other tests import is the one they expect.
+        monkeypatch.undo()
+        importlib.reload(main)
+
+    assert main._claude_quota_source.stale_after_seconds == stale_after(30.0, 18.0)
+
+
 def test_a_raised_read_budget_raises_the_staleness_limit_with_it() -> None:
     """The flap the cadence-only form allowed: a deadline past two intervals."""
     # Cadence alone would give max(3 x 5, 5 + 30) = 35 s for a scan allowed 40 s.
@@ -977,7 +1029,10 @@ def test_a_raised_read_budget_raises_the_staleness_limit_with_it() -> None:
     # A cheap read still gets the interval-multiple floor.
     assert stale_after(30.0, 0.0) == 90.0
     assert stale_after(5.0, 0.0) == 35.0
-    # A negative budget cannot pull the limit below the floor.
+    # A negative budget cannot pull the limit down at all. A large one is not
+    # the test: the interval-multiple floor swallows it either way. A small one
+    # is only caught by the clamp.
+    assert stale_after(5.0, -1.0) == 35.0
     assert stale_after(30.0, -1000.0) == 90.0
 
 
@@ -1008,6 +1063,55 @@ def test_a_backward_wall_clock_step_does_not_switch_the_staleness_check_off(
     current = source.current()
     assert not current.ok, "the monotonic clock still knows this is 10 minutes old"
     assert isinstance(current.error, SourceStale)
+
+
+def test_a_host_resume_does_not_make_an_old_snapshot_look_young() -> None:
+    """The other half of using both clocks.
+
+    `time.monotonic()` excludes time a Linux host spends suspended, so a
+    snapshot taken before a suspend looks recent by it. The wall clock is what
+    still knows how long it has really been.
+    """
+    source = SourceRefresher("resumed", lambda: "x", 30.0, stale_after_seconds=90.0)
+    source._snapshot = SourceSnapshot(
+        ok=True,
+        value="x",
+        error=None,
+        at=datetime.now(timezone.utc) - timedelta(seconds=3600),
+        monotonic_at=time.monotonic() - 1,  # the monotonic clock was asleep
+    )
+
+    current = source.current()
+    assert not current.ok, "the wall clock still knows this is an hour old"
+    assert isinstance(current.error, SourceStale)
+
+
+def test_every_published_snapshot_carries_both_stamps() -> None:
+    """Either stamp going missing would silently halve the clock check."""
+    ok_source = SourceRefresher("ok", lambda: "x", 30.0)
+    ok_source.refresh_once()
+    failed_source = SourceRefresher("failed", lambda: 1 / 0, 30.0)
+    failed_source.refresh_once()
+
+    for source in (ok_source, failed_source):
+        snapshot = source.snapshot()
+        assert snapshot.at is not None, source.name
+        assert snapshot.monotonic_at is not None, source.name
+
+    # And a stale snapshot derived on read keeps the original's stamps.
+    published = ok_source.snapshot()
+    ok_source._snapshot = SourceSnapshot(
+        ok=True,
+        value="x",
+        error=None,
+        at=datetime.now(timezone.utc) - timedelta(seconds=600),
+        monotonic_at=time.monotonic() - 600,
+    )
+    derived = ok_source.current()
+    assert not derived.ok
+    assert derived.at == ok_source.snapshot().at
+    assert derived.monotonic_at == ok_source.snapshot().monotonic_at
+    assert published.monotonic_at is not None
 
 
 def test_a_snapshot_with_no_monotonic_stamp_still_ages_on_the_wall_clock() -> None:
