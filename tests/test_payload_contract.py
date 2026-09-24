@@ -24,6 +24,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import Request
+from fastapi.testclient import TestClient
 
 from app import degrade, main
 from app.claude_activity import ClaudeActivityReader
@@ -1229,6 +1230,14 @@ def test_the_script_form_cannot_break_out_of_the_script_block() -> None:
 # the SSE frame can be read without waiting out a refresh interval.
 
 
+# A host the app actually serves. `main.app` refuses every name outside
+# `DASHBOARD_ALLOWED_HOSTS` with 403, so a scope built with `TestClient`'s
+# `testserver` default would be a request the app would never answer — the
+# helpers below would still return 200, because they await the handlers, but the
+# fixture would be lying about what it stands for.
+SERVED_HOST = "127.0.0.1:8765"
+
+
 def _request(path: str = "/") -> Request:
     return Request(
         {
@@ -1241,9 +1250,9 @@ def _request(path: str = "/") -> Request:
             "raw_path": path.encode(),
             "query_string": b"",
             "root_path": "",
-            "headers": [(b"host", b"testserver")],
+            "headers": [(b"host", SERVED_HOST.encode())],
             "client": ("127.0.0.1", 1234),
-            "server": ("testserver", 80),
+            "server": ("127.0.0.1", 8765),
             "app": main.app,
         }
     )
@@ -1313,6 +1322,32 @@ def test_the_routes_answer_with_a_hostile_provider(deployment, provider, case) -
     assert {k: v for k, v in framed.items() if k != "server_time"} == {
         k: v for k, v in served.items() if k != "server_time"
     }
+
+
+@pytest.mark.parametrize("provider", PROVIDERS)
+@pytest.mark.parametrize("case", ("json-null", "percent-nan"))
+def test_the_routes_answer_through_the_whole_stack(deployment, provider, case) -> None:
+    """The acceptance criterion is about `GET /` and `/api/usage`, not about handlers.
+
+    The helpers above await the route functions, which is what lets an SSE frame be
+    read without waiting out a refresh interval — but it steps over the `Host`
+    allow-list wrapped round the app, so on its own it would no longer prove a
+    status code. This drives the served app end to end for the same hostile
+    bodies.
+    """
+    deployment.bodies[provider] = hostile_bodies(provider)[case]
+    client = TestClient(main.app, base_url=f"http://{SERVED_HOST}")
+
+    page = client.get("/")
+    usage = client.get("/api/usage")
+
+    assert page.status_code == 200
+    assert usage.status_code == 200
+    assert usage.headers["content-type"].startswith("application/json")
+    served = assert_payload_in_schema(usage.json())
+    assert usage.json()[provider]["source"] == "unavailable"
+    assert SECRET not in page.text, served
+    assert SECRET not in usage.text
 
 
 @pytest.mark.parametrize("provider", PROVIDERS)

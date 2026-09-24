@@ -102,10 +102,10 @@ def test_the_stream_still_streams_for_a_host_that_is_served(monkeypatch) -> None
     start, body = _first_event("/api/stream", headers=[(b"host", b"127.0.0.1:8765")])
 
     assert start["status"] == 200
-    # The frame carries the one strict serialization every route serves, not a second
-    # rendering of the same payload (`app/main.py:_payload_json()`).
-    assert body == b"data: " + main._payload_json({"server_time": "now"}).encode() + b"\n\n"
-
+    # A literal rather than a call to `_payload_json()`, so that this still catches the
+    # one serialization changing shape and not only the stream bypassing it: the frame
+    # carries the compact strict form every route serves.
+    assert body == b'data: {"server_time":"now"}\n\n'
 
 
 class _Delivered(Exception):
@@ -155,7 +155,12 @@ def _first_event(path: str, *, headers: list[tuple[bytes, bytes]]) -> tuple[dict
 
 
 def test_the_stream_is_refused_for_a_host_that_is_not() -> None:
-    assert client("attacker.example").get("/api/stream").status_code == 403
+    # Driven as a server would, like the test above: `TestClient` would read an SSE
+    # body that never ends, so a regression here would hang the suite rather than
+    # fail it.
+    start, _ = _first_event("/api/stream", headers=[(b"host", b"attacker.example")])
+
+    assert start["status"] == 403
 
 
 @pytest.mark.parametrize(
