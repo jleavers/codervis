@@ -18,11 +18,11 @@ const { stamp, sha, repo, worktree, runDir } = args
 const escalationCap = Number.isInteger(args.escalationCap) ? args.escalationCap : 3
 
 // Which lane set to run. `baseline` is the four threat models a first sweep of this tree wants.
-// When a run's completeness critic names surfaces nobody owned, add a second set here (issuebot
-// calls its one `gaps`) rather than editing the baseline: the baseline is still what the next
-// first-sweep-after-a-big-change wants. Keep new lanes threat-shaped -- a brief that is only a
-// reading list produces coverage rather than attack paths, and coverage findings are the ones
-// the refuters kill.
+// `gaps` re-aims four lanes at what the first run's completeness critic said nobody owned.
+// Grow further sets the same way rather than editing the baseline: the baseline is still what
+// the next first-sweep-after-a-big-change wants. Keep new lanes threat-shaped -- a brief that
+// is only a reading list produces coverage rather than attack paths, and coverage findings are
+// the ones the refuters kill.
 const laneSet = args.lanes || 'baseline'
 
 // Optional prose naming what is already known and filed, so a lane does not spend itself
@@ -359,7 +359,212 @@ to capture API traffic, say, or exposing the port -- is a finding in this lane, 
   },
 ]
 
-const LANE_SETS = { baseline: BASELINE_LANES }
+// Re-aimed lanes, built from the completeness critic of the first run (20260923T193911Z). Its
+// eleven gaps are grouped by attacker rather than by file, so each lane is still a threat
+// model: the port (`served-surface`), the operator's own tooling on the host that holds the
+// credentials (`operator-tooling`), the public on the day the repository opens
+// (`publication`), and inputs nobody typed for this app (`ambient-inputs`).
+const GAP_LANES = [
+  {
+    key: 'served-surface',
+    title: 'what the port serves beyond the four named routes',
+    brief: `Your attacker is anyone who can reach the published port. Issue #15 (filed) is that, by
+default, this means the LAN, other containers on the host and any web page via DNS rebinding.
+Do not restate #15. A finding here is something reachable *through* that exposure that the
+first sweep never tested.
+
+**The premise to test.** The first sweep refuted two findings: all of \`~/.claude\` and
+\`~/.codex\` being mounted (deploy-3), and the container running as root (deploy-4). Both
+refutations rested on the claim that the tree has no file-read or code-execution primitive,
+and both cited "StaticFiles over app/static" as part of that case. Nobody tested the claim.
+You do.
+
+Cover:
+
+- **The \`/static\` mount** (\`app/main.py:39\`), the one place a request supplies a filesystem
+  path. Try traversal and encoded forms: \`..%2f\`, \`%2e%2e\`, double encoding, backslashes,
+  absolute paths, NUL. Check symlinks under \`app/static\` and what StaticFiles does with them
+  by default, HEAD and Range handling, and the content types it serves.
+- **The FastAPI defaults nobody listed:** \`/openapi.json\`, \`/docs/oauth2-redirect\` (what
+  it reflects), and methods other than GET on every route.
+- **The server itself:** the WebSocket upgrade path, which is live because
+  \`uvicorn[standard]\` installs \`websockets\`, and the parsers that read every byte from the
+  port (uvicorn, h11, httptools).
+- **Advisories, with version numbers.** deploy-4's refuter called a server-parser RCE
+  "hypothetical". Answer that with the resolved versions and their published advisories, not
+  with adjectives. Cover the server packages and the OpenSSL in \`python:3.14-slim\`, which
+  carries both bearers' TLS.
+- **The browser side:**
+  - the \`style.setProperty("--pct", w.percent)\` sink at \`app/static/app.js:49\`
+  - the uncaught initial \`apply\` at \`app/static/app.js:198\`
+  - what \`localStorage\` holds (\`app/static/widget-state.js\`) and what a script running on
+    the dashboard's origin could do through it
+  - the **raw response bytes** of the \`tojson\` block in \`app/templates/index.html:83\` for
+    a payload containing \`</script>\`, \`<!--\` and U+2028. The first sweep's check did not
+    say whether it recorded raw bytes or the decoded value.
+
+To probe a live instance, run uvicorn from the worktree code in a throwaway venv outside the
+worktree, with \`PYTHONDONTWRITEBYTECODE=1\`, bound to \`127.0.0.1\` on a free port.
+\`CLAUDE_DATA_DIR\` and \`CODEX_DATA_DIR\` point at synthetic trees in a temporary directory,
+and \`CLAUDE_AI_HOST\` / \`CHATGPT_HOST\` point at a closed local port such as
+\`http://127.0.0.1:9\`. Plant a canary file beside the synthetic data, never a real
+credential. Stop the server before you return.`,
+  },
+  {
+    key: 'operator-tooling',
+    title: 'the repository\'s own code and prose, run on the host that holds the credentials',
+    brief: `Your threat is the one place the real \`~/.claude\` and \`~/.codex\` sit next to this
+code: the operator's host, where the operator, or a coding agent following CLAUDE.md,
+AGENTS.md or a superpowers plan, runs the tests and follows the instructions in this tree. Two
+surfaces, neither owned by any lane before.
+
+**The test suite.** CLAUDE.md says the suite "must not read host credential files or call the
+live undocumented quota endpoints". Establish whether anything *enforces* that:
+
+- \`app.main\` reads \`CLAUDE_DATA_DIR\`, \`CODEX_DATA_DIR\`, \`CLAUDE_AI_HOST\` and
+  \`CHATGPT_HOST\` at import and constructs both live clients unconditionally.
+- \`pytest.ini\` sets only \`testpaths\` and \`pythonpath\`, and there is no \`conftest.py\`.
+- For each test in \`tests/test_main_payload.py\`, \`tests/test_activity_readers.py\` and
+  \`tests/test_quota_parsers.py\`, find the point at which the stub is in place. Then work out
+  what the real client would read and call if a test reached it first, under the environment
+  a developer's shell or an agent actually has: the \`/data/...\` defaults, and whatever a
+  developer exported for \`docker compose\`.
+- Check the Node tests too.
+
+**A vacuous-test finding is in scope for this lane.** AGENTS.md says the tests cover "safe
+activity-reader boundaries". If a test would still pass after a reader started opening
+\`.credentials.json\` or \`auth.json\`, or after the Codex reader started reading file
+contents, the \`attack_path\` is the regression it would let through. Name the change, and
+show that the suite would still pass.
+
+Run the suite only in a sealed environment, never the ambient one:
+
+- \`HOME\`, \`CLAUDE_DATA_DIR\` and \`CODEX_DATA_DIR\` point at empty temporary directories.
+- Both host variables point at \`http://127.0.0.1:9\`.
+- Set \`PYTHONDONTWRITEBYTECODE=1\` and pass \`-p no:cacheprovider\`.
+- Use a throwaway venv outside the worktree.
+
+**The agent-instruction text.** Read these as instructions a coding agent executes on the
+host, with read access to both credential directories, not as documents:
+
+- \`docs/superpowers/**\` (four files), \`AGENTS.md\`, and \`CLAUDE.md\` as a whole.
+- The sweep's own skill and workflow. They are on PR #17's branch, not at this commit, so
+  read them with \`git show origin/feat/security-sweep:.claude/skills/security-sweep/SKILL.md\`
+  and \`git show origin/feat/security-sweep:.claude/workflows/security-sweep.js\`.
+
+What does any of it tell an agent to run, read, capture, print or paste that would move a
+credential? Candidates:
+
+- The two \`agy\` (Gemini) documents describe a provider removed in a6d91b6 but still name
+  credential stores and token fields.
+- Design-doc invariants may not hold in the code. For example,
+  \`docs/superpowers/specs/2026-06-08-browser-widget-toggles-design.md:138\` says "tokens are
+  never logged or returned", and #14's CR/LF tail (filed, do not re-derive) already
+  contradicts it. Look for others.
+
+Model the attacker as whoever can get text into these files. Once the repository is public,
+that includes a PR author, since CI runs on \`pull_request\`. It also includes stale text the
+author forgot, which an agent follows anyway.`,
+  },
+  {
+    key: 'publication',
+    title: 'what becomes public the day the repository does',
+    brief: `The repository is private today. Your attacker is anyone, on the day it is not. Every
+reachable commit becomes readable, along with GitHub-side pull-request heads, issue and PR
+bodies and comments, review comments, and Actions run logs.
+
+**Stricter rules than the other lanes, because this lane goes looking for live values:**
+
+- Match on prefixes, lengths and counts.
+- Never print, write or return a full candidate value, not even in a scratch file. Quote at
+  most six characters.
+- If something looks live, record where it is (commit, path, line, or issue/comment/run id)
+  and its shape, and stop there.
+
+Cover, first, history beyond the first sweep's scan:
+
+- **Scope.** That scan was \`git log --all -p\` over local refs only (44 commits, 0
+  \`refs/pull/*\`). Extend it to GitHub-side PR heads (\`git ls-remote origin
+  'refs/pull/*'\`) and to anything force-pushed over. Do this in a mirror clone in a temporary
+  directory (\`git clone --mirror\`), never by fetching into the worktree's repository.
+- **Patterns.** Its patterns were \`sk-ant-\`, \`eyJ\`, \`gh?_\`, \`AKIA\`, a \`Bearer\`
+  string and token JSON keys. Add:
+  - OpenAI (\`sk-\`, \`sk-proj-\`)
+  - Google OAuth (\`ya29.\`, \`1//\`, \`GOCSPX-\`)
+  - GitHub fine-grained tokens (\`github_pat_\`)
+  - identifiers that are not tokens: account and org UUIDs, email addresses, and real names
+    or home-directory paths in captured sample responses
+- **The removed providers.** a6d91b6 removed Gemini, Cursor and Copilot; it deleted 889 lines
+  from \`tests/test_quota_parsers.py\` alone. Establish what each provider read on the host,
+  what fixtures and captured responses it committed, and whether any of them carry real
+  values.
+
+Then the GitHub side, with the same rules:
+
+- issue and PR bodies, comments and review comments, including the Dependabot PRs
+- Actions run logs (\`gh run list\`, \`gh run view --log\`), looking for pasted
+  \`docker compose logs\`, tracebacks, request headers, environment dumps, and paths that
+  reveal a username
+
+Already known, not findings:
+
+- The \`.gitignore\` rules for \`.claude/security-sweeps/\` and \`.claude/worktrees/\` are on
+  PR #17.
+- Issues #14–#16 describe unfixed attack paths. Whether they are public on publication day is
+  a timing decision for the operator, not a finding.`,
+  },
+  {
+    key: 'ambient-inputs',
+    title: 'inputs nobody typed for this app: environment, Docker client, image defaults, the Codex tree',
+    brief: `Your attacker controls an input the operator never wrote for this app. That could be the
+shell environment Compose interpolates from, the Docker client's own configuration, the image's
+defaults, or a local process writing under \`~/.codex\`.
+
+**The premise to test.** The first sweep refuted tokens-1 (\`CLAUDE_AI_HOST\` /
+\`CHATGPT_HOST\` unchecked) because those are operator-authored configuration. Nobody tested
+that premise against variables that re-route the bearer-carrying request or re-define whom it
+trusts, or against sources the operator does not write for this app.
+
+Cover:
+
+- **Proxy and trust variables.** urllib honours \`HTTPS_PROXY\` / \`https_proxy\` /
+  \`NO_PROXY\`, and OpenSSL honours \`SSL_CERT_FILE\` / \`SSL_CERT_DIR\`. Which of these can
+  reach the container, and from where? Candidates are Compose interpolation from the shell or
+  \`.env\`, a \`proxies\` block in the Docker client's \`config.json\`, and Docker Desktop's
+  proxy settings. Establish from Docker's documentation or source what Docker actually injects,
+  and say which parts you verified and which you inferred. Then work out what an HTTPS proxy
+  sees of each upstream call: a CONNECT tunnel, or the request itself.
+- **uvicorn's env-driven configuration.** For \`UVICORN_*\`, \`WEB_CONCURRENCY\` and
+  \`FORWARDED_ALLOW_IPS\`: which does uvicorn read, and which does the Dockerfile's \`CMD\`
+  argv override? What do proxy headers do once a reader puts the app behind the reverse proxy
+  the README recommends? Extra workers would multiply the per-process caches and upstream
+  calls that #16 assumes are single.
+- **The \`\${USERPROFILE}\` defaults** at \`.env.example:3\` and \`:11\`, on Linux or macOS
+  where the variable is unset. What do the mount sources interpolate to? What does Docker
+  create or mount there, owned by whom? What does the dashboard then report? Establish this
+  with \`docker compose config\` against a copy of \`.env.example\` in a temporary directory.
+  Do not run \`up\`.
+- **\`app/codex_activity.py\`** and its call at \`app/main.py:105\`. The attacker is a local
+  writer under \`~/.codex\`:
+  - \`rglob("*")\` over trees nothing bounds
+  - symlinks that \`stat()\` follows, such as a \`sessions/\` entry pointing at \`auth.json\` or
+    outside the mount, and what that reveals
+  - the cost under the reader lock on every rescan
+  - whether a Codex-side fault takes the Claude card down
+
+Already filed, do not re-derive:
+
+- #14: the missing provider-section boundary, including both activity snapshots being taken
+  outside the \`try\`.
+- #16: unbounded payload I/O.
+
+A Codex-reader finding that is only another instance of those invariants is a restatement.
+One that reaches something they do not, such as credential metadata or an escape from the
+mount, is welcome.`,
+  },
+]
+
+const LANE_SETS = { baseline: BASELINE_LANES, gaps: GAP_LANES }
 const LANES = LANE_SETS[laneSet]
 if (!LANES) {
   throw new Error(`unknown lane set ${laneSet}; expected one of ${Object.keys(LANE_SETS).join(', ')}`)

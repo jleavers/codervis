@@ -93,6 +93,16 @@ The `baseline` lanes:
 | `hostile-input` | untrusted bytes (upstream bodies, credential-file shapes, transcripts) breaking the `unavailable` contract or the event loop |
 | `deploy` | what the image, compose file, CI and dependencies give a reader who copies them |
 
+The `gaps` lanes (`args.lanes: "gaps"`), built from the first run's completeness critic
+(`20260923T193911Z`) and grouped by attacker:
+
+| Lane | Threat model |
+| --- | --- |
+| `served-surface` | what the port serves beyond the four named routes: `/static`, FastAPI defaults, server parsers and their advisories, browser-side sinks |
+| `operator-tooling` | the repo's own tests and agent-instruction text, run on the host that holds the credentials; vacuous tests are in scope |
+| `publication` | what becomes public with the repository: history beyond the first scan, PR heads, issue/PR threads, Actions logs |
+| `ambient-inputs` | inputs nobody typed for this app: proxy/CA variables, Docker client config, uvicorn env, `${USERPROFILE}`, the Codex tree |
+
 ## Phase 6: present, and get approval
 
 The harness refuses report files written by subagents, so the report comes back as text: write
