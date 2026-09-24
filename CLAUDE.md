@@ -30,7 +30,9 @@ an out-of-schema value. `_payload_json()` then serializes the payload once with
 `__INITIAL_PAYLOAD__` all serve that one string. The boundary logs one line per
 degraded source — the classification and the exception's type name, never its
 message and never a traceback — and only when that classification changes, since
-a browser asks for a fresh payload every few seconds.
+a browser asks for a fresh payload every few seconds. A failed activity read is
+logged under its own `activity` classification; that one is never served, since
+a failed activity read simply leaves `last_activity` null.
 
 **`source_error` comes from the fixed vocabulary in `app/degrade.py` and from
 nowhere else** — never `str(exc)`, never a repr. It is served unauthenticated,

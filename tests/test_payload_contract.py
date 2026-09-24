@@ -385,7 +385,17 @@ class _Deployment:
         path.write_text(content, encoding="utf-8")
 
     def _urlopen(self, request: urllib.request.Request, timeout: float | None = None):
-        provider = "claude" if CLAUDE_HOST in request.full_url else "codex"
+        url = request.full_url
+        if url.startswith(CLAUDE_HOST):
+            provider = "claude"
+        elif url.startswith(CODEX_HOST):
+            provider = "codex"
+        else:
+            # Any other host is as unreachable here as it would be in the
+            # container, whose only route out is a proxy that allow-lists two
+            # names. Without this the stub would answer for a host override the
+            # client should never have been able to dial.
+            raise urllib.error.URLError(f"unknown host for {request.host}")
         fault = self.faults[provider]
         if fault is not None:
             raise fault
@@ -490,6 +500,12 @@ def test_hostile_response_body_stays_in_schema(deployment, provider, case) -> No
     if case not in bodies:
         pytest.skip(f"{case} is not a {provider} body shape")
     deployment.bodies[provider] = bodies[case]
+    if provider == "codex" and case.startswith("plan-"):
+        # auth.json's plan_type wins over the body's, so clear it to let the
+        # body's hostile plan string through to the boundary.
+        deployment.write_credentials(
+            "codex", json.dumps({"tokens": {"access_token": SECRET}})
+        )
 
     serialized = assert_payload_in_schema(main._build_payload())
 
@@ -593,6 +609,7 @@ def test_a_credential_in_a_header_never_reaches_the_payload(deployment, provider
         (degrade.HTTP, "upstream returned an error response"),
         (degrade.TRANSPORT, "upstream unreachable"),
         (degrade.SHAPE, "upstream response not understood"),
+        (degrade.ACTIVITY, "local activity reading unavailable"),
         (degrade.UNCLASSIFIED, "provider data unavailable"),
         (degrade.INTERNAL, "internal error"),
     ),
@@ -606,6 +623,7 @@ def test_error_vocabulary_is_fixed(code, expected) -> None:
         degrade.HTTP,
         degrade.TRANSPORT,
         degrade.SHAPE,
+        degrade.ACTIVITY,
         degrade.UNCLASSIFIED,
         degrade.INTERNAL,
     }
@@ -1064,10 +1082,13 @@ def test_a_hostile_host_override_stays_in_schema(deployment, provider, case) -> 
     payload = main._build_payload()
 
     assert_payload_in_schema(payload)
-    # A host the dashboard cannot build a request for is a configuration
-    # problem, not a dashboard bug: "internal error" would send the operator
-    # to the issue tracker instead of to their own .env.
-    assert payload[provider]["source_error"] != degrade.MESSAGES[degrade.INTERNAL]
+    assert payload[provider]["source"] == "unavailable"
+    # A host the dashboard cannot build a request for, or cannot reach, is a
+    # configuration problem, not a dashboard bug: "internal error" would send
+    # the operator to the issue tracker instead of to their own .env.
+    assert payload[provider]["source_error"] == degrade.MESSAGES[degrade.TRANSPORT]
+    other = "codex" if provider == "claude" else "claude"
+    assert payload[other]["source"] == "live"
     assert_payload_in_schema(json.loads(_usage_body()))
 
 
@@ -1142,7 +1163,10 @@ def test_a_failing_activity_read_is_logged_as_its_own_source(
     records = _captured_records(main._build_payload)
     messages = [r.getMessage() for r in records]
 
-    assert any("source=claude.last_activity" in m for m in messages)
+    assert any(
+        f"source=claude.last_activity classification={degrade.ACTIVITY}" in m
+        for m in messages
+    )
     assert all("too deep" not in m for m in messages)
     assert main._build_payload()["claude"]["source"] == "live"
 
@@ -1182,3 +1206,36 @@ def test_a_recovered_source_is_logged_once(deployment) -> None:
 
     assert [r.getMessage() for r in records] == ["recovered source=claude.quota"]
     assert _captured_records(main._build_payload) == []
+
+
+@pytest.mark.parametrize(
+    "hostile_value",
+    ("max\ud800", "max\udfff", "\ud800\ud800"),
+    ids=repr,
+)
+def test_an_unencodable_string_that_got_past_the_boundary_still_answers(
+    deployment, monkeypatch, hostile_value
+) -> None:
+    """The last line: `ensure_ascii` hides a lone surrogate, so prove encodability.
+
+    `_text()` replaces surrogates, so this payload is unreachable through the
+    boundary. It is what `GET /` would have to render if it ever were reachable:
+    the template's context is parsed back out of the serialized form, and a lone
+    surrogate cannot be encoded as UTF-8.
+    """
+    payload = main._build_payload()
+    payload["claude"]["subscription_type"] = hostile_value
+    monkeypatch.setattr(main, "_build_payload", lambda: payload)
+
+    serialized = main._payload_json(payload)
+    served = json.loads(serialized)
+
+    serialized.encode("utf-8")
+    assert served["claude"]["subscription_type"] is None
+    assert served["claude"]["source_error"] == degrade.MESSAGES[degrade.INTERNAL]
+    # The degraded payload stamps its own clock, so compare everything else.
+    from_route = json.loads(_usage_body())
+    assert {k: v for k, v in from_route.items() if k != "server_time"} == {
+        k: v for k, v in served.items() if k != "server_time"
+    }
+    assert "__INITIAL_PAYLOAD__" in _index_html()

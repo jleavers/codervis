@@ -23,6 +23,7 @@ AUTH = "auth"
 HTTP = "http"
 TRANSPORT = "transport"
 SHAPE = "shape"
+ACTIVITY = "activity"
 UNCLASSIFIED = "unclassified"
 INTERNAL = "internal"
 
@@ -32,6 +33,9 @@ MESSAGES: dict[str, str] = {
     HTTP: "upstream returned an error response",
     TRANSPORT: "upstream unreachable",
     SHAPE: "upstream response not understood",
+    # Only ever logged. A failed activity read degrades to `last_activity:
+    # null`, which the UI renders as "—"; it has no message of its own.
+    ACTIVITY: "local activity reading unavailable",
     UNCLASSIFIED: "provider data unavailable",
     INTERNAL: "internal error",
 }
@@ -39,12 +43,12 @@ MESSAGES: dict[str, str] = {
 VOCABULARY: frozenset[str] = frozenset(MESSAGES.values())
 
 
-def message(code: object, default: str = UNCLASSIFIED) -> str:
-    """The fixed message for `code`, or the default classification's message.
+def message(code: object) -> str:
+    """The fixed message for `code`, or the generic one.
 
     `code` is whatever an exception carried, so it is treated as untrusted: a
     value that is not one of the codes above never reaches the payload.
     """
     if isinstance(code, str) and code in MESSAGES:
         return MESSAGES[code]
-    return MESSAGES[default]
+    return MESSAGES[UNCLASSIFIED]

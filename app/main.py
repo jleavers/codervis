@@ -255,7 +255,7 @@ def _activity_fields(source: str, reader: object) -> tuple[str | None, bool]:
             bool(getattr(snapshot, "data_root_exists", False)),
         )
     except Exception as exc:
-        _log_degraded(f"{source}.last_activity", degrade.INTERNAL, exc)
+        _log_degraded(f"{source}.last_activity", degrade.ACTIVITY, exc)
         return None, False
     _log_recovered(f"{source}.last_activity")
     return fields
@@ -368,13 +368,23 @@ def _payload_json(payload: dict) -> str:
     """The payload's one serialized form, shared by all three consumers.
 
     Strict: NaN and Infinity are refused rather than written as the JavaScript
-    literals `NaN`/`Infinity`, and the output is ASCII, so no unencodable
-    character can reach a response. /api/usage, the SSE frames and the
+    literals `NaN`/`Infinity`, the output is ASCII, and a payload that cannot be
+    encoded as UTF-8 at all is refused outright. /api/usage, the SSE frames and the
     template's initial payload all serve this exact string, so they cannot
     disagree about a value.
     """
     try:
-        return json.dumps(payload, allow_nan=False, ensure_ascii=True, separators=(",", ":"))
+        serialized = json.dumps(
+            payload, allow_nan=False, ensure_ascii=True, separators=(",", ":")
+        )
+        # `ensure_ascii` escapes a lone surrogate to \udXXX rather than refusing
+        # it, and json.loads turns that back into one, so the ASCII form alone
+        # does not prove the payload can be encoded. Prove it, so that every
+        # consumer of this payload — including the template, which parses this
+        # string back into its render context — is working with a document that
+        # can reach a response.
+        json.dumps(payload, allow_nan=False, ensure_ascii=False).encode("utf-8")
+        return serialized
     except (TypeError, ValueError, RecursionError):
         # The boundary above is meant to make this unreachable. If it is ever
         # reached, serve a degraded payload instead of a 500.
