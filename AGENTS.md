@@ -53,8 +53,12 @@ directories; it must not call upstream quota endpoints or read host tokens.
   `bounded_lines()` for transcript records (per-record and per-file caps, under
   the scan's own deadline), `read_text_capped()` for the credential files (byte
   cap only; it says there why it has no deadline). Any new read of something
-  someone else writes gets the same treatment, and its knob goes in the "Read
-  budgets" table in `README.md`, plus `.env.example` and `docker-compose.yml`.
+  someone else writes gets a byte cap always, and a deadline unless it
+  provably cannot take one — the credential read's exemption is not a
+  precedent, and a read that genuinely cannot be timed must sit in a refresher
+  whose `stale_after_seconds` covers it, so that a hang shows as `unavailable`
+  rather than as old numbers. Each new knob goes in the "Read budgets" table
+  in `README.md`, plus `.env.example` and `docker-compose.yml`.
 - `app/quota.py` owns the Claude live client and must convert any upstream,
   auth, parse, or file-read failure into `LiveQuotaError`, including a
   `BudgetExceeded` from a body that is too large or too slow.

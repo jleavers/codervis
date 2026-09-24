@@ -71,9 +71,12 @@ DEFAULT_TARGET_PORT = 443
 MAX_REQUEST_BYTES = 8 * 1024
 # How long a request line may take to arrive. An established tunnel is not bounded here.
 REQUEST_TIMEOUT_S = 10.0
-# A client's own budget is its total deadline plus at most one outstanding socket timeout
-# (quota.py, codex_quota.py), so it can outlast this; the tunnel dying first is the client's
-# error either way, and the proxy holds nothing open waiting for it.
+# How long the upstream gets to accept a CONNECT. It does not bound an established tunnel,
+# and it is no longer "shorter than the clients": a client's own budget is its total deadline
+# plus however many per-socket-operation timeouts it spends before the next deadline check
+# (quota.py, codex_quota.py), so it can outlast this. A slow-to-connect upstream is therefore
+# 502'd here while the client still had budget, which is the right way round -- the client
+# turns that into `unavailable` on its own cadence.
 UPSTREAM_TIMEOUT_S = 10.0
 _RELAY_CHUNK = 64 * 1024
 # Tunnels open at once, and connections accepted at once. The second is checked before a byte

@@ -118,9 +118,12 @@ local activity scan as a whole. The credential files get a byte cap only, since
 a read of a hung mount cannot portably be interrupted from here. Exceeding a
 budget degrades that source to `unavailable` in the UI until its next refresh,
 and no other route is affected. As a backstop for the reads that have no
-deadline, a source whose last successful refresh is older than three of its own
-intervals (or its interval plus 30 s, whichever is larger) is also reported
-`unavailable` rather than serving numbers that have stopped being updated. The
+deadline, a source whose last successful refresh has gone stale is also
+reported `unavailable` rather than serving numbers that have stopped being
+updated. "Stale" is three of its own refresh intervals, or its interval plus
+its read budget plus 30 s, whichever is larger — so raising a deadline below
+raises that limit with it, and a slow-but-working source is never reported
+unavailable for being slow. The
 shipped values suit the real endpoints, and a value that cannot be parsed is
 ignored in favour of the default.
 
@@ -250,7 +253,7 @@ browser-disabled cards are dimmed.
 │   ├── codex_quota.py   # Codex live client → chatgpt.com/backend-api/wham/usage
 │   ├── codex_activity.py # Codex local activity metadata reader
 │   ├── refresh.py       # One background refresher per source: when a source is read
-│   ├── budget.py        # Deadline and byte cap: what a single read may cost
+│   ├── budget.py        # What a single payload-feeding read may cost
 │   ├── egress.py        # Allow-listing CONNECT proxy: the dashboard's only route out
 │   ├── ingress.py       # Relay that publishes the dashboard's port
 │   ├── templates/

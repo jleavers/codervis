@@ -33,6 +33,7 @@ from app.refresh import (
     SourceRefresher,
     SourceSnapshot,
     SourceStale,
+    stale_after,
     wait_for_first_publish,
 )
 
@@ -878,18 +879,36 @@ def test_a_stale_source_degrades_that_provider_only(stub_sources, monkeypatch) -
     assert "upstream down" in payload["codex"]["source_error"]
 
 
-def test_a_stale_activity_scan_reports_no_activity_rather_than_an_old_time() -> None:
+def test_a_stale_activity_scan_reports_no_activity_rather_than_an_old_time(
+    stub_sources, monkeypatch
+) -> None:
+    """Through `_build_payload()`, so main's own wiring is what is pinned.
+
+    Asserting on `_activity_fields(source.current())` alone would pass even if
+    the handler still called `snapshot()`.
+    """
     from app.claude_activity import ClaudeActivitySnapshot
 
     scan = ClaudeActivitySnapshot(
         last_activity=datetime(2020, 1, 1, tzinfo=timezone.utc), data_root_exists=True
     )
-    source = SourceRefresher("activity", lambda: scan, 5.0, stale_after_seconds=35.0)
-    source._snapshot = SourceSnapshot(
-        ok=True, value=scan, error=None, at=datetime.now(timezone.utc) - timedelta(seconds=90)
-    )
+    for name, provider in (("_claude_activity_source", "claude"), ("_codex_activity_source", "codex")):
+        source = SourceRefresher("activity", lambda: scan, 5.0, stale_after_seconds=35.0)
+        source.refresh_once()
+        monkeypatch.setattr(main, name, source)
 
-    assert main._activity_fields(source.current()) == (None, False)
+        assert main._build_payload()[provider]["last_activity"] == "2020-01-01T00:00:00+00:00"
+
+        source._snapshot = SourceSnapshot(
+            ok=True,
+            value=scan,
+            error=None,
+            at=datetime.now(timezone.utc) - timedelta(seconds=90),
+            monotonic_at=time.monotonic() - 90,
+        )
+        assert main._build_payload()[provider]["last_activity"] is None, (
+            f"{provider} served an activity time from a scan that stopped being refreshed"
+        )
 
 
 def test_a_slow_but_working_source_does_not_flap_to_stale() -> None:
@@ -924,18 +943,77 @@ def test_an_already_failed_snapshot_keeps_its_own_error_when_it_ages() -> None:
     assert main._source_error(current, quota.LiveQuotaError) == "upstream down"
 
 
-def test_the_shipped_staleness_limits_clear_each_source_worst_case() -> None:
-    """Every shipped limit must exceed what a healthy cycle of that source can cost."""
-    # Quota: one cycle is at most the total deadline plus one outstanding
-    # socket timeout, on top of the cadence.
-    quota_source = SourceRefresher("q", lambda: None, main.QUOTA_REFRESH_SECONDS)
-    worst_quota_cycle = main.QUOTA_REFRESH_SECONDS + 10.0 + 8.0
-    assert quota_source.stale_after_seconds > worst_quota_cycle
+def test_every_sources_staleness_limit_clears_its_own_worst_case() -> None:
+    """No source may be called stale while it is still within its read budgets.
 
-    # Activity: one cycle is at most the whole-scan deadline on top of the cadence.
-    for interval in (
-        main.CLAUDE_ACTIVITY_REFRESH_SECONDS,
-        main.CODEX_ACTIVITY_REFRESH_SECONDS,
-    ):
-        source = SourceRefresher("a", lambda: None, interval)
-        assert source.stale_after_seconds > interval + 5.0
+    The budgets are read off the live objects rather than written out here, so
+    that changing a default -- or an operator setting one -- cannot leave this
+    passing while a working source flaps to `unavailable`.
+    """
+    worst = {
+        "claude-quota": main.QUOTA_REFRESH_SECONDS
+        + main._live.total_deadline_seconds
+        + main._live.timeout_seconds,
+        "codex-quota": main.QUOTA_REFRESH_SECONDS
+        + main._codex.total_deadline_seconds
+        + main._codex.timeout_seconds,
+        "claude-activity": main.CLAUDE_ACTIVITY_REFRESH_SECONDS
+        + main._claude_activity.scan_deadline_seconds,
+        "codex-activity": main.CODEX_ACTIVITY_REFRESH_SECONDS
+        + main._codex_activity.scan_deadline_seconds,
+    }
+    assert {s.name for s in main._SOURCES} == set(worst), "a source lost its worst case"
+    for source in main._SOURCES:
+        assert source.stale_after_seconds > worst[source.name], (
+            f"{source.name} is called stale inside its own read budget"
+        )
+
+
+def test_a_raised_read_budget_raises_the_staleness_limit_with_it() -> None:
+    """The flap the cadence-only form allowed: a deadline past two intervals."""
+    # Cadence alone would give max(3 x 5, 5 + 30) = 35 s for a scan allowed 40 s.
+    assert stale_after(5.0, 40.0) > 5.0 + 40.0
+    assert stale_after(30.0, 90.0 + 8.0) > 30.0 + 98.0
+    # A cheap read still gets the interval-multiple floor.
+    assert stale_after(30.0, 0.0) == 90.0
+    assert stale_after(5.0, 0.0) == 35.0
+    # A negative budget cannot pull the limit below the floor.
+    assert stale_after(30.0, -1000.0) == 90.0
+
+
+def test_the_staleness_limit_has_a_floor_like_the_interval() -> None:
+    """Zero would mark every snapshot stale the instant it was published."""
+    source = SourceRefresher("no-limit", lambda: "x", 30.0, stale_after_seconds=0.0)
+    source.refresh_once()
+
+    assert source.stale_after_seconds > 0.0
+    assert source.current().ok, "a snapshot published this instant is not stale"
+
+
+def test_a_backward_wall_clock_step_does_not_switch_the_staleness_check_off(
+    monkeypatch,
+) -> None:
+    """NTP or a restored VM snapshot must not make an old snapshot look fresh."""
+    source = SourceRefresher("clock", lambda: "x", 30.0, stale_after_seconds=90.0)
+    source._snapshot = SourceSnapshot(
+        ok=True,
+        value="x",
+        error=None,
+        # The wall clock has been stepped back an hour, so by it this snapshot
+        # was published in the future.
+        at=datetime.now(timezone.utc) + timedelta(seconds=3600),
+        monotonic_at=time.monotonic() - 600,
+    )
+
+    current = source.current()
+    assert not current.ok, "the monotonic clock still knows this is 10 minutes old"
+    assert isinstance(current.error, SourceStale)
+
+
+def test_a_snapshot_with_no_monotonic_stamp_still_ages_on_the_wall_clock() -> None:
+    source = SourceRefresher("legacy", lambda: "x", 30.0, stale_after_seconds=90.0)
+    source._snapshot = SourceSnapshot(
+        ok=True, value="x", error=None, at=datetime.now(timezone.utc) - timedelta(seconds=600)
+    )
+
+    assert not source.current().ok

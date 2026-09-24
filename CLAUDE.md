@@ -54,7 +54,11 @@ This is load-bearing, so keep it whole:
   `snapshot()`** — `snapshot()` is the raw record and skips that check.
   The budget knobs are the "Read budgets" table in `README.md`, which is the
   one place they are listed; the cadence knobs are in the table above it.
-  If a new read is added, budget it the same way.
+  **A new read gets a byte cap always, and a deadline unless it provably
+  cannot take one** — "the credential read has none" is a reason to check that
+  a staleness limit covers it, never a precedent for leaving a new read
+  untimed. `read_text_capped()` is for a small file on a local mount and
+  nothing else.
 - `source_error` surfaces the client's own error type as before. Anything else
   is named by *type only* — an exception raised while an upstream request is
   built can carry the bearer token in its message.

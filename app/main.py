@@ -24,6 +24,7 @@ from .refresh import (
     SourceRefresher,
     SourceSnapshot,
     SourceStale,
+    stale_after,
     wait_for_first_publish,
 )
 
@@ -185,17 +186,48 @@ _codex_activity: CodexActivityReader = codex_activity_reader_from_env()
 # that it resolves the module global at call time: that keeps the sources
 # replaceable (tests swap a stub in and call refresh_once()) without the
 # refresher holding a stale client.
+
+def _quota_read_seconds(client) -> float:
+    """Longest a healthy quota fetch may take: its deadline, plus one socket wait.
+
+    The total deadline is checked between reads, so a read already in flight
+    when it passes still runs to its own per-operation timeout.
+    """
+    return client.total_deadline_seconds + client.timeout_seconds
+
+
+# Each source's staleness limit is built from *its* read budgets, not from the
+# cadence alone, because those budgets are operator knobs: raising a deadline
+# past two intervals would otherwise start reporting a working source
+# `unavailable`, and the staleness limit is the one number here with no knob
+# of its own.
 _claude_quota_source: SourceRefresher = SourceRefresher(
-    "claude-quota", lambda: _live.get(), QUOTA_REFRESH_SECONDS
+    "claude-quota",
+    lambda: _live.get(),
+    QUOTA_REFRESH_SECONDS,
+    stale_after_seconds=stale_after(QUOTA_REFRESH_SECONDS, _quota_read_seconds(_live)),
 )
 _claude_activity_source: SourceRefresher = SourceRefresher(
-    "claude-activity", lambda: _claude_activity.snapshot(), CLAUDE_ACTIVITY_REFRESH_SECONDS
+    "claude-activity",
+    lambda: _claude_activity.snapshot(),
+    CLAUDE_ACTIVITY_REFRESH_SECONDS,
+    stale_after_seconds=stale_after(
+        CLAUDE_ACTIVITY_REFRESH_SECONDS, _claude_activity.scan_deadline_seconds
+    ),
 )
 _codex_quota_source: SourceRefresher = SourceRefresher(
-    "codex-quota", lambda: _codex.get(), QUOTA_REFRESH_SECONDS
+    "codex-quota",
+    lambda: _codex.get(),
+    QUOTA_REFRESH_SECONDS,
+    stale_after_seconds=stale_after(QUOTA_REFRESH_SECONDS, _quota_read_seconds(_codex)),
 )
 _codex_activity_source: SourceRefresher = SourceRefresher(
-    "codex-activity", lambda: _codex_activity.snapshot(), CODEX_ACTIVITY_REFRESH_SECONDS
+    "codex-activity",
+    lambda: _codex_activity.snapshot(),
+    CODEX_ACTIVITY_REFRESH_SECONDS,
+    stale_after_seconds=stale_after(
+        CODEX_ACTIVITY_REFRESH_SECONDS, _codex_activity.scan_deadline_seconds
+    ),
 )
 _SOURCES: tuple[SourceRefresher, ...] = (
     _claude_quota_source,

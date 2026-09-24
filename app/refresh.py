@@ -49,6 +49,13 @@ class SourceSnapshot(Generic[T]):
     value: T | None
     error: Exception | None
     at: datetime | None
+    # `at` is what the wall clock said; this is what a clock that cannot be
+    # stepped said at the same moment. Both are kept because neither alone is
+    # safe: a backward wall-clock step (NTP, a restored snapshot) would make a
+    # stale snapshot look fresh and silently switch the staleness check off,
+    # while `time.monotonic()` excludes time the host spent suspended and would
+    # make a genuinely old snapshot look young across a resume.
+    monotonic_at: float | None = None
 
     @property
     def published(self) -> bool:
@@ -56,10 +63,19 @@ class SourceSnapshot(Generic[T]):
         return self.at is not None
 
     def age_seconds(self, now: datetime | None = None) -> float | None:
-        """How long ago this was published, or None before the first publish."""
+        """How long ago this was published, or None before the first publish.
+
+        The larger of the two clocks' answers, so that whichever one has been
+        disturbed, the snapshot is treated as the older of the two -- the safe
+        direction, since the cost of being wrong is serving numbers that have
+        stopped being updated as though they were current.
+        """
         if self.at is None:
             return None
-        return ((now or datetime.now(timezone.utc)) - self.at).total_seconds()
+        wall_age = ((now or datetime.now(timezone.utc)) - self.at).total_seconds()
+        if self.monotonic_at is None:
+            return wall_age
+        return max(wall_age, time.monotonic() - self.monotonic_at)
 
 
 _PENDING: SourceSnapshot = SourceSnapshot(ok=False, value=None, error=None, at=None)
@@ -70,10 +86,27 @@ MIN_INTERVAL_SECONDS = 0.01
 # How far a source may fall behind its own cadence before what it last
 # published stops counting as live. Deliberately slack: this is meant to catch
 # a thread that has stopped advancing altogether, not a cycle that ran long, so
-# a slow-but-working source must never flap to `unavailable`. The grace term is
-# what keeps the fast activity cadences (5 s) from doing exactly that.
+# a slow-but-working source must never flap to `unavailable`.
 STALE_AFTER_INTERVALS = 3.0
 STALE_GRACE_SECONDS = 30.0
+
+
+def stale_after(interval_seconds: float, worst_read_seconds: float = 0.0) -> float:
+    """How old a success may get before it stops being served as live.
+
+    A healthy cycle costs the cadence *plus* however long the source's own read
+    is allowed to take, and every one of those budgets is an operator knob. So
+    the caller passes what its read may cost: deriving this from the cadence
+    alone would mark a working source stale as soon as an operator raised a
+    deadline past two intervals -- a flap with no knob to fix it, in the one
+    number here that has none.
+
+    The interval-multiple term is the floor, for a source whose read is cheap.
+    """
+    return max(
+        STALE_AFTER_INTERVALS * interval_seconds,
+        interval_seconds + max(0.0, worst_read_seconds) + STALE_GRACE_SECONDS,
+    )
 
 
 class SourceRefresher(Generic[T]):
@@ -92,13 +125,12 @@ class SourceRefresher(Generic[T]):
         # loop against the source by construction, which is the thing this
         # class exists to make impossible.
         self.interval_seconds = max(MIN_INTERVAL_SECONDS, interval_seconds)
+        # A floor for the same reason `interval_seconds` has one: zero here
+        # would mark every snapshot stale the instant it was published.
         self.stale_after_seconds = (
-            max(
-                STALE_AFTER_INTERVALS * self.interval_seconds,
-                self.interval_seconds + STALE_GRACE_SECONDS,
-            )
+            stale_after(self.interval_seconds)
             if stale_after_seconds is None
-            else stale_after_seconds
+            else max(MIN_INTERVAL_SECONDS, stale_after_seconds)
         )
         self._lock = threading.Lock()
         self._snapshot: SourceSnapshot[T] = _PENDING
@@ -144,6 +176,7 @@ class SourceRefresher(Generic[T]):
                 f"{self.stale_after_seconds:.0f}s limit for this source"
             ),
             at=snapshot.at,
+            monotonic_at=snapshot.monotonic_at,
         )
 
     def refresh_once(self) -> SourceSnapshot[T]:
@@ -160,10 +193,15 @@ class SourceRefresher(Generic[T]):
                 value=self._fetch(),
                 error=None,
                 at=datetime.now(timezone.utc),
+                monotonic_at=time.monotonic(),
             )
         except Exception as e:  # noqa: BLE001 -- see docstring
             published = SourceSnapshot(
-                ok=False, value=None, error=e, at=datetime.now(timezone.utc)
+                ok=False,
+                value=None,
+                error=e,
+                at=datetime.now(timezone.utc),
+                monotonic_at=time.monotonic(),
             )
         with self._lock:
             self._snapshot = published
