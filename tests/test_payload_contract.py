@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import http.client
 import json
+import logging
 import math
 import socket
 import ssl
@@ -228,6 +229,24 @@ def transport_faults() -> dict[str, BaseException]:
     }
 
 
+def hostile_hosts() -> dict[str, str]:
+    """Hosts an operator can put in CLAUDE_AI_HOST / CHATGPT_HOST.
+
+    The host the clients build their URL from is another operator-controlled
+    input. A typo there must not be reported as a dashboard bug.
+    """
+    return {
+        "empty": "",
+        "no-scheme": "claude.ai",
+        "path-only": "/backend-api/usage",
+        "unsupported-scheme": "gopher://example.invalid",
+        "malformed-ipv6": "http://[::1",
+        "with-a-space": "http://exa mple.invalid",
+        "with-a-newline": "http://example.invalid\n",
+        "very-long": "http://" + "h" * 10_000,
+    }
+
+
 def hostile_credentials(provider: str) -> dict[str, str | None]:
     """Credential files a headless or hand-assembled deployment can produce.
 
@@ -337,6 +356,22 @@ class _Deployment:
             CodexActivityReader(self.dirs["codex"], cache_ttl_seconds=0),
         )
         monkeypatch.setattr(urllib.request, "urlopen", self._urlopen)
+        # A degraded source is logged once until its classification changes, so
+        # each test starts from "nothing logged yet".
+        monkeypatch.setattr(main, "_logged_degrade", {})
+
+    def set_host(self, provider: str, host: str) -> None:
+        if provider == "claude":
+            client = LiveQuotaClient(
+                self.dirs["claude"], host=host, cache_ttl_seconds=0
+            )
+        else:
+            client = CodexLiveQuotaClient(
+                self.dirs["codex"], host=host, cache_ttl_seconds=0
+            )
+        self._monkeypatch.setattr(
+            main, "_live" if provider == "claude" else "_codex", client
+        )
 
     def credentials_path(self, provider: str) -> Path:
         name = ".credentials.json" if provider == "claude" else "auth.json"
@@ -947,6 +982,7 @@ def _request(path: str = "/") -> Request:
 def _index_html() -> str:
     async def render() -> str:
         response = await main.index(_request("/"))
+        assert response.status_code == 200
         return response.body.decode("utf-8")
 
     return asyncio.run(render())
@@ -955,6 +991,8 @@ def _index_html() -> str:
 def _usage_body() -> str:
     async def call() -> str:
         response = await main.api_usage()
+        assert response.status_code == 200
+        assert response.media_type == "application/json"
         return response.body.decode("utf-8")
 
     return asyncio.run(call())
@@ -1016,3 +1054,131 @@ def test_the_routes_answer_through_every_transport_fault(
 
     assert_payload_in_schema(json.loads(_usage_body()))
     assert "__INITIAL_PAYLOAD__" in _index_html()
+
+
+@pytest.mark.parametrize("provider", PROVIDERS)
+@pytest.mark.parametrize("case", sorted(hostile_hosts()))
+def test_a_hostile_host_override_stays_in_schema(deployment, provider, case) -> None:
+    deployment.set_host(provider, hostile_hosts()[case])
+
+    payload = main._build_payload()
+
+    assert_payload_in_schema(payload)
+    # A host the dashboard cannot build a request for is a configuration
+    # problem, not a dashboard bug: "internal error" would send the operator
+    # to the issue tracker instead of to their own .env.
+    assert payload[provider]["source_error"] != degrade.MESSAGES[degrade.INTERNAL]
+    assert_payload_in_schema(json.loads(_usage_body()))
+
+
+# ─── What the boundary is allowed to log ─────────────────────────────────────
+
+
+class _CapturingHandler(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+def _captured_records(build) -> list[logging.LogRecord]:
+    handler = _CapturingHandler()
+    logger = logging.getLogger(main.__name__)
+    logger.addHandler(handler)
+    previous = logger.level
+    logger.setLevel(logging.DEBUG)
+    try:
+        build()
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous)
+    return handler.records
+
+
+@pytest.mark.parametrize("provider", PROVIDERS)
+@pytest.mark.parametrize("case", sorted(transport_faults()))
+def test_the_log_carries_the_classification_and_nothing_the_exception_said(
+    deployment, provider, case
+) -> None:
+    fault = transport_faults()[case]
+    deployment.faults[provider] = fault
+
+    records = _captured_records(main._build_payload)
+
+    assert any(f"source={provider}.quota" in r.getMessage() for r in records)
+    for record in records:
+        message = record.getMessage()
+        assert SECRET not in message
+        assert str(fault) not in message
+        # No traceback either: a rendered traceback would include the chained
+        # exception, and that is where the bearer token is.
+        assert record.exc_info is None
+        assert record.stack_info is None
+
+
+@pytest.mark.parametrize("provider", PROVIDERS)
+def test_a_hostile_credential_is_never_logged(deployment, provider) -> None:
+    deployment.write_credentials(
+        provider, hostile_credentials(provider)["token-with-crlf"]
+    )
+
+    records = _captured_records(main._build_payload)
+
+    assert records
+    for record in records:
+        assert SECRET not in record.getMessage()
+        assert "X-Evil" not in record.getMessage()
+
+
+def test_a_failing_activity_read_is_logged_as_its_own_source(
+    deployment, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        main, "_claude_activity", _RaisingReader(RecursionError("too deep"))
+    )
+
+    records = _captured_records(main._build_payload)
+    messages = [r.getMessage() for r in records]
+
+    assert any("source=claude.last_activity" in m for m in messages)
+    assert all("too deep" not in m for m in messages)
+    assert main._build_payload()["claude"]["source"] == "live"
+
+
+def test_a_healthy_payload_logs_nothing(deployment) -> None:
+    assert _captured_records(main._build_payload) == []
+
+
+def test_a_source_that_stays_broken_is_logged_once(deployment) -> None:
+    deployment.faults["claude"] = transport_faults()["remote-disconnected"]
+
+    first = _captured_records(main._build_payload)
+    repeats = _captured_records(lambda: [main._build_payload() for _ in range(5)])
+
+    assert len(first) == 1
+    assert repeats == []
+
+
+def test_a_changed_classification_is_logged_again(deployment) -> None:
+    deployment.faults["claude"] = transport_faults()["remote-disconnected"]
+    assert len(_captured_records(main._build_payload)) == 1
+
+    deployment.faults["claude"] = None
+    deployment.write_credentials("claude", hostile_credentials("claude")["no-token"])
+    records = _captured_records(main._build_payload)
+
+    assert len(records) == 1
+    assert "classification=credentials" in records[0].getMessage()
+
+
+def test_a_recovered_source_is_logged_once(deployment) -> None:
+    deployment.faults["claude"] = transport_faults()["remote-disconnected"]
+    assert len(_captured_records(main._build_payload)) == 1
+
+    deployment.faults["claude"] = None
+    records = _captured_records(main._build_payload)
+
+    assert [r.getMessage() for r in records] == ["recovered source=claude.quota"]
+    assert _captured_records(main._build_payload) == []

@@ -58,8 +58,9 @@ reads timestamp/metadata to show each agent's local last activity.
   omits that optional entry or returns it malformed, the Fable gauge shows “—”
   while the 5-hour and all-model weekly gauges remain live.
 - Claude Code refreshes its own access token. If you have not opened Claude
-  Code for a while, Anthropic may return `HTTP 401` to codervis until the host
-  CLI runs and refreshes `~/.claude/.credentials.json`. Open Claude Code from a
+  Code for a while, Anthropic rejects codervis's call until the host CLI runs
+  and refreshes `~/.claude/.credentials.json`, and the card reads `unavailable`
+  with `upstream rejected the stored credential`. Open Claude Code from a
   terminal on the host, then wait for the next dashboard refresh.
 - Read-only bind mounts: codervis never writes to `~/.claude` or `~/.codex`.
 - The `*_ENABLED` variables only choose the initial toggle state for a browser
@@ -220,7 +221,7 @@ browser-disabled cards are dimmed.
 | --- | --- |
 | Chip shows `unavailable` with `upstream rejected the stored credential` | The agent's access token has expired and the host CLI has not refreshed it yet. Open Claude Code (or Codex) from a terminal on the host, then wait for the next dashboard refresh. |
 | Chip shows `unavailable` with `stored credential unavailable or unusable` | `~/.claude/.credentials.json` or `~/.codex/auth.json` is missing, unreadable inside the container, not JSON, or has no access token. A token containing a newline is also refused, because it cannot be sent as an HTTP header. |
-| Chip shows `unavailable` with `upstream unreachable` | The upstream host could not be reached: no route out, the `egress` proxy refused the host name, a DNS failure, or a dropped connection. `docker compose logs egress` names a host it refused. |
+| Chip shows `unavailable` with `upstream unreachable` | The upstream host could not be reached: no route out, the `egress` proxy refused the host name, a DNS failure, a dropped connection, or a `CLAUDE_AI_HOST`/`CHATGPT_HOST` override that is not a usable `https://…` URL. `docker compose logs egress` names a host it refused. |
 | Chip shows `unavailable` with `upstream returned an error response` | The endpoint answered with a status other than 200 — including `405` when a `CLAUDE_AI_HOST`/`CHATGPT_HOST` override uses `http://`, since egress is HTTPS only. |
 | Chip shows `unavailable` with `upstream response not understood` | The undocumented endpoint changed shape, or returned a value the payload schema refuses (a percentage that is not a finite number in 0–100, for instance). |
 | Chip shows `unavailable` with `internal error` | A bug in the dashboard rather than in the credential or the endpoint. Please report it. |

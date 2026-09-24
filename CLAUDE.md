@@ -27,7 +27,10 @@ a date is in range or null, a string is bounded and printable or null). A part
 that fails becomes that part's own degraded state, never an exception and never
 an out-of-schema value. `_payload_json()` then serializes the payload once with
 `allow_nan=False`, and `/api/usage`, the SSE frames and the template's
-`__INITIAL_PAYLOAD__` all serve that one string.
+`__INITIAL_PAYLOAD__` all serve that one string. The boundary logs one line per
+degraded source — the classification and the exception's type name, never its
+message and never a traceback — and only when that classification changes, since
+a browser asks for a fresh payload every few seconds.
 
 **`source_error` comes from the fixed vocabulary in `app/degrade.py` and from
 nowhere else** — never `str(exc)`, never a repr. It is served unauthenticated,

@@ -121,14 +121,22 @@ class LiveQuotaClient:
 
     def _fetch(self) -> LiveSnapshot:
         token, subscription = self._read_token()
-        req = urllib.request.Request(
-            self.host + USAGE_PATH,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/json",
-                "User-Agent": "codervis/0.1 (+local dashboard)",
-            },
-        )
+        try:
+            req = urllib.request.Request(
+                self.host + USAGE_PATH,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/json",
+                    "User-Agent": "codervis/0.1 (+local dashboard)",
+                },
+            )
+        except ValueError as e:
+            # A CLAUDE_AI_HOST override without a usable scheme: Request() calls
+            # this an "unknown url type". The host is configuration, not the
+            # endpoint, but from the dashboard's side it is unreachable.
+            raise LiveQuotaError(
+                f"host is not a usable URL: {type(e).__name__}", code=degrade.TRANSPORT
+            ) from e
         try:
             with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
                 if resp.status != 200:
@@ -143,10 +151,11 @@ class LiveQuotaClient:
             raise LiveQuotaError("network error", code=degrade.TRANSPORT) from e
         except ValueError as e:
             # http.client quotes the offending header value, which is the
-            # bearer token. Name the type only.
+            # bearer token. Name the type only, and break the chain: this
+            # exception must not survive to be rendered in a traceback.
             raise LiveQuotaError(
                 f"request could not be sent: {type(e).__name__}", code=degrade.CREDENTIALS
-            ) from e
+            ) from None
         except (OSError, http.client.HTTPException) as e:
             # A fault raised from getresponse()/read() — a reset connection, a
             # short read, a bad status line — is not a URLError.
