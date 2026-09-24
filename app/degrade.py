@@ -40,6 +40,11 @@ MESSAGES: dict[str, str] = {
     INTERNAL: "internal error",
 }
 
+# The codes the boundary is allowed to *serve*. ACTIVITY is diagnostic only: a
+# failed activity read degrades to `last_activity: null`, so its message must
+# never become a quota section's `source_error`, however a client tagged itself.
+SERVABLE: frozenset[str] = frozenset(MESSAGES) - {ACTIVITY}
+
 VOCABULARY: frozenset[str] = frozenset(MESSAGES.values())
 
 

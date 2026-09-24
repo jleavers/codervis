@@ -229,6 +229,45 @@ def transport_faults() -> dict[str, BaseException]:
     }
 
 
+def transport_fault_codes() -> dict[str, str]:
+    """The classification each fault above must be reported as.
+
+    Asserting only "unavailable and in schema" would pass even if both clients
+    dropped their `except (OSError, http.client.HTTPException)` clause or stopped
+    telling 401 from 500 — `main`'s boundary contains anything either way. But
+    the message an operator reads is keyed off this, and README sends them
+    somewhere different for each one: "upstream unreachable" is the network,
+    "upstream rejected the stored credential" is a re-login, and "internal
+    error" is a bug to report. A fault classified as the wrong one of those
+    sends them to the wrong place, so the mapping is the contract, not an
+    implementation detail.
+    """
+    transport = (
+        "remote-disconnected",
+        "incomplete-read",
+        "bad-status-line",
+        "line-too-long",
+        "connection-reset",
+        "socket-timeout",
+        "timeout-error",
+        "ssl-error",
+        "url-error",
+    )
+    # A ValueError out of the send path is how http.client rejects a header it
+    # cannot put on the wire, which is a credential problem — and the exception
+    # that carries the bearer token.
+    credentials = ("value-error-with-bearer", "unicode-error")
+    # Nothing a client declares: these escape it undeclared and are a bug here.
+    internal = ("recursion-error", "overflow-error", "key-error", "attribute-error")
+    codes = {case: degrade.TRANSPORT for case in transport}
+    codes.update({case: degrade.CREDENTIALS for case in credentials})
+    codes.update({case: degrade.INTERNAL for case in internal})
+    codes["http-error-401"] = degrade.AUTH
+    codes["http-error-500"] = degrade.HTTP
+    assert set(codes) == set(transport_faults()), "every fault needs a classification"
+    return codes
+
+
 def hostile_hosts() -> dict[str, str]:
     """Hosts an operator can put in CLAUDE_AI_HOST / CHATGPT_HOST.
 
@@ -328,6 +367,9 @@ class _Deployment:
         self.faults: dict[str, BaseException | None] = {p: None for p in PROVIDERS}
         self.read_faults: dict[str, BaseException | None] = {p: None for p in PROVIDERS}
         self.statuses = {provider: 200 for provider in PROVIDERS}
+        # Every Request the clients hand to urlopen, so a test can assert on
+        # what would have gone on the wire and not only on what came back.
+        self.requests: list[urllib.request.Request] = []
 
         for provider, path in self.dirs.items():
             path.mkdir(parents=True, exist_ok=True)
@@ -385,6 +427,7 @@ class _Deployment:
         path.write_text(content, encoding="utf-8")
 
     def _urlopen(self, request: urllib.request.Request, timeout: float | None = None):
+        self.requests.append(request)
         url = request.full_url
         if url.startswith(CLAUDE_HOST):
             provider = "claude"
@@ -411,6 +454,22 @@ def deployment(monkeypatch, tmp_path):
     return _Deployment(monkeypatch, tmp_path)
 
 
+def _assert_text_in_schema(value: object) -> None:
+    """A free-form string is bounded and printable, or null.
+
+    Printability is not cosmetic. The payload is embedded in a <script> block,
+    so a line terminator would end a JavaScript line, and a control character
+    can forge a line in whatever else reads the payload. Length alone would let
+    a raw "pro\x00\r\nX-Evil: 1" through.
+    """
+    if value is None:
+        return
+    assert isinstance(value, str)
+    assert 0 < len(value) <= main.MAX_TEXT_CHARS
+    assert main._UNPRINTABLE.search(value) is None
+    value.encode("utf-8")
+
+
 def _assert_window_in_schema(window: dict) -> None:
     assert set(window) == {"name", "label", "percent", "resets_at", "detail"}
     assert isinstance(window["name"], str)
@@ -423,6 +482,7 @@ def _assert_window_in_schema(window: dict) -> None:
     for field in ("resets_at", "detail"):
         value = window[field]
         assert value is None or isinstance(value, str)
+    _assert_text_in_schema(window["detail"])
     if window["resets_at"] is not None:
         moment = datetime.fromisoformat(window["resets_at"])
         assert main.MIN_DATE <= moment <= main.MAX_DATE
@@ -453,10 +513,7 @@ def assert_payload_in_schema(payload: dict) -> str:
         else:
             # The fixed vocabulary, and nothing else: no str(exc), no repr.
             assert error in degrade.VOCABULARY
-        plan = section["subscription_type"]
-        assert plan is None or (
-            isinstance(plan, str) and 0 < len(plan) <= main.MAX_TEXT_CHARS
-        )
+        _assert_text_in_schema(section["subscription_type"])
         if section["last_activity"] is not None:
             datetime.fromisoformat(section["last_activity"])
         for window in section["windows"]:
@@ -523,6 +580,8 @@ def test_transport_fault_stays_in_schema(deployment, provider, case) -> None:
 
     assert_payload_in_schema(payload)
     assert payload[provider]["source"] == "unavailable"
+    expected = degrade.MESSAGES[transport_fault_codes()[case]]
+    assert payload[provider]["source_error"] == expected
     other = "codex" if provider == "claude" else "claude"
     assert payload[other]["source"] == "live"
 
@@ -536,6 +595,61 @@ def test_fault_raised_from_read_stays_in_schema(deployment, provider, case) -> N
 
     assert_payload_in_schema(payload)
     assert payload[provider]["source"] == "unavailable"
+    # A fault raised from read() is classified the same as one raised from
+    # urlopen(): it is the same `except` clause that has to contain it.
+    expected = degrade.MESSAGES[transport_fault_codes()[case]]
+    assert payload[provider]["source_error"] == expected
+
+
+@pytest.mark.parametrize(
+    "account_id",
+    (
+        "acct\r\nX-Evil: 1",
+        # http.client's own check is `\n(?![ \t])`, so an LF followed by a space
+        # passes it and is sent as an obs-fold continuation line. Only the
+        # client's own guard refuses this one.
+        "acct\n X-Evil: 1",
+        "acct\n\tX-Evil: 1",
+        "acct\x00evil",
+    ),
+)
+def test_a_hostile_account_id_never_reaches_a_header(deployment, account_id) -> None:
+    """The account id is a credential-file string that goes out as a header.
+
+    Asserting only that the payload stays in schema would pass with the guard
+    deleted, because the request still succeeds — it would just carry the
+    forged header upstream. So assert on what went on the wire.
+    """
+    deployment.write_credentials(
+        "codex",
+        json.dumps({"tokens": {"access_token": SECRET, "account_id": account_id}}),
+    )
+
+    payload = main._build_payload()
+
+    assert_payload_in_schema(payload)
+    sent = [r for r in deployment.requests if r.full_url.startswith(CODEX_HOST)]
+    assert sent, "the codex client never built a request"
+    for request in sent:
+        for name, value in request.header_items():
+            assert "\r" not in value and "\n" not in value and "\x00" not in value
+            assert "X-Evil" not in value
+            assert "X-Evil" not in name
+        # Unusable means omitted, not sent in some other form.
+        assert request.get_header("Chatgpt-account-id") is None
+
+
+def test_a_usable_account_id_is_still_sent(deployment) -> None:
+    # The guard above must refuse hostile values, not every value.
+    deployment.write_credentials(
+        "codex",
+        json.dumps({"tokens": {"access_token": SECRET, "account_id": "acct-1"}}),
+    )
+
+    main._build_payload()
+
+    sent = [r for r in deployment.requests if r.full_url.startswith(CODEX_HOST)]
+    assert sent and sent[0].get_header("Chatgpt-account-id") == "acct-1"
 
 
 @pytest.mark.parametrize("provider", PROVIDERS)
@@ -564,6 +678,13 @@ def test_hostile_credentials_stay_in_schema(deployment, provider, case) -> None:
     assert_payload_in_schema(payload)
     other = "codex" if provider == "claude" else "claude"
     assert payload[other]["source"] == "live"
+    # Through the routes as well, not only through _build_payload: the
+    # acceptance criterion is that GET / and /api/usage answer 200 for every
+    # case in the matrix, and it is the routes that a browser meets.
+    served = json.loads(_usage_body())
+    assert_payload_in_schema(served)
+    assert SECRET not in json.dumps(served)
+    assert SECRET not in _index_html()
 
 
 @pytest.mark.parametrize("provider", PROVIDERS)
@@ -695,6 +816,70 @@ def _window(percent: object, resets_at: object = None, detail: object = None):
     return SimpleNamespace(percent=percent, resets_at=resets_at, detail=detail)
 
 
+class _FailingClientStub:
+    credentials_path = Path("unused")
+
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+
+    def get(self) -> object:
+        raise self._error
+
+
+@pytest.mark.parametrize(
+    ("provider", "error"),
+    (
+        ("claude", LiveQuotaError("x", code=degrade.ACTIVITY)),
+        ("codex", CodexLiveQuotaError("x", code=degrade.ACTIVITY)),
+    ),
+)
+def test_the_activity_classification_is_never_served_as_a_quota_error(
+    deployment, monkeypatch, provider, error
+) -> None:
+    """`activity` is diagnostic only, so a client cannot borrow its message.
+
+    A failed activity read degrades to `last_activity: null` and says nothing in
+    the payload. If a quota client tagged itself `activity` — by a copied
+    constant or a future edit — "local activity reading unavailable" would
+    appear as a quota `source_error` and describe the wrong subsystem.
+    """
+    attribute = "_live" if provider == "claude" else "_codex"
+    monkeypatch.setattr(main, attribute, _FailingClientStub(error))
+
+    payload = main._build_payload()
+
+    assert_payload_in_schema(payload)
+    assert payload[provider]["source"] == "unavailable"
+    assert payload[provider]["source_error"] != degrade.MESSAGES[degrade.ACTIVITY]
+    assert payload[provider]["source_error"] == degrade.MESSAGES[degrade.UNCLASSIFIED]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    (
+        # A float artefact a hair outside the range is served as the legal value
+        # it rounds to, rather than blacking the whole card out. Codex computes
+        # `100.0 - percent_left`, so a percent_left of -1e-9 lands here.
+        (100.0 - -1e-9, 100.0),
+        (100.004, 100.0),
+        (-0.0001, 0.0),
+        (0.0, 0.0),
+        (100.0, 100.0),
+        (12.345, 12.35),
+    ),
+)
+def test_a_percent_is_range_checked_on_the_value_it_serves(raw, expected) -> None:
+    assert main._percent(raw) == expected
+
+
+@pytest.mark.parametrize("raw", (100.01, -0.01, 600.0, -500.0, 1e9))
+def test_a_percent_that_does_not_round_into_range_is_refused(raw) -> None:
+    # Rounding must not become clamping: an upstream value that is genuinely
+    # out of range is still a shape error.
+    with pytest.raises(main._SchemaError):
+        main._percent(raw)
+
+
 OUT_OF_SCHEMA_PERCENTS = (
     float("nan"),
     float("inf"),
@@ -824,6 +1009,21 @@ def test_an_out_of_schema_plan_string_is_cleaned_or_dropped(
 
     assert_payload_in_schema(payload)
     assert payload["codex"]["source"] == "live"
+
+
+def test_a_control_character_in_a_plan_string_is_scrubbed_not_just_bounded() -> None:
+    """The scrubbing, not the length bound, is what makes the string safe.
+
+    `_UNPRINTABLE` is the defence that stops a line terminator ending a
+    JavaScript line inside the <script> block. A short hostile string satisfies
+    every other part of the text rule, so only this asserts the substitution.
+    """
+    hostile = "pro\x00\r\nX-Evil: 1\u2028alert(1)"
+
+    cleaned = main._text(hostile)
+
+    assert cleaned == "pro   X-Evil: 1 alert(1)"
+    assert main._UNPRINTABLE.search(cleaned) is None
 
 
 @pytest.mark.parametrize("provider", PROVIDERS)
@@ -958,9 +1158,31 @@ def test_the_serializer_refuses_a_payload_it_cannot_serialize_strictly() -> None
     ):
         serialized = main._payload_json(unserializable)
         recovered = json.loads(serialized)
+        # It is built from literals rather than by the boundary, so it is the
+        # one section shape nothing else pins. A key added to _provider_section
+        # and forgotten here would reach app.js as `undefined`.
+        assert_payload_in_schema(recovered)
         assert recovered["claude"]["source"] == "unavailable"
         assert recovered["claude"]["source_error"] == degrade.MESSAGES[degrade.INTERNAL]
         assert recovered["codex"]["source"] == "unavailable"
+
+
+def test_a_serializer_failure_is_logged_and_carries_no_exception_text() -> None:
+    # Both cards read "internal error" here. Without a log line there is no way
+    # to tell a serializer fault from a genuine dual-provider outage.
+    records = _captured_records(
+        lambda: main._payload_json({"claude": f"unserializable {SECRET}", "x": object()})
+    )
+
+    assert any(
+        "source=payload" in r.getMessage()
+        and f"classification={degrade.INTERNAL}" in r.getMessage()
+        for r in records
+    )
+    for record in records:
+        assert SECRET not in record.getMessage()
+        assert record.exc_info is None
+        assert record.stack_info is None
 
 
 def test_the_script_form_cannot_break_out_of_the_script_block() -> None:
@@ -1070,7 +1292,12 @@ def test_the_routes_answer_through_every_transport_fault(
 ) -> None:
     deployment.faults[provider] = transport_faults()[case]
 
-    assert_payload_in_schema(json.loads(_usage_body()))
+    served = json.loads(_usage_body())
+    assert_payload_in_schema(served)
+    assert served[provider]["source"] == "unavailable"
+    assert served[provider]["source_error"] == degrade.MESSAGES[
+        transport_fault_codes()[case]
+    ]
     assert "__INITIAL_PAYLOAD__" in _index_html()
 
 

@@ -63,7 +63,8 @@ directories; it must not call upstream quota endpoints or read host tokens.
   `tests/test_payload_contract.py` is the payload contract: it runs both live
   clients through one matrix of transport faults, hostile response bodies and
   hostile credential files, and asserts the payload always matches the schema
-  and always serializes. Add cases there for both providers, not one.
+  and always serializes. Add cases there for both providers, not one: a case
+  that names a shape only one provider has skips explicitly for the other.
 
 ## Safety Rules
 

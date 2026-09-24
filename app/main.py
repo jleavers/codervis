@@ -79,6 +79,7 @@ MAX_DATE = datetime(2100, 1, 1, tzinfo=timezone.utc)
 MAX_TEXT_CHARS = 120
 _UNPRINTABLE = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 
+
 class _WindowSpec(NamedTuple):
     """One gauge: where it goes, what it is called, and where its value is."""
 
@@ -131,9 +132,14 @@ def _percent(value: object) -> float | None:
         raise _SchemaError("percent is not representable as a float") from e
     if not math.isfinite(parsed):
         raise _SchemaError("percent is not finite")
-    if not MIN_PERCENT <= parsed <= MAX_PERCENT:
+    # Range-check the value that is actually served. Rounding first keeps a
+    # float artefact a hair outside the range — 100.0 - -1e-9 upstream, or
+    # 100.004 — from blacking the whole card out for a value that renders as a
+    # legal 100.0, while a genuinely out-of-range 600.0 is still refused.
+    served = round(parsed, PERCENT_DECIMALS)
+    if not MIN_PERCENT <= served <= MAX_PERCENT:
         raise _SchemaError("percent is outside the declared range")
-    return round(parsed, PERCENT_DECIMALS)
+    return served
 
 
 def _iso(value: object) -> str | None:
@@ -173,7 +179,7 @@ def _degrade_code(exc: Exception, declared: type[Exception]) -> str:
         return degrade.SHAPE
     if isinstance(exc, declared):
         code = getattr(exc, "code", None)
-        if isinstance(code, str) and code in degrade.MESSAGES:
+        if isinstance(code, str) and code in degrade.SERVABLE:
             return code
         return degrade.UNCLASSIFIED
     return degrade.INTERNAL
@@ -384,10 +390,15 @@ def _payload_json(payload: dict) -> str:
         # string back into its render context — is working with a document that
         # can reach a response.
         json.dumps(payload, allow_nan=False, ensure_ascii=False).encode("utf-8")
+        _log_recovered("payload")
         return serialized
-    except (TypeError, ValueError, RecursionError):
+    except (TypeError, ValueError, RecursionError) as exc:
         # The boundary above is meant to make this unreachable. If it is ever
-        # reached, serve a degraded payload instead of a 500.
+        # reached, serve a degraded payload instead of a 500 — but say so, or
+        # both cards read "internal error" with nothing in the log to tell a
+        # serializer fault from a genuine dual-provider outage. Type name only,
+        # for the same reason the boundary logs no message.
+        _log_degraded("payload", degrade.INTERNAL, exc)
         return json.dumps(
             _internal_error_payload(),
             allow_nan=False,
