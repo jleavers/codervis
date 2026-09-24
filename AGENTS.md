@@ -22,7 +22,7 @@ docker compose down
 curl http://localhost:8765/healthz
 curl http://localhost:8765/api/usage
 python -m pytest
-python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/egress.py app/ingress.py
+python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/refresh.py app/budget.py app/egress.py app/ingress.py
 docker compose exec codervis python -m app.egress check
 ```
 
@@ -32,27 +32,54 @@ directories; it must not call upstream quota endpoints or read host tokens.
 
 ## Implementation Notes
 
-- `app/main.py` owns the FastAPI routes, SSE stream, and payload assembly. It
-  also owns the one boundary every independently sourced part of the payload
-  passes through (`_provider_section()`), the payload schema that boundary
-  enforces (`_percent`, `_iso`, `_text`), and the single strict serialization
+- `app/main.py` owns the FastAPI routes, SSE stream, payload assembly, and the
+  lifespan that starts one refresher per source. It also owns the one boundary
+  every independently sourced part of the payload passes through
+  (`_provider_section()`), the payload schema that boundary enforces
+  (`_percent`, `_iso`, `_text`), and the single strict serialization
   (`_payload_json()`) that `/api/usage`, the SSE frames and the template's
   initial payload all share. It owns the `Host` allow-list
   (`DASHBOARD_ALLOWED_HOSTS`) that decides which clients the dashboard answers
   at all, too. Keep that check wrapped around the whole app, and pure ASGI:
   per-route checks miss `/static`, and `BaseHTTPMiddleware` would buffer the SSE
-  stream.
+  stream. The boundary does no I/O: it reads the last snapshot each refresher
+  published. Never call a quota client or an activity reader from a request
+  handler — the refresher's cadence is the only thing that bounds how often a
+  credential is read or a token is sent upstream.
 - `app/degrade.py` owns the fixed vocabulary the boundary reports failures with.
   `source_error` must always be one of those strings: never `str(exc)`, never a
   repr. It is served unauthenticated, and an exception raised while an upstream
-  request is being built carries the bearer token.
+  request is being built carries the bearer token. A source that has gone stale
+  is reported through it like any other failure, so how old a snapshot is never
+  reaches the payload.
+- `app/refresh.py` owns `SourceRefresher`: one daemon thread per source, a
+  fixed cadence, and a published snapshot that records failure as well as
+  success. `refresh_once()` must keep catching `Exception` whole; an escape
+  would kill the worker and freeze that source. Handlers read `current()`, not
+  `snapshot()`: a read with no deadline can stop a thread advancing without
+  ever failing it, and `current()` is what turns a success that has gone stale
+  into `unavailable` instead of old numbers labelled `live`.
+- `app/budget.py` owns what a single payload-feeding read may cost —
+  `read_capped()` for upstream bodies (deadline and byte cap),
+  `bounded_lines()` for transcript records (per-record and per-file caps, under
+  the scan's own deadline), `read_text_capped()` for the credential files (byte
+  cap only; it says there why it has no deadline). Any new read of something
+  someone else writes gets a byte cap always, and a deadline unless it
+  provably cannot take one — the credential read's exemption is not a
+  precedent, and a read that genuinely cannot be timed must sit in a refresher
+  whose `stale_after_seconds` covers it, so that a hang shows as `unavailable`
+  rather than as old numbers. Each new knob goes in the "Read budgets" table
+  in `README.md`, plus `.env.example` and `docker-compose.yml`.
 - `app/quota.py` owns the Claude live client and must convert any upstream,
-  auth, parse, or file-read failure into `LiveQuotaError`.
+  auth, parse, or file-read failure into `LiveQuotaError`, including a
+  `BudgetExceeded` from a body that is too large or too slow.
 - `app/claude_activity.py` owns Claude last-activity reporting. It should read
   only project transcript timestamps, must not read `.credentials.json`, and
   must not compute quota or fallback usage statistics.
 - `app/codex_quota.py` owns the Codex live client and must convert any failure
-  into `CodexLiveQuotaError` so the UI can show `source: "unavailable"`.
+  into `CodexLiveQuotaError` so the UI can show `source: "unavailable"`. One
+  deadline spans both candidate paths; do not give the second attempt a fresh
+  timeout.
 - `app/codex_activity.py` owns Codex last-activity reporting. It should derive
   timestamps from safe file metadata only and must not read `auth.json` or
   session contents.
@@ -70,7 +97,10 @@ directories; it must not call upstream quota endpoints or read host tokens.
   hostile credential files, and asserts the payload always matches the schema
   and always serializes. Add cases there for both providers, not one; a case
   naming a shape one provider cannot have must skip explicitly for the other,
-  so the gap shows up in the test report.
+  so the gap shows up in the test report. `tests/test_payload_budget.py` pins
+  the read budgets, the refresher and its staleness bound, and the property
+  that SSE frames cause no upstream calls. Add cases there when you change what
+  a read is allowed to cost.
 
 ## Safety Rules
 

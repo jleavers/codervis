@@ -6,6 +6,7 @@ import logging
 import math
 import os
 import re
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
@@ -21,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import degrade
+from .budget import env_float
 from .claude_activity import ClaudeActivityReader
 from .claude_activity import reader_from_env as claude_activity_reader_from_env
 from .codex_activity import CodexActivityReader
@@ -28,11 +30,41 @@ from .codex_activity import reader_from_env as codex_activity_reader_from_env
 from .codex_quota import CodexLiveQuotaClient, CodexLiveQuotaError
 from .codex_quota import client_from_env as codex_client_from_env
 from .quota import LiveQuotaClient, LiveQuotaError, client_from_env
+from .refresh import (
+    SourceRefresher,
+    SourceStale,
+    stale_after,
+    wait_for_first_publish,
+)
 
 log = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).parent
 REFRESH_SECONDS = max(1, int(os.environ.get("REFRESH_INTERVAL_SECONDS", "5")))
+
+# How often each source is read, in its own background thread. This is the
+# *only* thing that decides how often a credential is read or an upstream call
+# is made: no number of requests, SSE connections or ticks can add one.
+# QUOTA_CACHE_TTL_SECONDS is honoured as the old name for the same number,
+# because that is what it always meant -- the minimum gap between fetches.
+QUOTA_REFRESH_SECONDS = env_float(
+    "QUOTA_REFRESH_INTERVAL_SECONDS", 30.0, fallback="QUOTA_CACHE_TTL_SECONDS"
+)
+CLAUDE_ACTIVITY_REFRESH_SECONDS = env_float(
+    "CLAUDE_ACTIVITY_REFRESH_INTERVAL_SECONDS",
+    5.0,
+    fallback="CLAUDE_ACTIVITY_CACHE_TTL_SECONDS",
+)
+CODEX_ACTIVITY_REFRESH_SECONDS = env_float(
+    "CODEX_ACTIVITY_REFRESH_INTERVAL_SECONDS",
+    5.0,
+    fallback="CODEX_ACTIVITY_CACHE_TTL_SECONDS",
+)
+# A bounded wait at startup only, so the first page load is served from real
+# data rather than the placeholder. It happens once and does not scale with
+# requests; if a source is slower than this the app starts anyway and that
+# provider shows unavailable until its first refresh lands.
+STARTUP_REFRESH_WAIT_SECONDS = env_float("STARTUP_REFRESH_WAIT_SECONDS", 2.0)
 
 # Which clients this dashboard serves. There is no login, so reachability is the whole of its
 # access control, and the operator names it rather than inheriting it: DASHBOARD_BIND in the
@@ -154,17 +186,94 @@ def _enabled(name: str) -> bool:
 CLAUDE_ENABLED = _enabled("CLAUDE_ENABLED")
 CODEX_ENABLED = _enabled("CODEX_ENABLED")
 
-app = FastAPI(title="Codervis")
+_live: LiveQuotaClient = client_from_env()
+_claude_activity: ClaudeActivityReader = claude_activity_reader_from_env()
+_codex: CodexLiveQuotaClient = codex_client_from_env()
+_codex_activity: CodexActivityReader = codex_activity_reader_from_env()
+
+# One refresher per source. The fetch is a lambda rather than a bound method so
+# that it resolves the module global at call time: that keeps the sources
+# replaceable (tests swap a stub in and call refresh_once()) without the
+# refresher holding a stale client.
+
+def _quota_read_seconds(client) -> float:
+    """What the *network* part of a healthy quota fetch may cost.
+
+    The total deadline is checked between reads, so a read already in flight
+    when it passes still runs to its own per-operation timeout -- hence the
+    second term. It is not a hard ceiling: urllib applies that timeout per
+    socket operation, so a drip-fed status line or header can spend several
+    before `read_capped()` first looks at the deadline. That is not a *healthy*
+    fetch, and letting it go stale is the wanted outcome.
+
+    The credential read is deliberately excluded: it has no deadline to add,
+    and it is the read this limit exists to catch hanging.
+    """
+    return client.total_deadline_seconds + client.timeout_seconds
+
+
+# Each source's staleness limit is built from *its* read budgets, not from the
+# cadence alone, because those budgets are operator knobs: raising a deadline
+# past two intervals would otherwise start reporting a working source
+# `unavailable`, and the staleness limit is the one number here with no knob
+# of its own.
+_claude_quota_source: SourceRefresher = SourceRefresher(
+    "claude-quota",
+    lambda: _live.get(),
+    QUOTA_REFRESH_SECONDS,
+    stale_after_seconds=stale_after(QUOTA_REFRESH_SECONDS, _quota_read_seconds(_live)),
+)
+_claude_activity_source: SourceRefresher = SourceRefresher(
+    "claude-activity",
+    lambda: _claude_activity.snapshot(),
+    CLAUDE_ACTIVITY_REFRESH_SECONDS,
+    stale_after_seconds=stale_after(
+        CLAUDE_ACTIVITY_REFRESH_SECONDS, _claude_activity.scan_deadline_seconds
+    ),
+)
+_codex_quota_source: SourceRefresher = SourceRefresher(
+    "codex-quota",
+    lambda: _codex.get(),
+    QUOTA_REFRESH_SECONDS,
+    stale_after_seconds=stale_after(QUOTA_REFRESH_SECONDS, _quota_read_seconds(_codex)),
+)
+_codex_activity_source: SourceRefresher = SourceRefresher(
+    "codex-activity",
+    lambda: _codex_activity.snapshot(),
+    CODEX_ACTIVITY_REFRESH_SECONDS,
+    stale_after_seconds=stale_after(
+        CODEX_ACTIVITY_REFRESH_SECONDS, _codex_activity.scan_deadline_seconds
+    ),
+)
+_SOURCES: tuple[SourceRefresher, ...] = (
+    _claude_quota_source,
+    _claude_activity_source,
+    _codex_quota_source,
+    _codex_activity_source,
+)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Every payload-feeding read lives and dies with the app, not with a request."""
+    for source in _SOURCES:
+        source.start()
+    await asyncio.to_thread(
+        wait_for_first_publish, _SOURCES, STARTUP_REFRESH_WAIT_SECONDS
+    )
+    try:
+        yield
+    finally:
+        for source in _SOURCES:
+            source.stop()
+
+
+app = FastAPI(title="Codervis", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 # Once, around everything: added here rather than per route so that a route added later is
 # behind it by default.
 app.add_middleware(HostAllowlist, allowed=ALLOWED_HOSTS)
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
-
-_live: LiveQuotaClient = client_from_env()
-_claude_activity: ClaudeActivityReader = claude_activity_reader_from_env()
-_codex: CodexLiveQuotaClient = codex_client_from_env()
-_codex_activity: CodexActivityReader = codex_activity_reader_from_env()
 
 
 # ─── The payload schema ──────────────────────────────────────────────────────
@@ -216,6 +325,35 @@ _CODEX_WINDOWS = (
     _WindowSpec("five_hour", "5-Hour Window", "five_hour", optional=False),
     _WindowSpec("seven_day", "Weekly Window", "seven_day", optional=False),
 )
+
+
+def _recorded(error: Exception | None, pending: str) -> Exception:
+    """The failure a refresher recorded, ready to raise here.
+
+    Its traceback is cleared first. The same exception object is re-raised on
+    every payload build for as long as its snapshot stands, and each raise
+    appends a frame to the *same* object -- so the chain would grow without
+    bound in precisely the case this design exists to survive: a source that
+    published a failure and then wedged is never republished (`current()`
+    leaves an already-failed snapshot alone), so nothing ever replaces it.
+    Nothing reads the traceback: the log records the type name and the
+    classification comes from `isinstance`.
+
+    `is not None` rather than `or`, because the snapshot's own flag is `ok`;
+    whether an exception happens to be truthy is beside the point.
+    """
+    if error is not None:
+        return error.with_traceback(None)
+    return _NotPublished(pending)
+
+
+class _NotPublished(Exception):
+    """A source has not published an outcome yet.
+
+    Its refresher is started by the lifespan and the app waits briefly for a
+    first publish, so this is the gap before that lands (or a source slower
+    than the wait). It is "no data yet", not a fault in what upstream sent.
+    """
 
 
 class _SchemaError(Exception):
@@ -295,6 +433,10 @@ def _degrade_code(exc: Exception, declared: type[Exception]) -> str:
     """
     if isinstance(exc, _SchemaError):
         return degrade.SHAPE
+    if isinstance(exc, SourceStale):
+        return degrade.STALE
+    if isinstance(exc, _NotPublished):
+        return degrade.UNCLASSIFIED
     if isinstance(exc, declared):
         code = getattr(exc, "code", None)
         if isinstance(code, str) and code in degrade.SERVABLE:
@@ -365,23 +507,31 @@ def _window_dict(spec: _WindowSpec, window: object) -> dict:
     }
 
 
-def _activity_fields(source: str, reader: object) -> tuple[str | None, bool]:
+def _activity_fields(provider: str, source: SourceRefresher) -> tuple[str | None, bool]:
     """Each provider's last_activity reading, degrading on its own.
 
     An activity read is a separate source from the quota call — it walks local
     transcript and session files — so a fault in it means "no reading" and
     never takes the provider's quota section down with it.
+
+    The scan itself ran in the refresher, off the event loop; this only reads
+    what it published. A scan that failed, or one that stopped being refreshed,
+    arrives here as a not-ok snapshot and reads as "no reading" — the same
+    answer, reached without doing any I/O in a request.
     """
+    published = source.current()
     try:
-        snapshot = reader.snapshot()
+        if not published.ok:
+            raise _recorded(published.error, "activity source has not published")
+        snapshot = published.value
         fields = (
             _iso(getattr(snapshot, "last_activity", None)),
             bool(getattr(snapshot, "data_root_exists", False)),
         )
     except Exception as exc:
-        _log_degraded(f"{source}.last_activity", degrade.ACTIVITY, exc)
+        _log_degraded(f"{provider}.last_activity", degrade.ACTIVITY, exc)
         return None, False
-    _log_recovered(f"{source}.last_activity")
+    _log_recovered(f"{provider}.last_activity")
     return fields
 
 
@@ -389,16 +539,27 @@ def _provider_section(
     *,
     provider: str,
     enabled: bool,
-    client: object,
-    activity: object,
+    source: SourceRefresher,
+    activity_source: SourceRefresher,
     windows: tuple[_WindowSpec, ...],
     plan_attr: str,
     declared_error: type[Exception],
 ) -> dict:
-    """One provider's whole section: the single boundary for that provider."""
-    last_activity, data_root_exists = _activity_fields(provider, activity)
+    """One provider's whole section: the single boundary for that provider.
+
+    It does no I/O. The quota call ran in `source`'s refresher, off the event
+    loop and on its own cadence, and what arrives here is the outcome it
+    published — success or failure. A recorded failure is re-raised into the
+    same `except` a live call used to land in, so every failure is classified,
+    logged and reported exactly as before, whichever request happens to be
+    looking.
+    """
+    last_activity, data_root_exists = _activity_fields(provider, activity_source)
+    published = source.current()
     try:
-        snapshot = client.get()
+        if not published.ok:
+            raise _recorded(published.error, "source has not published")
+        snapshot = published.value
         if snapshot is None:
             raise _SchemaError("client returned no snapshot")
         built = [
@@ -434,8 +595,8 @@ def _claude_section() -> dict:
     return _provider_section(
         provider="claude",
         enabled=CLAUDE_ENABLED,
-        client=_live,
-        activity=_claude_activity,
+        source=_claude_quota_source,
+        activity_source=_claude_activity_source,
         windows=_CLAUDE_WINDOWS,
         plan_attr="subscription_type",
         declared_error=LiveQuotaError,
@@ -446,8 +607,8 @@ def _codex_section() -> dict:
     return _provider_section(
         provider="codex",
         enabled=CODEX_ENABLED,
-        client=_codex,
-        activity=_codex_activity,
+        source=_codex_quota_source,
+        activity_source=_codex_activity_source,
         windows=_CODEX_WINDOWS,
         plan_attr="plan_type",
         declared_error=CodexLiveQuotaError,
@@ -455,6 +616,11 @@ def _codex_section() -> dict:
 
 
 def _build_payload() -> dict:
+    """Assemble the payload from published snapshots only. Does no I/O.
+
+    This is what makes the number of requests, and the number of SSE
+    connections, irrelevant to how much upstream traffic the dashboard sends.
+    """
     now = datetime.now(timezone.utc)
     return {
         "claude": _claude_section(),
@@ -572,15 +738,30 @@ async def stream(request: Request) -> StreamingResponse:
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 
 
-@app.get("/healthz")
-async def healthz() -> dict:
+def _data_root_flags() -> dict:
+    """The `stat()`s behind `/healthz`. Blocking, so it is called off the loop."""
+    claude_root = _claude_activity.data_dir.exists()
     return {
-        "ok": True,
-        "data_root_exists": _claude_activity.data_dir.exists(),
+        "data_root_exists": claude_root,
         "claude_enabled": CLAUDE_ENABLED,
         "claude_credentials_present": _live.credentials_path.exists(),
-        "claude_activity_data_root_exists": _claude_activity.data_dir.exists(),
+        "claude_activity_data_root_exists": claude_root,
         "codex_data_root_exists": _codex_activity.data_dir.exists(),
         "codex_enabled": CODEX_ENABLED,
         "codex_credentials_present": _codex.credentials_path.exists(),
     }
+
+
+@app.get("/healthz")
+async def healthz() -> dict:
+    """Whether the data this dashboard needs is where it was told to look.
+
+    The four `exists()` calls are the one place left that touches the bind
+    mounts from a request. They go to a thread because they are `stat()`s on
+    `/data/claude` and `/data/codex`, the mounts everything else about this
+    app now reads only in a refresher: a hung mount would otherwise block the
+    event loop here and stall every other route -- including `/api/usage`,
+    which does no I/O of its own. A thread cannot cancel a wedged `stat()`
+    either, but it wedges alone.
+    """
+    return {"ok": True, **await asyncio.to_thread(_data_root_flags)}

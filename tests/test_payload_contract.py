@@ -30,6 +30,8 @@ from fastapi.testclient import TestClient
 from app import degrade, main
 from app.claude_activity import ClaudeActivityReader
 from app.codex_activity import CodexActivityReader
+from app.budget import BudgetExceeded
+from app.refresh import SourceRefresher
 from app.codex_quota import CodexLiveQuotaClient, CodexLiveQuotaError
 from app.quota import LiveQuotaClient, LiveQuotaError
 
@@ -228,6 +230,10 @@ def transport_faults() -> dict[str, BaseException]:
         "key-error": KeyError("five_hour"),
         "attribute-error": AttributeError("'NoneType' object has no attribute 'get'"),
         "unicode-error": UnicodeEncodeError("utf-8", "\ud800", 0, 1, "surrogate"),
+        # The read budget cutting off a body that is too large or still
+        # trickling at the deadline. The transfer never completed, so it
+        # belongs with the transport faults rather than the shape ones.
+        "budget-exceeded": BudgetExceeded("upstream body exceeded 1048576 bytes"),
     }
 
 
@@ -254,6 +260,7 @@ def transport_fault_codes() -> dict[str, str]:
         "timeout-error",
         "ssl-error",
         "url-error",
+        "budget-exceeded",
     )
     # A ValueError out of the send path is how http.client rejects a header it
     # cannot put on the wire, which is a credential problem — and the exception
@@ -344,10 +351,21 @@ class _FakeResponse:
         self._body = body
         self._read_fault = read_fault
 
-    def read(self) -> bytes:
+    # `read_capped()` asks for a bounded amount, and prefers `read1` so that a
+    # sender trickling bytes is noticed against the deadline rather than after
+    # the whole body. `http.client.HTTPResponse` has both; a stub with a
+    # no-argument `read()` models a response that does not exist.
+    def read1(self, amount: int = -1) -> bytes:
         if self._read_fault is not None:
             raise self._read_fault
-        return self._body
+        if amount is None or amount < 0:
+            chunk, self._body = self._body, b""
+            return chunk
+        chunk, self._body = self._body[:amount], self._body[amount:]
+        return chunk
+
+    def read(self, amount: int = -1) -> bytes:
+        return self.read1(amount)
 
     def __enter__(self) -> "_FakeResponse":
         return self
@@ -380,38 +398,73 @@ class _Deployment:
         monkeypatch.setattr(
             main,
             "_live",
-            LiveQuotaClient(self.dirs["claude"], host=CLAUDE_HOST, cache_ttl_seconds=0),
+            LiveQuotaClient(self.dirs["claude"], host=CLAUDE_HOST),
         )
         monkeypatch.setattr(
             main,
             "_codex",
-            CodexLiveQuotaClient(
-                self.dirs["codex"], host=CODEX_HOST, cache_ttl_seconds=0
-            ),
+            CodexLiveQuotaClient(self.dirs["codex"], host=CODEX_HOST),
         )
         monkeypatch.setattr(
             main,
             "_claude_activity",
-            ClaudeActivityReader(self.dirs["claude"], cache_ttl_seconds=0),
+            ClaudeActivityReader(self.dirs["claude"]),
         )
         monkeypatch.setattr(
             main,
             "_codex_activity",
-            CodexActivityReader(self.dirs["codex"], cache_ttl_seconds=0),
+            CodexActivityReader(self.dirs["codex"]),
         )
         monkeypatch.setattr(urllib.request, "urlopen", self._urlopen)
         # A degraded source is logged once until its classification changes, so
         # each test starts from "nothing logged yet".
         monkeypatch.setattr(main, "_logged_degrade", {})
 
+        # Payload-feeding I/O now happens in a refresher, not in a handler, so
+        # swapping a client in no longer changes what the next payload says --
+        # the source has to be read again first. These tests mean "build a
+        # payload from these clients, now", so each build refreshes all four
+        # sources synchronously: the same work the background threads do on
+        # their cadence, on this thread, with nothing cached in between.
+        #
+        # The refreshers are fresh per test and resolve main's module globals
+        # at call time, so `set_host()` and the fault switches keep working.
+        sources = (
+            SourceRefresher("claude-quota", lambda: main._live.get(), 30.0),
+            SourceRefresher("claude-activity", lambda: main._claude_activity.snapshot(), 5.0),
+            SourceRefresher("codex-quota", lambda: main._codex.get(), 30.0),
+            SourceRefresher("codex-activity", lambda: main._codex_activity.snapshot(), 5.0),
+        )
+        for name, source in zip(
+            (
+                "_claude_quota_source",
+                "_claude_activity_source",
+                "_codex_quota_source",
+                "_codex_activity_source",
+            ),
+            sources,
+        ):
+            monkeypatch.setattr(main, name, source)
+        monkeypatch.setattr(main, "_SOURCES", sources)
+
+        build_from_snapshots = main._build_payload
+
+        def build_payload() -> dict:
+            for source in sources:
+                source.refresh_once()
+            return build_from_snapshots()
+
+        monkeypatch.setattr(main, "_build_payload", build_payload)
+        self.sources = sources
+
     def set_host(self, provider: str, host: str) -> None:
         if provider == "claude":
             client = LiveQuotaClient(
-                self.dirs["claude"], host=host, cache_ttl_seconds=0
+                self.dirs["claude"], host=host
             )
         else:
             client = CodexLiveQuotaClient(
-                self.dirs["codex"], host=host, cache_ttl_seconds=0
+                self.dirs["codex"], host=host
             )
         self._monkeypatch.setattr(
             main, "_live" if provider == "claude" else "_codex", client
@@ -736,6 +789,7 @@ def test_a_credential_in_a_header_never_reaches_the_payload(deployment, provider
         (degrade.HTTP, "upstream returned an error response"),
         (degrade.TRANSPORT, "upstream unreachable"),
         (degrade.SHAPE, "upstream response not understood"),
+        (degrade.STALE, "provider data is no longer being refreshed"),
         (degrade.ACTIVITY, "local activity reading unavailable"),
         (degrade.UNCLASSIFIED, "provider data unavailable"),
         (degrade.INTERNAL, "internal error"),
@@ -750,6 +804,7 @@ def test_error_vocabulary_is_fixed(code, expected) -> None:
         degrade.HTTP,
         degrade.TRANSPORT,
         degrade.SHAPE,
+        degrade.STALE,
         degrade.ACTIVITY,
         degrade.UNCLASSIFIED,
         degrade.INTERNAL,
@@ -830,6 +885,34 @@ class _FailingClientStub:
 
     def get(self) -> object:
         raise self._error
+
+
+@pytest.mark.parametrize(
+    ("provider", "error"),
+    (
+        ("claude", LiveQuotaError("x", code=degrade.STALE)),
+        ("codex", CodexLiveQuotaError("x", code=degrade.STALE)),
+    ),
+)
+def test_the_stale_classification_is_never_claimed_by_a_client(
+    deployment, monkeypatch, provider, error
+) -> None:
+    """Only the refresher knows whether a source stopped being refreshed.
+
+    A client tagging itself `stale` — by a copied constant or a future edit —
+    would report "provider data is no longer being refreshed" about a source
+    that is being refreshed on its cadence, and send an operator looking for a
+    wedged thread that does not exist.
+    """
+    attribute = "_live" if provider == "claude" else "_codex"
+    monkeypatch.setattr(main, attribute, _FailingClientStub(error))
+
+    payload = main._build_payload()
+
+    assert_payload_in_schema(payload)
+    assert payload[provider]["source"] == "unavailable"
+    assert payload[provider]["source_error"] != degrade.MESSAGES[degrade.STALE]
+    assert payload[provider]["source_error"] == degrade.MESSAGES[degrade.UNCLASSIFIED]
 
 
 @pytest.mark.parametrize(

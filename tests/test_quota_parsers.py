@@ -10,10 +10,18 @@ from app import codex_quota, quota
 
 
 class _JSONResponse:
+    """A stand-in for http.client.HTTPResponse, which reads in sized chunks.
+
+    The clients read the body under a byte cap now, so this has to take a size
+    argument and return b"" at the end, as the real response does. Serving the
+    whole body regardless of the size asked for would hide a cap that does not
+    work.
+    """
+
     status = 200
 
     def __init__(self, body: dict) -> None:
-        self._body = body
+        self._remaining = json.dumps(body).encode("utf-8")
 
     def __enter__(self):
         return self
@@ -21,8 +29,11 @@ class _JSONResponse:
     def __exit__(self, *exc) -> None:
         return None
 
-    def read(self) -> bytes:
-        return json.dumps(self._body).encode("utf-8")
+    def read(self, size: int = -1) -> bytes:
+        if size is None or size < 0:
+            size = len(self._remaining)
+        chunk, self._remaining = self._remaining[:size], self._remaining[size:]
+        return chunk
 
 
 def test_claude_window_uses_live_utilization_without_scaling() -> None:
@@ -105,7 +116,7 @@ def test_claude_client_reads_fable_window_from_same_usage_response(
         )
 
     monkeypatch.setattr(quota.urllib.request, "urlopen", fake_urlopen)
-    snapshot = quota.LiveQuotaClient(tmp_path, cache_ttl_seconds=0).get()
+    snapshot = quota.LiveQuotaClient(tmp_path).get()
 
     assert len(requests) == 1
     assert requests[0].full_url.endswith(quota.USAGE_PATH)
@@ -143,7 +154,7 @@ def test_claude_client_ignores_malformed_optional_fable_window(
         ),
     )
 
-    snapshot = quota.LiveQuotaClient(tmp_path, cache_ttl_seconds=0).get()
+    snapshot = quota.LiveQuotaClient(tmp_path).get()
 
     assert snapshot.five_hour.percent == 12.5
     assert snapshot.seven_day.percent == 45
@@ -203,37 +214,24 @@ def test_codex_client_falls_back_to_alternate_usage_path(tmp_path, monkeypatch) 
     calls: list[str] = []
     seen_headers: list[dict[str, str]] = []
 
-    class FakeResponse:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb) -> None:
-            return None
-
-        def read(self) -> bytes:
-            return json.dumps(
-                {
-                    "rate_limit": {
-                        "primary_window": {"utilization": 11},
-                        "weekly": {"percent_left": 25},
-                    }
-                }
-            ).encode("utf-8")
-
     def fake_urlopen(req, timeout):
         calls.append(req.full_url)
         seen_headers.append({k.lower(): v for k, v in req.header_items()})
         if req.full_url.endswith(codex_quota.USAGE_PATH):
             raise urllib.error.HTTPError(req.full_url, 404, "Not Found", hdrs=None, fp=None)
-        return FakeResponse()
+        return _JSONResponse(
+            {
+                "rate_limit": {
+                    "primary_window": {"utilization": 11},
+                    "weekly": {"percent_left": 25},
+                }
+            }
+        )
 
     monkeypatch.setattr(codex_quota.urllib.request, "urlopen", fake_urlopen)
     client = codex_quota.CodexLiveQuotaClient(
         tmp_path,
         host="https://example.test",
-        cache_ttl_seconds=0,
     )
 
     snapshot = client.get()
@@ -277,7 +275,6 @@ def test_codex_client_uses_primary_as_weekly_when_secondary_is_null(
     client = codex_quota.CodexLiveQuotaClient(
         tmp_path,
         host="https://example.test",
-        cache_ttl_seconds=0,
     )
 
     snapshot = client.get()
@@ -315,7 +312,6 @@ def test_codex_client_keeps_durationless_primary_as_weekly_when_alone(
     client = codex_quota.CodexLiveQuotaClient(
         tmp_path,
         host="https://example.test",
-        cache_ttl_seconds=0,
     )
 
     snapshot = client.get()
@@ -354,7 +350,6 @@ def test_codex_client_exposes_five_hour_and_weekly_windows(tmp_path, monkeypatch
     client = codex_quota.CodexLiveQuotaClient(
         tmp_path,
         host="https://example.test",
-        cache_ttl_seconds=0,
     )
 
     snapshot = client.get()

@@ -23,6 +23,7 @@ AUTH = "auth"
 HTTP = "http"
 TRANSPORT = "transport"
 SHAPE = "shape"
+STALE = "stale"
 ACTIVITY = "activity"
 UNCLASSIFIED = "unclassified"
 INTERNAL = "internal"
@@ -33,6 +34,11 @@ MESSAGES: dict[str, str] = {
     HTTP: "upstream returned an error response",
     TRANSPORT: "upstream unreachable",
     SHAPE: "upstream response not understood",
+    # The source's own thread stopped advancing -- a read with no deadline of
+    # its own, hung. Nothing here says *how* old the data is: the age is a
+    # number this process computed, but the rule is that `source_error` is a
+    # fixed string, and a rule with one exception is not a rule.
+    STALE: "provider data is no longer being refreshed",
     # Only ever logged. A failed activity read degrades to `last_activity:
     # null`, which the UI renders as "—"; it has no message of its own.
     ACTIVITY: "local activity reading unavailable",
@@ -40,10 +46,14 @@ MESSAGES: dict[str, str] = {
     INTERNAL: "internal error",
 }
 
-# The codes the boundary is allowed to *serve*. ACTIVITY is diagnostic only: a
-# failed activity read degrades to `last_activity: null`, so its message must
-# never become a quota section's `source_error`, however a client tagged itself.
-SERVABLE: frozenset[str] = frozenset(MESSAGES) - {ACTIVITY}
+# The codes a *client* may claim. ACTIVITY is diagnostic only: a failed
+# activity read degrades to `last_activity: null`, so its message must never
+# become a quota section's `source_error`, however a client tagged itself.
+# STALE is excluded for the same reason from the other direction: only the
+# refresher knows whether a source stopped being refreshed, and a client
+# tagging itself with it would report that about a source refreshing perfectly
+# well. The boundary sets STALE itself, before this set is consulted.
+SERVABLE: frozenset[str] = frozenset(MESSAGES) - {ACTIVITY, STALE}
 
 VOCABULARY: frozenset[str] = frozenset(MESSAGES.values())
 

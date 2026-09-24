@@ -100,12 +100,44 @@ Edit `.env`:
 | `DASHBOARD_ALLOWED_HOSTS` | Host names a browser may use to reach the dashboard, comma- or space-separated. Checked on every route, `/static` and `/healthz` included; anything else gets `403`. Names match exactly and a port is ignored, so `dash.example` covers `dash.example:8765` but not `sub.dash.example`, and `*.dash.example` is not a pattern — it is dropped with a warning. `*` on its own accepts any name. | `localhost,127.0.0.1,::1` |
 | `DASHBOARD_PORT` | Host port the dashboard listens on. A port alone: an `address:port` value used to work here and no longer does — the address is `DASHBOARD_BIND`. | `8765` |
 | `REFRESH_INTERVAL_SECONDS` | How often the browser is pushed a fresh snapshot. | `5` |
-| `QUOTA_CACHE_TTL_SECONDS` | Server-side cache for the upstream calls. Keep ≥ refresh interval. | `30` |
-| `CLAUDE_ACTIVITY_CACHE_TTL_SECONDS` | Server-side cache for Claude local transcript timestamp scans. | `5` |
-| `CODEX_ACTIVITY_CACHE_TTL_SECONDS` | Server-side cache for Codex local activity metadata scans. | `5` |
+| `QUOTA_REFRESH_INTERVAL_SECONDS` | How often each provider's quota is fetched in the background. This alone decides how often your token is sent upstream — browsers and tabs do not add fetches. Keep ≥ refresh interval. Old name `QUOTA_CACHE_TTL_SECONDS` still works. | `30` |
+| `CLAUDE_ACTIVITY_REFRESH_INTERVAL_SECONDS` | How often Claude transcript timestamps are scanned. Old name `CLAUDE_ACTIVITY_CACHE_TTL_SECONDS` still works. | `5` |
+| `CODEX_ACTIVITY_REFRESH_INTERVAL_SECONDS` | How often Codex activity metadata is scanned. Old name `CODEX_ACTIVITY_CACHE_TTL_SECONDS` still works. | `5` |
+| `STARTUP_REFRESH_WAIT_SECONDS` | How long startup waits for the first refresh of every source, so the first page load shows real data. The app starts either way. | `2` |
 | `CLAUDE_AI_HOST` | Override the Claude host (rarely needed). Must be `https://`; add the host to `EGRESS_ALLOW`. | `https://claude.ai` |
 | `CHATGPT_HOST` | Override the Codex host (rarely needed). Must be `https://`; add the host to `EGRESS_ALLOW`. | `https://chatgpt.com` |
 | `EGRESS_ALLOW` | Extra hosts the egress proxy admits, comma- or space-separated. `host` means port 443, `host:port` names another, and `.example.com` admits the domain and everything under it. It extends the built-in `claude.ai` and `chatgpt.com`; it never replaces them. | empty |
+
+### Read budgets
+
+Everything that feeds the payload is written by someone else: the vendor's
+response body, whatever an operator's `CLAUDE_AI_HOST`/`CHATGPT_HOST` points
+at, and whatever writes under `~/.claude`. Each of those reads is therefore
+bounded. A byte cap applies to all of them, so nothing grows without bound; a
+deadline applies to the ones that can be given one — the upstream body, and a
+local activity scan as a whole. The credential files get a byte cap only, since
+a read of a hung mount cannot portably be interrupted from here. Exceeding a
+budget degrades that source to `unavailable` in the UI until its next refresh,
+and no other route is affected. As a backstop for the reads that have no
+deadline, a source whose last successful refresh has gone stale is also
+reported `unavailable` rather than serving numbers that have stopped being
+updated. "Stale" is three of its own refresh intervals, or its interval plus
+its read budget plus 30 s, whichever is larger — so raising a deadline below
+raises that limit with it, so a source is not reported unavailable for
+spending its whole budget. The
+shipped values suit the real endpoints, and a value that cannot be parsed is
+ignored in favour of the default.
+
+| Variable | What it does | Default |
+| --- | --- | --- |
+| `QUOTA_TIMEOUT_SECONDS` | urllib's timeout, per socket operation. | `8` |
+| `QUOTA_TOTAL_DEADLINE_SECONDS` | Deadline across a whole quota fetch, including both of Codex's candidate paths. This is what bounds a sender that trickles bytes forever, which the per-operation timeout cannot. | `10` |
+| `QUOTA_MAX_RESPONSE_BYTES` | Most an upstream usage response may be. | `1048576` |
+| `CREDENTIALS_MAX_BYTES` | Most `.credentials.json` / `auth.json` may be. They are read on every refresh and sit in the same writable tree as the transcripts. | `1048576` |
+| `ACTIVITY_SCAN_DEADLINE_SECONDS` | Deadline across a whole local activity scan. A scan that runs out reports what it found and catches up next time. | `5` |
+| `ACTIVITY_MAX_LINE_BYTES` | Most one transcript record may be. A longer one is skipped; the rest of the file is still read. | `1048576` |
+| `ACTIVITY_MAX_FILE_BYTES` | Most that is read from one transcript file. | `16777216` |
+| `ACTIVITY_MAX_FILES` | Most files one activity scan walks. | `20000` |
 
 ### Windows note
 
@@ -183,7 +215,7 @@ Install development dependencies, then run the suite:
 ```bash
 python -m pip install -r requirements-dev.txt
 python -m pytest
-python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/egress.py app/ingress.py
+python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/refresh.py app/budget.py app/egress.py app/ingress.py
 ```
 
 The tests use temporary directories and stubbed upstream clients. They do not
@@ -224,6 +256,8 @@ browser-disabled cards are dimmed.
 │   ├── claude_activity.py # Claude local activity timestamp reader
 │   ├── codex_quota.py   # Codex live client → chatgpt.com/backend-api/wham/usage
 │   ├── codex_activity.py # Codex local activity metadata reader
+│   ├── refresh.py       # One background refresher per source: when a source is read
+│   ├── budget.py        # What a single payload-feeding read may cost
 │   ├── egress.py        # Allow-listing CONNECT proxy: the dashboard's only route out
 │   ├── ingress.py       # Relay that publishes the dashboard's port
 │   ├── templates/
@@ -251,7 +285,8 @@ browser-disabled cards are dimmed.
 | Chip shows `unavailable` with `upstream unreachable` | The upstream host could not be reached: no route out, the `egress` proxy refused the host name, a DNS failure, a dropped connection, or a `CLAUDE_AI_HOST`/`CHATGPT_HOST` override that is not a usable `https://…` URL. `docker compose logs egress` names a host it refused. |
 | Chip shows `unavailable` with `upstream returned an error response` | The endpoint answered with a status other than 200 — including `405` when a `CLAUDE_AI_HOST`/`CHATGPT_HOST` override uses `http://`, since egress is HTTPS only. |
 | Chip shows `unavailable` with `upstream response not understood` | The undocumented endpoint changed shape, or returned a value the payload schema refuses (a percentage that is not a finite number in 0–100, for instance). |
-| Chip shows `unavailable` with `provider data unavailable` | The provider's client failed in a way it declared but did not classify. Treat it as the generic form of the rows above: check the credential file and the egress log first, and report it if neither explains it. |
+| Chip shows `unavailable` with `provider data is no longer being refreshed` | That source's background refresher has stopped advancing — almost always a read that cannot be interrupted, on a bind mount that has hung (an unreachable network mount, or a disk that is not answering). The last data it fetched is deliberately *not* shown, because it is no longer current. Check that `~/.claude` and `~/.codex` still answer (`ls` them on the host), then restart with `docker compose restart codervis`. `docker compose logs codervis` names the source. |
+| Chip shows `unavailable` with `provider data unavailable` | Either that source has not finished its first refresh yet — expected for the first second or two after a start, and for longer if a source is slower than `STARTUP_REFRESH_WAIT_SECONDS` — or the provider's client failed in a way it declared but did not classify. If it persists past one refresh interval, treat it as the generic form of the rows above: check the credential file and the egress log first, and report it if neither explains it. |
 | Chip shows `unavailable` with `internal error` | A bug in the dashboard rather than in the credential or the endpoint. Please report it. |
 | `claude_credentials_present: false` from `/healthz` | Bind mount didn't pick up the credentials file. Verify `CLAUDE_HOME` points at your real `.claude` directory. |
 | `codex_credentials_present: false` from `/healthz` | Same, for `CODEX_HOME` / `~/.codex/auth.json`. |

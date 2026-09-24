@@ -6,7 +6,8 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import Lock
+
+from .budget import bounded_lines, env_float, env_int
 
 
 @dataclass
@@ -20,54 +21,81 @@ class ClaudeActivityReader:
 
     This reads only project transcript timestamp fields. It does not read
     .credentials.json, inspect usage fields, or compute quota statistics.
+
+    Everything it reads is written by someone else -- anything that can write
+    under ``~/.claude/projects``, including through a symlink -- so the scan is
+    budgeted three ways: ``max_line_bytes`` per record, ``max_file_bytes`` per
+    file, and ``scan_deadline_seconds`` (with ``max_files``) across the whole
+    walk. Exceeding a budget truncates the scan and reports the timestamps
+    already found; it never fails the section and never grows without bound.
+
+    There is no TTL here any more. The refresher in ``app.main`` owns how often
+    this runs; the per-file cache below is a different thing and stays, because
+    it keys on (mtime, size) and is what keeps a steady-state scan cheap.
     """
 
     def __init__(
         self,
         data_dir: str | Path,
-        cache_ttl_seconds: float = 5.0,
+        max_line_bytes: int = 1024 * 1024,
+        max_file_bytes: int = 16 * 1024 * 1024,
+        scan_deadline_seconds: float = 5.0,
+        max_files: int = 20000,
     ) -> None:
         self.data_dir = Path(data_dir)
-        self.cache_ttl_seconds = cache_ttl_seconds
+        self.max_line_bytes = max_line_bytes
+        self.max_file_bytes = max_file_bytes
+        self.scan_deadline_seconds = scan_deadline_seconds
+        self.max_files = max_files
         self._file_cache: dict[Path, tuple[float, int, datetime | None]] = {}
-        self._snapshot_cache: tuple[float, ClaudeActivitySnapshot] | None = None
-        self._lock = Lock()
 
     def snapshot(self) -> ClaudeActivitySnapshot:
-        with self._lock:
-            now = time.monotonic()
-            if (
-                self._snapshot_cache
-                and (now - self._snapshot_cache[0]) < self.cache_ttl_seconds
-            ):
-                return self._snapshot_cache[1]
-            snap = self._scan()
-            self._snapshot_cache = (now, snap)
-            return snap
+        """One bounded scan. Called only from this source's refresher."""
+        return self._scan()
 
     def _scan(self) -> ClaudeActivitySnapshot:
+        deadline = time.monotonic() + self.scan_deadline_seconds
         data_root_exists = self.data_dir.exists()
-        paths = self._iter_transcripts() if data_root_exists else []
+        paths = self._iter_transcripts(deadline) if data_root_exists else []
         for stale in set(self._file_cache.keys()) - set(paths):
             self._file_cache.pop(stale, None)
 
-        last_activity = max(
-            (dt for path in paths if (dt := self._last_activity_for(path)) is not None),
-            default=None,
-        )
+        last_activity: datetime | None = None
+        for path in paths:
+            dt = self._last_activity_for(path)
+            if dt is not None and (last_activity is None or dt > last_activity):
+                last_activity = dt
+            if time.monotonic() >= deadline:
+                # Out of time. The per-file (mtime, size) cache makes the files
+                # already done nearly free next time, so a scan cut short here
+                # gets further on the next pass rather than losing the tail for
+                # good. The max_files cut below is not like that -- it stops at
+                # the same prefix every time -- which is why its default is set
+                # far above any real tree.
+                break
         return ClaudeActivitySnapshot(
             last_activity=last_activity,
             data_root_exists=data_root_exists,
         )
 
-    def _iter_transcripts(self) -> list[Path]:
+    def _iter_transcripts(self, deadline: float) -> list[Path]:
         projects = self.data_dir / "projects"
         if not projects.is_dir():
             return []
+        found: list[Path] = []
         try:
-            return [path for path in projects.rglob("*.jsonl") if path.is_file()]
+            for path in projects.rglob("*.jsonl"):
+                if path.is_file():
+                    found.append(path)
+                # Per match, not per entry: rglob("*.jsonl") filters by name
+                # without statting, so entries that do not match cost almost
+                # nothing and the deadline is what bounds a huge tree of them.
+                # (Codex's reader walks "*" and does have to count every entry.)
+                if len(found) >= self.max_files or time.monotonic() >= deadline:
+                    break
         except OSError:
-            return []
+            return found
+        return found
 
     def _last_activity_for(self, path: Path) -> datetime | None:
         try:
@@ -86,14 +114,21 @@ class ClaudeActivityReader:
     def _parse_last_activity(self, path: Path) -> datetime | None:
         last_activity: datetime | None = None
         try:
-            with path.open("r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
+            # Binary, so that the record boundary is found before anything is
+            # decoded: a text-mode iterator would build the whole unterminated
+            # record first, which is the case this is here to stop.
+            with path.open("rb") as f:
+                for record in bounded_lines(
+                    f,
+                    max_line_bytes=self.max_line_bytes,
+                    max_file_bytes=self.max_file_bytes,
+                ):
+                    line = record.decode("utf-8", errors="replace").strip()
                     if not line:
                         continue
                     try:
                         obj = json.loads(line)
-                    except json.JSONDecodeError:
+                    except (json.JSONDecodeError, ValueError):
                         continue
                     dt = _timestamp_from_obj(obj)
                     if dt is not None and (last_activity is None or dt > last_activity):
@@ -126,5 +161,10 @@ def _parse_ts(value: str) -> datetime | None:
 
 def reader_from_env() -> ClaudeActivityReader:
     data_dir = os.environ.get("CLAUDE_DATA_DIR", "/data/claude")
-    ttl = float(os.environ.get("CLAUDE_ACTIVITY_CACHE_TTL_SECONDS", "5"))
-    return ClaudeActivityReader(data_dir, cache_ttl_seconds=ttl)
+    return ClaudeActivityReader(
+        data_dir,
+        max_line_bytes=env_int("ACTIVITY_MAX_LINE_BYTES", 1024 * 1024),
+        max_file_bytes=env_int("ACTIVITY_MAX_FILE_BYTES", 16 * 1024 * 1024),
+        scan_deadline_seconds=env_float("ACTIVITY_SCAN_DEADLINE_SECONDS", 5.0),
+        max_files=env_int("ACTIVITY_MAX_FILES", 20000),
+    )

@@ -71,13 +71,18 @@ DEFAULT_TARGET_PORT = 443
 MAX_REQUEST_BYTES = 8 * 1024
 # How long a request line may take to arrive. An established tunnel is not bounded here.
 REQUEST_TIMEOUT_S = 10.0
-# The clients give up after 8 s (quota.py, codex_quota.py); the proxy waits a little longer.
+# How long the upstream gets to accept a CONNECT. It does not bound an established tunnel,
+# and it is no longer "shorter than the clients": a client's own budget is its total deadline
+# plus however many per-socket-operation timeouts it spends before the next deadline check
+# (quota.py, codex_quota.py), so it can outlast this. A slow-to-connect upstream is therefore
+# 502'd here while the client still had budget, which is the right way round -- the client
+# turns that into `unavailable` on its own cadence.
 UPSTREAM_TIMEOUT_S = 10.0
 _RELAY_CHUNK = 64 * 1024
 # Tunnels open at once, and connections accepted at once. The second is checked before a byte
 # is read, so a peer that connects and says nothing is refused rather than accumulated. Both
-# sit far above what two cached upstream calls need, because a limit tight enough to reach is
-# a denial of service for free.
+# sit far above what the refreshers' two upstream calls need, because a limit tight enough to
+# reach is a denial of service for free.
 MAX_TUNNELS = 64
 MAX_CONNECTIONS = 256
 # How long established tunnels get on shutdown, since `Server.wait_closed()` would otherwise

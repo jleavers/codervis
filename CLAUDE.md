@@ -18,6 +18,52 @@ User-facing setup, env vars, and troubleshooting live in `README.md`.
 The JSON payload is keyed by provider — `claude` and `codex` — assembled in
 `app/main.py:_build_payload()` from two independent sections.
 
+### Payload I/O runs in refreshers, never in a request
+
+`_build_payload()` does **no I/O**. It reads the last snapshot published by
+one refresher per source (`app/refresh.py`), and `/`, `/api/usage` and every
+`/api/stream` tick read that same snapshot. Four refreshers — Claude quota,
+Codex quota, and each activity reader — are started and stopped by the app's
+lifespan in `app/main.py`, each on its own daemon thread on a fixed interval.
+
+This is load-bearing, so keep it whole:
+
+- **Never call a quota client or an activity reader from a handler.** The
+  cadence in the refresher is the *only* thing that decides how often a
+  credential is read or a token is sent upstream. A call from a handler puts
+  that back in the hands of whoever sends requests.
+- **A refresher publishes failure exactly as it publishes success**, so a
+  failing provider is retried on the cadence rather than on every tick.
+  `refresh_once()` catches `Exception` whole because an escape kills the
+  worker thread and freezes that source at its last snapshot forever.
+- **Every payload-feeding read is bounded** (`app/budget.py`), but not all by
+  the same means, so be exact about which:
+  - the **upstream body** has a total deadline *and* a byte cap. urllib's
+    timeout is per socket operation, so a sender that keeps trickling renews it
+    indefinitely; only `read_capped()`'s total deadline ends that.
+  - the **transcript scan** has a whole-scan deadline, plus a per-record and a
+    per-file byte cap. `bounded_lines()` is what stops one unterminated record
+    growing until `MemoryError`. The deadline is checked *between* files.
+  - the **credential file** has a byte cap only. `read_text_capped()` says why
+    where it is defined: a blocking read of a hung mount cannot portably be
+    given a deadline from here.
+  A read with no deadline can stop a refresher's thread advancing without ever
+  failing it, so `SourceRefresher.current()` is the backstop: a success older
+  than `stale_after_seconds` is served as `unavailable` carrying `SourceStale`,
+  never as old numbers labelled `live`. **Handlers must read `current()`, not
+  `snapshot()`** — `snapshot()` is the raw record and skips that check.
+  The budget knobs are the "Read budgets" table in `README.md`, which is the
+  one place they are listed; the cadence knobs are in the table above it.
+  **A new read gets a byte cap always, and a deadline unless it provably
+  cannot take one** — "the credential read has none" is a reason to check that
+  a staleness limit covers it, never a precedent for leaving a new read
+  untimed. `read_text_capped()` is for a small file on a local mount and
+  nothing else.
+- **A stale source degrades through the same vocabulary as any other
+  failure.** `current()` hands the boundary a `SourceStale`, which classifies
+  as `degrade.STALE`; nothing about how old the snapshot is reaches the
+  payload, because `source_error` is a fixed string (see below).
+
 **One boundary, one schema, one serialization.** `app/main.py` holds the only
 place a provider section is built: `_provider_section()` treats the quota
 clients and the activity readers as untrusted, catches everything they raise,
@@ -61,8 +107,10 @@ Live-only by design:
   percentages already. Its optional `limits` list can also contain a
   `weekly_scoped` entry whose `scope.model.display_name` identifies Fable;
   that entry's `percent` is also already on a 0–100 scale. No token-count
-  maths is needed. Results are cached in-memory for
-  `QUOTA_CACHE_TTL_SECONDS` so all SSE clients share one upstream fetch.
+  maths is needed. `get()` always fetches and caches nothing: its refresher
+  owns the cadence (`QUOTA_REFRESH_INTERVAL_SECONDS`, or the older
+  `QUOTA_CACHE_TTL_SECONDS`), so every SSE client shares one upstream fetch
+  and none of them can cause another.
 - `_claude_section()` always emits a stable `seven_day_fable` (“Weekly Window
   (Fable)”) slot so initial unavailable/missing data can recover through SSE.
   A missing or malformed optional Fable entry produces `percent: null` only
@@ -75,7 +123,11 @@ Live-only by design:
 - **`app/claude_activity.py`** — `ClaudeActivityReader` reports Claude
   `last_activity` from timestamp fields in local project transcript files.
   It does not read `.credentials.json`, inspect usage fields, or influence
-  quota.
+  quota. It reads transcripts in binary through `bounded_lines()`, under a
+  per-record cap, a per-file cap and a whole-scan deadline, because anything
+  that can write under `~/.claude/projects` — including through a symlink —
+  chooses what it reads. Its per-file `(mtime, size)` cache is not a TTL and
+  stays; it is what keeps a steady-state scan cheap.
 
 ### Codex (`app/main.py:_codex_section()`)
 
@@ -111,6 +163,10 @@ Live-only by design.
 All live clients are constructed unconditionally. Browser-local choices live
 in versioned `localStorage`; disabling a card must not stop SSE updates or
 change provider error handling.
+
+`app/refresh.py` and `app/budget.py` are the lifecycle and budget layers those
+sections sit on: the first owns *when* a source is read, the second owns *how
+much* a single read may cost. Neither knows anything about quota shapes.
 
 `app/static/widget-state.js` is the pure state/presentation module for storage
 validation, effective source state, and global status. The frontend
@@ -209,7 +265,7 @@ curl http://localhost:8765/api/usage
 # Automated tests
 python -m pip install -r requirements-dev.txt
 python -m pytest
-python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/egress.py app/ingress.py
+python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/refresh.py app/budget.py app/egress.py app/ingress.py
 
 # Egress bound, from inside the running dashboard container
 docker compose exec codervis python -m app.egress check
@@ -218,6 +274,16 @@ docker compose exec codervis python -m app.egress check
 The pytest suite uses FastAPI's `TestClient`, direct parser imports, stubbed
 quota clients, and temporary directories. It must not read host credential
 files or call the live undocumented quota endpoints.
+
+Handlers read published snapshots, so a test that swaps a client in must
+publish before asking for a payload — `tests/test_main_payload.py` gives each
+test its own refreshers and calls `_publish()`. `TestClient(app)` starts the
+refresher threads only as a context manager (`with TestClient(app)`).
+`tests/test_payload_budget.py` pins the budgets, the refresher and the
+staleness bound. A test that
+goes through a route also needs a host the app serves: `TestClient`'s own
+default (`testserver`) is not one, so pass `base_url="http://127.0.0.1:8765"`
+or use `tests/test_main_payload.py`'s `loopback_client()`.
 
 ## Local dev gotchas
 
