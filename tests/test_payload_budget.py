@@ -157,8 +157,13 @@ def test_claude_client_caps_an_oversized_body(tmp_path, monkeypatch) -> None:
     )
     client = quota.LiveQuotaClient(tmp_path, host="https://example.test", max_response_bytes=1024)
 
-    with pytest.raises(quota.LiveQuotaError, match="upstream read budget"):
+    with pytest.raises(quota.LiveQuotaError, match="upstream read budget") as raised:
         client.get()
+
+    # The transfer never completed, so it is a transport failure. Without this
+    # the payload would call an oversized or trickling body an unreadable
+    # *shape*, which points a reader at the parser instead of the sender.
+    assert raised.value.code == degrade.TRANSPORT
 
 
 def test_claude_client_cuts_off_a_trickling_sender(tmp_path, monkeypatch) -> None:
@@ -176,8 +181,13 @@ def test_claude_client_cuts_off_a_trickling_sender(tmp_path, monkeypatch) -> Non
     )
 
     started = time.monotonic()
-    with pytest.raises(quota.LiveQuotaError, match="upstream read budget"):
+    with pytest.raises(quota.LiveQuotaError, match="upstream read budget") as raised:
         client.get()
+
+    # The transfer never completed, so it is a transport failure. Without this
+    # the payload would call an oversized or trickling body an unreadable
+    # *shape*, which points a reader at the parser instead of the sender.
+    assert raised.value.code == degrade.TRANSPORT
     held = time.monotonic() - started
 
     assert held < 4.0, "the total deadline, not the 8 s per-operation timeout, bounds this"
@@ -194,8 +204,13 @@ def test_codex_client_caps_an_oversized_body(tmp_path, monkeypatch) -> None:
         tmp_path, host="https://example.test", max_response_bytes=1024
     )
 
-    with pytest.raises(codex_quota.CodexLiveQuotaError, match="upstream read budget"):
+    with pytest.raises(codex_quota.CodexLiveQuotaError, match="upstream read budget") as raised:
         client.get()
+
+    # The transfer never completed, so it is a transport failure. Without this
+    # the payload would call an oversized or trickling body an unreadable
+    # *shape*, which points a reader at the parser instead of the sender.
+    assert raised.value.code == degrade.TRANSPORT
 
 
 def test_codex_deadline_spans_both_candidate_paths(tmp_path, monkeypatch) -> None:
