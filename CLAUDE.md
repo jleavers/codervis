@@ -116,6 +116,15 @@ relative-time labels stay live between server pushes via a 1-second
   dashboard is dialled. uvicorn itself arms no timer until it has sent a
   response. After the head, nothing is timed, so SSE is unaffected.
 
+The front door is also bounded by who may use it, because the dashboard has no
+login: `DASHBOARD_BIND` (default `127.0.0.1`) is the host address `ingress`
+publishes on, and `DASHBOARD_ALLOWED_HOSTS` (default `localhost,127.0.0.1,::1`)
+is the set of `Host` values `app/main.py` serves. The check is a pure-ASGI
+`HostAllowlist` added once at app construction, so it covers `/static` and
+`/healthz` too and does not come between SSE and its client; anything else gets
+403. The two settings are widened together and `tests/test_host_allowlist.py`
+pins the behaviour.
+
 `egress` and `ingress` join `inside` and `outside`, run as uid 65534 with a
 read-only root filesystem and all capabilities dropped, and hold no credential.
 All three services log to json-file capped at 3 × 10 MB (`x-logging` in the

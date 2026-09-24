@@ -17,23 +17,22 @@ from pathlib import Path
 import pytest
 
 from app.egress import ALLOW_ENV, PROXY_ENV_NAMES
+from app.main import ALLOWED_HOSTS_ENV, parse_allowed_hosts
 
 ROOT = Path(__file__).resolve().parents[1]
 PROXY_URL = "http://egress:3128"
 
 
-@pytest.fixture(scope="module")
-def config(tmp_path_factory) -> dict:
+def _render(env_file: str, **extra: str) -> dict:
     if shutil.which("docker") is None:
         pytest.skip("docker CLI not installed")
-    home = tmp_path_factory.mktemp("userprofile")
     # Only what the CLI needs to find its plugins, so nothing in the developer's shell
     # (DASHBOARD_PORT, CLAUDE_HOME, ...) leaks into the interpolation under test.
     keep = ("PATH", "HOME", "DOCKER_HOST", "DOCKER_CONFIG", "XDG_RUNTIME_DIR")
     env = {name: os.environ[name] for name in keep if name in os.environ}
-    env["USERPROFILE"] = str(home)
+    env.update(extra)
     result = subprocess.run(
-        ["docker", "compose", "--env-file", ".env.example", "config", "--format", "json"],
+        ["docker", "compose", "--env-file", env_file, "config", "--format", "json"],
         cwd=ROOT,
         env=env,
         capture_output=True,
@@ -44,6 +43,21 @@ def config(tmp_path_factory) -> dict:
         pytest.skip("docker compose plugin not installed")
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
+
+
+@pytest.fixture(scope="module")
+def config(tmp_path_factory) -> dict:
+    home = tmp_path_factory.mktemp("userprofile")
+    return _render(".env.example", USERPROFILE=str(home))
+
+
+@pytest.fixture(scope="module")
+def bare_config(tmp_path_factory) -> dict:
+    """What someone who never wrote a `.env` gets: the compose file's own defaults, which
+    are the ones nothing else would catch if they were dropped."""
+    empty = tmp_path_factory.mktemp("no-env") / "env"
+    empty.write_text("")
+    return _render(str(empty))
 
 
 def _internal(config: dict, service: str) -> dict[str, bool]:
@@ -93,6 +107,23 @@ def test_only_the_relay_publishes_a_port_and_it_targets_the_dashboard(config: di
     assert port["published"] == "8765"
     command = config["services"]["ingress"]["command"]
     assert command[command.index("--target") + 1] == "codervis:8000"
+
+
+@pytest.mark.parametrize("rendered", ["config", "bare_config"])
+def test_the_published_port_reaches_this_machine_alone_by_default(request, rendered: str) -> None:
+    """The dashboard has no login, so the default publish is the one the operator can widen
+    on purpose: without a host address here it would answer every LAN peer and every
+    co-resident container, neither of which a host firewall stops (#15). Checked with no
+    `.env` as well, because that is the reading `.env.example` would otherwise cover up."""
+    (port,) = request.getfixturevalue(rendered)["services"]["ingress"]["ports"]
+    assert port.get("host_ip") == "127.0.0.1"
+
+
+@pytest.mark.parametrize("rendered", ["config", "bare_config"])
+def test_the_dashboard_answers_only_loopback_names_by_default(request, rendered: str) -> None:
+    """The other half: a loopback publish alone still answers a rebound page as same-origin."""
+    setting = request.getfixturevalue(rendered)["services"]["codervis"]["environment"]
+    assert parse_allowed_hosts(setting[ALLOWED_HOSTS_ENV]) == {"localhost", "127.0.0.1", "::1"}
 
 
 @pytest.mark.parametrize("service", ["codervis", "egress", "ingress"])
