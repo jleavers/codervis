@@ -6,6 +6,13 @@ latest
 # Per-user Claude Code session state
 .claude/settings.local.json
 
+# Transient, per-run parts of .claude/ -- scoped deliberately, because
+# .claude/skills/ and .claude/workflows/ are shared project configuration.
+# security-sweeps/ holds local run artefacts (findings, reports) that stay
+# local; see .claude/skills/security-sweep/SKILL.md.
+.claude/worktrees/
+.claude/security-sweeps/
+
 # Local env
 .env
 
