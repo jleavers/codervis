@@ -46,8 +46,8 @@ jobs:
       - name: Byte-compile Python sources
         run: python -m compileall -q app tests
 
-  test-unit:
-    name: Unit tests
+  test-python:
+    name: Python tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -58,45 +58,30 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: requirements*.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+
+      # No file list: pytest.ini's testpaths collects all of tests/, so a new
+      # test file runs here without anyone having to name it.
+      - name: Run Python tests
+        run: python -m pytest -q
+
+  test-js:
+    name: JavaScript tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Install dependencies
-        run: python -m pip install -r requirements-dev.txt
-
-      - name: Run Python unit tests
-        run: >-
-          python -m pytest -q
-          tests/test_activity_readers.py
-          tests/test_quota_parsers.py
-          tests/test_egress.py
-          tests/test_ingress.py
-          tests/test_compose_topology.py
-
-      - name: Run JavaScript unit tests
-        run: node --test tests/test_app.js tests/test_widget_state.js
-
-  test-integration:
-    name: Integration tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
-          cache-dependency-path: requirements*.txt
-
-      - name: Install dependencies
-        run: python -m pip install -r requirements-dev.txt
-
-      - name: Run FastAPI integration tests
-        run: python -m pytest -q tests/test_main_payload.py
+      # Quoted so that node expands the glob rather than the shell, for the
+      # same reason: a new tests/test_*.js runs without being named.
+      - name: Run JavaScript tests
+        run: node --test 'tests/test_*.js'
 
   docker:
     name: Docker image
