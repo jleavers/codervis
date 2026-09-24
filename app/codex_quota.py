@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import http.client
 import json
+import math
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -19,10 +22,19 @@ from .budget import (
     remaining,
 )
 
+from . import degrade
+
 
 CHATGPT_HOST = "https://chatgpt.com"
 USAGE_PATH = "/backend-api/wham/usage"
 USAGE_PATH_ALT = "/backend-api/codex/usage"
+
+# A credential value is sent as an HTTP header. http.client rejects CR, LF and
+# NUL in a header value by raising a ValueError whose message quotes the whole
+# value, so a hand-assembled auth.json would otherwise put the bearer token or
+# the account id into an exception. Reject those characters here, where the
+# value is never quoted back.
+_ILLEGAL_HEADER_VALUE = re.compile(r"[\r\n\x00]")
 
 
 @dataclass
@@ -43,7 +55,16 @@ class CodexLiveSnapshot:
 
 
 class CodexLiveQuotaError(Exception):
-    pass
+    """A Codex quota failure, tagged with a fixed degrade classification.
+
+    `code` is one of `app.degrade`'s codes. The payload boundary uses it to pick
+    the message it serves; the message passed here is for developers reading a
+    traceback and is never served or logged.
+    """
+
+    def __init__(self, message: str, *, code: str = degrade.UNCLASSIFIED) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class CodexLiveQuotaClient:
@@ -67,6 +88,11 @@ class CodexLiveQuotaClient:
     present. A missing window is represented as an unreported gauge. Other
     failures raise CodexLiveQuotaError; the caller is expected to render an
     "unavailable" state rather than synthesizing fake numbers.
+
+    Parsing stays deliberately tolerant, and every failure it can name carries a
+    classification. It is not the enforcing boundary, though: `app/main.py`
+    treats this client as untrusted and contains whatever else it raises or
+    returns.
     """
 
     def __init__(
@@ -95,22 +121,46 @@ class CodexLiveQuotaClient:
                 self.credentials_path, max_bytes=self.max_credentials_bytes
             )
         except BudgetExceeded as e:
-            raise CodexLiveQuotaError(f"credentials read budget: {e}") from e
-        except OSError as e:
-            raise CodexLiveQuotaError(f"cannot read credentials file: {e}") from e
+            raise CodexLiveQuotaError(
+                f"credentials read budget: {type(e).__name__}",
+                code=degrade.CREDENTIALS,
+            ) from e
+        except (OSError, ValueError) as e:
+            raise CodexLiveQuotaError(
+                f"cannot read credentials file: {type(e).__name__}",
+                code=degrade.CREDENTIALS,
+            ) from e
         try:
             data = json.loads(raw)
-        except json.JSONDecodeError as e:
-            raise CodexLiveQuotaError(f"credentials file is not JSON: {e}") from e
-        tokens = data.get("tokens") or {}
+        except (ValueError, RecursionError) as e:
+            raise CodexLiveQuotaError(
+                "credentials file is not usable JSON", code=degrade.CREDENTIALS
+            ) from e
+        if not isinstance(data, dict):
+            raise CodexLiveQuotaError(
+                "credentials file is not a JSON object", code=degrade.CREDENTIALS
+            )
+        tokens = data.get("tokens")
+        tokens = tokens if isinstance(tokens, dict) else {}
         token = tokens.get("access_token")
-        if not token:
-            raise CodexLiveQuotaError("no access_token in credentials file")
-        account_id = tokens.get("account_id") or data.get("account_id")
+        if not isinstance(token, str) or not token:
+            raise CodexLiveQuotaError(
+                "no access_token in credentials file", code=degrade.CREDENTIALS
+            )
+        if _ILLEGAL_HEADER_VALUE.search(token):
+            raise CodexLiveQuotaError(
+                "access_token contains a character that cannot be sent as a header",
+                code=degrade.CREDENTIALS,
+            )
+        account = data.get("account")
+        account = account if isinstance(account, dict) else {}
+        account_id = _header_str(tokens.get("account_id")) or _header_str(
+            data.get("account_id")
+        )
         plan_type = (
-            data.get("plan_type")
-            or tokens.get("plan_type")
-            or (data.get("account") or {}).get("plan_type")
+            _plain_str(data.get("plan_type"))
+            or _plain_str(tokens.get("plan_type"))
+            or _plain_str(account.get("plan_type"))
         )
         return token, account_id, plan_type
 
@@ -138,12 +188,24 @@ class CodexLiveQuotaClient:
         body: str | None = None
         last_err: CodexLiveQuotaError | None = None
         for path in (USAGE_PATH, USAGE_PATH_ALT):
-            req = urllib.request.Request(self.host + path, headers=headers)
+            try:
+                req = urllib.request.Request(self.host + path, headers=headers)
+            except ValueError as e:
+                # A CHATGPT_HOST override without a usable scheme: Request()
+                # calls this an "unknown url type". The host is configuration,
+                # not the endpoint, but from the dashboard's side it is
+                # unreachable.
+                raise CodexLiveQuotaError(
+                    f"host is not a usable URL: {type(e).__name__}",
+                    code=degrade.TRANSPORT,
+                ) from e
             try:
                 timeout = remaining(deadline, self.timeout_seconds)
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     if resp.status != 200:
-                        last_err = CodexLiveQuotaError(f"unexpected status {resp.status}")
+                        last_err = CodexLiveQuotaError(
+                            f"unexpected status {resp.status}", code=degrade.HTTP
+                        )
                         continue
                     raw_body = read_capped(
                         resp, max_bytes=self.max_response_bytes, deadline=deadline
@@ -151,21 +213,45 @@ class CodexLiveQuotaClient:
                 body = raw_body.decode("utf-8", errors="replace")
                 break
             except BudgetExceeded as e:
-                raise CodexLiveQuotaError(f"upstream read budget: {e}") from e
+                # The transfer never completed: too big, or still trickling at
+                # the deadline. A transport failure, not an unreadable shape.
+                raise CodexLiveQuotaError(
+                    f"upstream read budget: {type(e).__name__}", code=degrade.TRANSPORT
+                ) from e
             except urllib.error.HTTPError as e:
-                last_err = CodexLiveQuotaError(f"HTTP {e.code}: {e.reason}")
+                code = degrade.AUTH if e.code in (401, 403) else degrade.HTTP
+                last_err = CodexLiveQuotaError(f"HTTP {e.code}", code=code)
                 if e.code in (401, 403, 404):
                     continue
                 raise last_err from e
             except urllib.error.URLError as e:
-                raise CodexLiveQuotaError(f"network error: {e.reason}") from e
+                raise CodexLiveQuotaError("network error", code=degrade.TRANSPORT) from e
+            except ValueError as e:
+                # http.client quotes the offending header value, which is the
+                # bearer token or the account id. Name the type only, and break
+                # the chain: this exception must not survive to be rendered in a
+                # traceback.
+                raise CodexLiveQuotaError(
+                    f"request could not be sent: {type(e).__name__}",
+                    code=degrade.CREDENTIALS,
+                ) from None
+            except (OSError, http.client.HTTPException) as e:
+                # A fault raised from getresponse()/read() — a reset connection,
+                # a short read, a bad status line — is not a URLError.
+                raise CodexLiveQuotaError(
+                    f"transport error: {type(e).__name__}", code=degrade.TRANSPORT
+                ) from e
         if body is None:
-            raise last_err or CodexLiveQuotaError("no response body")
+            raise last_err or CodexLiveQuotaError("no response body", code=degrade.HTTP)
 
         try:
             payload = json.loads(body)
-        except json.JSONDecodeError as e:
-            raise CodexLiveQuotaError(f"response is not JSON: {e}") from e
+        except (ValueError, RecursionError) as e:
+            raise CodexLiveQuotaError(
+                "response is not usable JSON", code=degrade.SHAPE
+            ) from e
+        if not isinstance(payload, dict):
+            raise CodexLiveQuotaError("response is not a JSON object", code=degrade.SHAPE)
 
         rate_limit = payload.get("rate_limit") if isinstance(payload.get("rate_limit"), dict) else {}
         primary_entry = _pick_window(
@@ -186,13 +272,13 @@ class CodexLiveQuotaClient:
             primary_key=primary_key,
         )
         if five_hour_raw is None and seven_day_raw is None:
-            raise CodexLiveQuotaError("missing Codex usage windows")
-        rl_plan = rate_limit.get("plan_type")
+            raise CodexLiveQuotaError("missing Codex usage windows", code=degrade.SHAPE)
+        rl_plan = _plain_str(rate_limit.get("plan_type"))
 
         return CodexLiveSnapshot(
             five_hour=_optional_window("five_hour", "5-Hour Window", five_hour_raw),
             seven_day=_optional_window("seven_day", "Weekly Window", seven_day_raw),
-            plan_type=plan_type or rl_plan or payload.get("plan_type"),
+            plan_type=plan_type or rl_plan or _plain_str(payload.get("plan_type")),
             fetched_at=datetime.now(timezone.utc),
             raw=payload,
         )
@@ -273,7 +359,9 @@ def _optional_window(name: str, label: str, raw: dict | None) -> CodexLiveWindow
 
 def _window(name: str, label: str, raw: dict | None) -> CodexLiveWindow:
     if not isinstance(raw, dict):
-        raise CodexLiveQuotaError(f"missing or invalid {name} usage window")
+        raise CodexLiveQuotaError(
+            f"missing or invalid {name} usage window", code=degrade.SHAPE
+        )
 
     if "utilization" in raw:
         percent = _float_field(raw.get("utilization"), f"{name}.utilization")
@@ -288,7 +376,9 @@ def _window(name: str, label: str, raw: dict | None) -> CodexLiveWindow:
             raw.get("remaining_percent"), f"{name}.remaining_percent"
         )
     else:
-        raise CodexLiveQuotaError(f"missing {name} utilization field in usage response")
+        raise CodexLiveQuotaError(
+            f"missing {name} utilization field in usage response", code=degrade.SHAPE
+        )
 
     resets_at: datetime | None = None
     for key in ("resets_at", "reset_at", "resets", "reset"):
@@ -301,7 +391,7 @@ def _window(name: str, label: str, raw: dict | None) -> CodexLiveWindow:
                     dt = dt.replace(tzinfo=timezone.utc)
                 resets_at = dt.astimezone(timezone.utc)
                 break
-            except ValueError:
+            except (ValueError, OverflowError, OSError):
                 continue
         elif isinstance(v, (int, float)):
             resets_at = _timestamp_or_relative(v)
@@ -328,10 +418,30 @@ def _window(name: str, label: str, raw: dict | None) -> CodexLiveWindow:
 
 
 def _float_field(value, field: str) -> float:
+    # Kept in step with app/quota.py:_float_field. A bool is an int in Python, so
+    # `true` would otherwise read as a live 1.0%, and NaN/Infinity would reach
+    # the payload.
+    if isinstance(value, bool):
+        raise CodexLiveQuotaError(f"{field} is not numeric", code=degrade.SHAPE)
     try:
-        return float(value)
-    except (TypeError, ValueError) as e:
-        raise CodexLiveQuotaError(f"{field} is not numeric") from e
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError) as e:
+        raise CodexLiveQuotaError(f"{field} is not numeric", code=degrade.SHAPE) from e
+    if not math.isfinite(parsed):
+        raise CodexLiveQuotaError(f"{field} is not finite", code=degrade.SHAPE)
+    return parsed
+
+
+def _header_str(value: object) -> str | None:
+    """A credential string safe to send as a header value, or None."""
+    text = _plain_str(value)
+    if text is None or _ILLEGAL_HEADER_VALUE.search(text):
+        return None
+    return text
+
+
+def _plain_str(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
 
 
 def _timestamp_or_relative(value: int | float) -> datetime | None:

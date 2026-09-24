@@ -65,8 +65,9 @@ reads timestamp/metadata to show each agent's local last activity.
   omits that optional entry or returns it malformed, the Fable gauge shows “—”
   while the 5-hour and all-model weekly gauges remain live.
 - Claude Code refreshes its own access token. If you have not opened Claude
-  Code for a while, Anthropic may return `HTTP 401` to codervis until the host
-  CLI runs and refreshes `~/.claude/.credentials.json`. Open Claude Code from a
+  Code for a while, Anthropic rejects codervis's call until the host CLI runs
+  and refreshes `~/.claude/.credentials.json`, and the card reads `unavailable`
+  with `upstream rejected the stored credential`. Open Claude Code from a
   terminal on the host, then wait for the next dashboard refresh.
 - Read-only bind mounts: codervis never writes to `~/.claude` or `~/.codex`.
 - The `*_ENABLED` variables only choose the initial toggle state for a browser
@@ -235,8 +236,10 @@ One panel per agent (Claude Code, Codex):
 - Per-panel header shows the server source state (`live` / `unavailable`) or
   the browser-local presentation state (`disabled`); footer shows the plan
   and most recent local activity. Claude activity comes from project
-  transcript timestamps; Codex from local history/session file metadata. The
-  footer shows an error string when a live quota call fails.
+  transcript timestamps; Codex from local history/session file metadata. When a
+  live quota call fails the footer shows one of a fixed set of messages
+  (`app/degrade.py`): the dashboard never echoes an exception's own text,
+  because that text can carry the stored token.
 
 The fill colour is computed from the percentage: lime under 50%, sliding
 through amber, to coral as you approach 100%. Unavailable gauges and
@@ -247,7 +250,8 @@ browser-disabled cards are dimmed.
 ```
 .
 ├── app/
-│   ├── main.py          # FastAPI app + SSE stream
+│   ├── main.py          # FastAPI app + SSE stream + the payload boundary
+│   ├── degrade.py       # The fixed vocabulary the boundary reports failures with
 │   ├── quota.py         # Claude live client → claude.ai/api/oauth/usage
 │   ├── claude_activity.py # Claude local activity timestamp reader
 │   ├── codex_quota.py   # Codex live client → chatgpt.com/backend-api/wham/usage
@@ -276,14 +280,17 @@ browser-disabled cards are dimmed.
 
 | Symptom | Likely cause |
 | --- | --- |
-| Claude chip shows `unavailable` with `HTTP 401` | Claude Code's access token has likely expired and the host CLI has not refreshed it yet. Open Claude Code from a terminal on the host, then wait for the next dashboard refresh. |
-| Claude chip shows `unavailable` | `~/.claude/.credentials.json` missing or unreadable inside the container, token expired/refresh hasn't run, or Anthropic changed the endpoint. Hover the chip for the error. |
-| Codex chip shows `unavailable` | `~/.codex/auth.json` missing or unreadable inside the container, token expired/refresh hasn't run, or OpenAI changed the endpoint. Hover the chip for the error. |
+| Chip shows `unavailable` with `upstream rejected the stored credential` | The agent's access token has expired and the host CLI has not refreshed it yet. Open Claude Code (or Codex) from a terminal on the host, then wait for the next dashboard refresh. |
+| Chip shows `unavailable` with `stored credential unavailable or unusable` | `~/.claude/.credentials.json` or `~/.codex/auth.json` is missing, unreadable inside the container, not JSON, or has no access token. A token containing a newline is also refused, because it cannot be sent as an HTTP header. |
+| Chip shows `unavailable` with `upstream unreachable` | The upstream host could not be reached: no route out, the `egress` proxy refused the host name, a DNS failure, a dropped connection, or a `CLAUDE_AI_HOST`/`CHATGPT_HOST` override that is not a usable `https://…` URL. `docker compose logs egress` names a host it refused. |
+| Chip shows `unavailable` with `upstream returned an error response` | The endpoint answered with a status other than 200 — including `405` when a `CLAUDE_AI_HOST`/`CHATGPT_HOST` override uses `http://`, since egress is HTTPS only. |
+| Chip shows `unavailable` with `upstream response not understood` | The undocumented endpoint changed shape, or returned a value the payload schema refuses (a percentage that is not a finite number in 0–100, for instance). |
+| Chip shows `unavailable` with `provider data unavailable` | The provider's client failed in a way it declared but did not classify. Treat it as the generic form of the rows above: check the credential file and the egress log first, and report it if neither explains it. |
+| Chip shows `unavailable` with `internal error` | A bug in the dashboard rather than in the credential or the endpoint. Please report it. |
 | `claude_credentials_present: false` from `/healthz` | Bind mount didn't pick up the credentials file. Verify `CLAUDE_HOME` points at your real `.claude` directory. |
 | `codex_credentials_present: false` from `/healthz` | Same, for `CODEX_HOME` / `~/.codex/auth.json`. |
 | Browser shows `reconnecting…` | The container restarted; SSE will reconnect on its own. |
-| Chip shows `unavailable` with `Tunnel connection failed: 403 Forbidden` | The host is not on the egress allow-list: a `CLAUDE_AI_HOST`/`CHATGPT_HOST` override without a matching `EGRESS_ALLOW` entry, or the vendor redirected to another host. `docker compose logs egress` names the host it refused. |
-| Chip shows `unavailable` with `HTTP Error 405: Method Not Allowed` | A host override uses `http://`. Egress is HTTPS only. |
+| Every chip reads `unavailable` and `docker compose logs egress` shows a refused host | The host is not on the egress allow-list: a `CLAUDE_AI_HOST`/`CHATGPT_HOST` override without a matching `EGRESS_ALLOW` entry, or the vendor redirected to another host. |
 | Browser shows `Host not served by this dashboard` (`403`) | The name in the address bar is not in `DASHBOARD_ALLOWED_HOSTS`. Add it (and widen `DASHBOARD_BIND` if the request comes from another machine), then `docker compose up -d`. |
 | `docker compose up` reports `dependency failed to start` | The `egress` proxy is unhealthy, and the dashboard waits for it. Check `docker compose logs egress`. |
 

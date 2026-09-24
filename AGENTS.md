@@ -32,15 +32,26 @@ directories; it must not call upstream quota endpoints or read host tokens.
 
 ## Implementation Notes
 
-- `app/main.py` owns the FastAPI routes, SSE stream, payload assembly, the
-  lifespan that starts one refresher per source, and the `Host` allow-list
+- `app/main.py` owns the FastAPI routes, SSE stream, payload assembly, and the
+  lifespan that starts one refresher per source. It also owns the one boundary
+  every independently sourced part of the payload passes through
+  (`_provider_section()`), the payload schema that boundary enforces
+  (`_percent`, `_iso`, `_text`), and the single strict serialization
+  (`_payload_json()`) that `/api/usage`, the SSE frames and the template's
+  initial payload all share. It owns the `Host` allow-list
   (`DASHBOARD_ALLOWED_HOSTS`) that decides which clients the dashboard answers
-  at all. Keep that check wrapped around the whole app, and pure ASGI: per-route
-  checks miss `/static`, and `BaseHTTPMiddleware` would buffer the SSE stream.
-  `_build_payload()` does no I/O: it reads the last published snapshot. Never
-  call a quota client or an activity reader from a request handler — the
-  refresher's cadence is the only thing that bounds how often a credential is
-  read or a token is sent upstream.
+  at all, too. Keep that check wrapped around the whole app, and pure ASGI:
+  per-route checks miss `/static`, and `BaseHTTPMiddleware` would buffer the SSE
+  stream. The boundary does no I/O: it reads the last snapshot each refresher
+  published. Never call a quota client or an activity reader from a request
+  handler — the refresher's cadence is the only thing that bounds how often a
+  credential is read or a token is sent upstream.
+- `app/degrade.py` owns the fixed vocabulary the boundary reports failures with.
+  `source_error` must always be one of those strings: never `str(exc)`, never a
+  repr. It is served unauthenticated, and an exception raised while an upstream
+  request is being built carries the bearer token. A source that has gone stale
+  is reported through it like any other failure, so how old a snapshot is never
+  reaches the payload.
 - `app/refresh.py` owns `SourceRefresher`: one daemon thread per source, a
   fixed cadence, and a published snapshot that records failure as well as
   success. `refresh_once()` must keep catching `Exception` whole; an escape
@@ -80,17 +91,23 @@ directories; it must not call upstream quota endpoints or read host tokens.
 - `app/static/app.js` is the single source of truth for gauge color calculation
   on both initial paint and SSE updates.
 - `tests/` contains automated coverage for parser tolerance, unavailable
-  states, disabled Codex state, safe activity-reader boundaries, and — in
-  `tests/test_payload_budget.py` — the read budgets, the refresher, and the
-  property that SSE frames cause no upstream calls. Add cases there when you
-  change what a read is allowed to cost.
+  states, disabled Codex state, and safe activity-reader boundaries.
+  `tests/test_payload_contract.py` is the payload contract: it runs both live
+  clients through one matrix of transport faults, hostile response bodies and
+  hostile credential files, and asserts the payload always matches the schema
+  and always serializes. Add cases there for both providers, not one; a case
+  naming a shape one provider cannot have must skip explicitly for the other,
+  so the gap shows up in the test report. `tests/test_payload_budget.py` pins
+  the read budgets, the refresher and its staleness bound, and the property
+  that SSE frames cause no upstream calls. Add cases there when you change what
+  a read is allowed to cost.
 
 ## Safety Rules
 
 - Never log or print OAuth tokens from `.credentials.json`, `auth.json`, `.env`,
-  debug captures, or Docker output. `source_error` is served unauthenticated:
-  surface a client's own error type, but name any other exception by type
-  only, because one raised while a request is built can quote the header.
+  debug captures, or Docker output. That includes indirectly: do not let an
+  exception's text reach the payload, a log line, or a test's output, because
+  the exception raised for a malformed header quotes the whole header value.
 - Preserve read-only bind mounts for `/data/claude` and `/data/codex`.
 - Preserve the egress bound: the `codervis` service joins internal networks
   only, and `DEFAULT_ALLOW` in `app/egress.py` names only hosts the live

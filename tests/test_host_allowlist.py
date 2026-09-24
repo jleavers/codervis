@@ -20,8 +20,11 @@ from fastapi.testclient import TestClient
 from app import main
 
 # Every route the dashboard answers, plus a path it does not: a request refused before
-# routing is refused on all of them.
-PATHS = ["/", "/api/usage", "/api/stream", "/static/app.js", "/healthz", "/no-such-path"]
+# routing is refused on all of them. `/api/stream` is not here and is covered by
+# `test_the_stream_is_refused_for_a_host_that_is_not` instead: `TestClient` reads a
+# response body to the end, and if the check ever regressed this request would be
+# answered with an SSE stream that never ends, wedging the run rather than failing it.
+PATHS = ["/", "/api/usage", "/static/app.js", "/healthz", "/no-such-path"]
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -102,7 +105,10 @@ def test_the_stream_still_streams_for_a_host_that_is_served(monkeypatch) -> None
     start, body = _first_event("/api/stream", headers=[(b"host", b"127.0.0.1:8765")])
 
     assert start["status"] == 200
-    assert body == b'data: {"server_time": "now"}\n\n'
+    # A literal rather than a call to `_payload_json()`, so that this still catches the
+    # one serialization changing shape and not only the stream bypassing it: the frame
+    # carries the compact strict form every route serves.
+    assert body == b'data: {"server_time":"now"}\n\n'
 
 
 class _Delivered(Exception):
@@ -152,7 +158,16 @@ def _first_event(path: str, *, headers: list[tuple[bytes, bytes]]) -> tuple[dict
 
 
 def test_the_stream_is_refused_for_a_host_that_is_not() -> None:
-    assert client("attacker.example").get("/api/stream").status_code == 403
+    # Driven as a server would, like the served-host test above, and for the same
+    # reason `/api/stream` is not in `PATHS`: `TestClient` would read an SSE body
+    # that never ends, so a regression here would hang the run rather than fail it.
+    start, body = _first_event("/api/stream", headers=[(b"host", b"attacker.example")])
+
+    assert start["status"] == 403
+    # The refusal is the same one every other path gets, and it does not echo the
+    # caller's own name into a page a browser renders.
+    assert main.ALLOWED_HOSTS_ENV.encode() in body
+    assert b"attacker.example" not in body
 
 
 @pytest.mark.parametrize(

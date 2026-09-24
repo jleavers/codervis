@@ -25,7 +25,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app import codex_quota, main, quota
+from app import codex_quota, degrade, main, quota
 from app.budget import BudgetExceeded, bounded_lines, env_float, env_int, read_capped
 from app.claude_activity import ClaudeActivityReader
 from app.codex_activity import CodexActivityReader
@@ -571,19 +571,20 @@ def test_a_source_that_has_not_published_degrades_rather_than_guessing(
     payload = main._build_payload()
 
     assert payload["claude"]["source"] == "unavailable"
-    assert payload["claude"]["source_error"] == "waiting for the first refresh"
+    # "no data yet", not a fault in what upstream sent.
+    assert payload["claude"]["source_error"] == degrade.MESSAGES[degrade.UNCLASSIFIED]
     assert payload["claude"]["data_root_exists"] is False
     for window in payload["claude"]["windows"]:
         assert window["percent"] is None
 
 
-def test_an_unexpected_exception_is_named_by_type_and_never_quoted(
-    stub_sources,
-) -> None:
+def test_an_unexpected_exception_is_never_quoted(stub_sources) -> None:
     """The refresher has to catch everything; nothing it catches may be quoted.
 
     An exception raised while an upstream request is being built can carry the
     bearer token in its message, and `source_error` is served unauthenticated.
+    Since #14 not even the exception's type name reaches the payload: the
+    boundary reports one of `app/degrade.py`'s fixed strings and nothing else.
     """
     stub_sources["claude_quota"].error = RuntimeError("Bearer sk-ant-secret-value")
     main._claude_quota_source.refresh_once()
@@ -591,7 +592,7 @@ def test_an_unexpected_exception_is_named_by_type_and_never_quoted(
     payload = main._build_payload()
 
     assert payload["claude"]["source"] == "unavailable"
-    assert payload["claude"]["source_error"] == "unexpected RuntimeError while refreshing"
+    assert payload["claude"]["source_error"] == degrade.MESSAGES[degrade.INTERNAL]
     assert "sk-ant" not in json.dumps(payload)
 
 
@@ -841,7 +842,6 @@ def test_a_successful_snapshot_stops_being_live_once_it_stops_being_refreshed() 
     assert not current.ok, "a snapshot two minutes past the limit is not live"
     assert isinstance(current.error, SourceStale)
     assert current.value is None, "the stale reading must not reach the payload"
-    assert "120s ago" in str(current.error)
     # The raw record is unchanged: staleness is applied on read, not published.
     assert source.snapshot().ok and source.snapshot().value == "old"
 
@@ -891,10 +891,11 @@ def test_a_stale_quota_source_degrades_that_provider_only(
         f"{provider} served numbers from a source that stopped being refreshed"
     )
     assert all(w["percent"] is None for w in payload[provider]["windows"])
-    assert "600s ago" in payload[provider]["source_error"]
-    # The neighbour is untouched by this one going stale.
+    assert payload[provider]["source_error"] == degrade.MESSAGES[degrade.STALE]
+    # The neighbour is untouched by this one going stale, and reports its own
+    # kind of failure rather than staleness.
     assert payload[other]["source"] == "unavailable"
-    assert "upstream down" in payload[other]["source_error"]
+    assert payload[other]["source_error"] == degrade.MESSAGES[degrade.UNCLASSIFIED]
 
 
 def test_a_stale_activity_scan_reports_no_activity_rather_than_an_old_time(
@@ -958,7 +959,7 @@ def test_an_already_failed_snapshot_keeps_its_own_error_when_it_ages() -> None:
     current = source.current()
     assert not current.ok
     assert isinstance(current.error, quota.LiveQuotaError)
-    assert main._source_error(current, quota.LiveQuotaError) == "upstream down"
+    assert main._degrade_code(current.error, quota.LiveQuotaError) != degrade.STALE
 
 
 def test_every_sources_staleness_limit_clears_its_own_worst_case() -> None:
