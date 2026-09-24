@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -20,6 +21,114 @@ from .quota import LiveQuotaClient, LiveQuotaError, client_from_env
 
 BASE_DIR = Path(__file__).parent
 REFRESH_SECONDS = max(1, int(os.environ.get("REFRESH_INTERVAL_SECONDS", "5")))
+
+# Which clients this dashboard serves. There is no login, so reachability is the whole of its
+# access control, and the operator names it rather than inheriting it: DASHBOARD_BIND in the
+# compose file decides which host interface the port appears on, and this list decides which
+# names a browser may use once it gets there (#15). The two are set together, because an
+# address alone is not enough: an instance published on loopback still answers a page that
+# resolved its own name to 127.0.0.1, and the browser counts that answer as same-origin
+# (DNS rebinding). Entries are exact names; `*` serves any name, and means the operator has
+# put something else in front that decides who may ask.
+log = logging.getLogger("app.main")
+
+ALLOWED_HOSTS_ENV = "DASHBOARD_ALLOWED_HOSTS"
+DEFAULT_ALLOWED_HOSTS = "localhost,127.0.0.1,::1"
+ANY_HOST = "*"
+
+
+def _normalise_host(value: str) -> str:
+    """A `Host` value or allow-list entry as a bare name: lowercase, no port, no brackets.
+
+    An address the caller spelled in a way no client would (an unclosed bracket) normalises
+    to the empty string, which matches nothing, rather than to whatever is inside it.
+    """
+    host = value.strip().lower()
+    if host.startswith("["):
+        # [::1] or [::1]:8765 -- the brackets are what tell a port from the address.
+        address, closed, _ = host.partition("]")
+        host = address[1:] if closed else ""
+    elif host.count(":") == 1:
+        # name:port. A bare IPv6 literal has more colons and no port, so it is left whole.
+        host = host.partition(":")[0]
+    return host.rstrip(".")
+
+
+def parse_allowed_hosts(text: str | None) -> frozenset[str]:
+    """The setting as a set of names. Unset or empty means the loopback default."""
+    entries = (text or "").replace(",", " ").split()
+    if not entries:
+        entries = DEFAULT_ALLOWED_HOSTS.replace(",", " ").split()
+    names = set()
+    for entry in entries:
+        name = _normalise_host(entry)
+        if ANY_HOST in name and name != ANY_HOST:
+            # `*.example.com` is what several other servers spell a subdomain wildcard, and
+            # it would sit here matching nothing at all: an operator locked out of their own
+            # dashboard by a setting that reads as though it should work. Say so. The lock-out
+            # stays -- the entry is dropped rather than widened into something unasked for.
+            log.warning(
+                "host_allowlist_entry_ignored entry=%r: names are matched whole, and only "
+                "%r on its own serves every name",
+                entry,
+                ANY_HOST,
+            )
+            continue
+        if name:
+            names.add(name)
+    return frozenset(names)
+
+
+def host_allowed(header: str | None, allowed: frozenset[str]) -> bool:
+    """Whether a request carrying this `Host` is one the operator asked to serve."""
+    if ANY_HOST in allowed:
+        return True
+    if not header:
+        return False
+    return _normalise_host(header) in allowed
+
+
+class HostAllowlist:
+    """Refuses every request whose `Host` the operator did not name.
+
+    Wrapped around the whole application rather than applied per route, so that `/static`
+    and `/healthz` are covered along with the API. Pure ASGI, like Starlette's own
+    `TrustedHostMiddleware`, because `BaseHTTPMiddleware` would come between the SSE response
+    in `stream()` and its client. This is not that middleware because the differences are the
+    point here: a name matches whole and never by subdomain, a bracketed IPv6 address is
+    understood, two `Host` headers are refused rather than resolved, and the answer is 403
+    with the setting to change, not a bare 400.
+    """
+
+    def __init__(self, app, allowed: frozenset[str]) -> None:
+        self.app = app
+        self.allowed = allowed
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] in ("http", "websocket"):
+            sent = [value for name, value in scope["headers"] if name == b"host"]
+            # Exactly one, or none: two `Host` headers are a request two hops need not agree
+            # about, so there is no value here to check.
+            header = sent[0].decode("latin-1") if len(sent) == 1 else None
+            if not host_allowed(header, self.allowed):
+                await self._refuse(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+    async def _refuse(self, scope, receive, send) -> None:
+        if scope["type"] == "websocket":
+            await send({"type": "websocket.close", "code": 1008})
+            return
+        # The refused name is not echoed back: it is the caller's own text, and this body
+        # reaches a browser.
+        response = PlainTextResponse(
+            f"Host not served by this dashboard. Add it to {ALLOWED_HOSTS_ENV}.\n",
+            status_code=403,
+        )
+        await response(scope, receive, send)
+
+
+ALLOWED_HOSTS = parse_allowed_hosts(os.environ.get(ALLOWED_HOSTS_ENV))
 
 
 def _enabled(name: str) -> bool:
@@ -37,6 +146,9 @@ CODEX_ENABLED = _enabled("CODEX_ENABLED")
 
 app = FastAPI(title="Codervis")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+# Once, around everything: added here rather than per route so that a route added later is
+# behind it by default.
+app.add_middleware(HostAllowlist, allowed=ALLOWED_HOSTS)
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 _live: LiveQuotaClient = client_from_env()
