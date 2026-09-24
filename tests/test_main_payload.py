@@ -48,6 +48,17 @@ def _publish() -> None:
     for source in main._SOURCES:
         source.refresh_once()
 
+LOOPBACK = "http://127.0.0.1:8765"
+
+
+def loopback_client() -> TestClient:
+    """A client that speaks as a browser on this machine does.
+
+    The app serves only the hosts the operator named, and `TestClient`'s own default
+    (`testserver`) is not one of them; `tests/test_host_allowlist.py` covers the refusal.
+    """
+    return TestClient(main.app, base_url=LOOPBACK)
+
 
 class ActivityStub:
     def __init__(self, snapshot, data_dir: Path | None = None) -> None:
@@ -118,7 +129,7 @@ def test_api_usage_returns_live_payload_without_scaling(monkeypatch) -> None:
         ),
     )
     _publish()
-    response = TestClient(main.app).get("/api/usage")
+    response = loopback_client().get("/api/usage")
 
     assert response.status_code == 200
     data = response.json()
@@ -342,7 +353,7 @@ def test_health_reports_configured_widget_defaults(monkeypatch, tmp_path) -> Non
     monkeypatch.setattr(main, "_live", clients[0])
     monkeypatch.setattr(main, "_codex", clients[1])
 
-    data = TestClient(main.app).get("/healthz").json()
+    data = loopback_client().get("/healthz").json()
 
     assert data["claude_enabled"] is False
     assert data["codex_enabled"] is True
@@ -367,7 +378,7 @@ def test_index_renders_accessible_widget_toggles(monkeypatch) -> None:
     }
     monkeypatch.setattr(main, "_build_payload", lambda: payload)
 
-    response = TestClient(main.app).get("/")
+    response = loopback_client().get("/")
 
     assert response.status_code == 200
     html = response.text

@@ -45,6 +45,9 @@ services:
       ACTIVITY_MAX_FILES: "${ACTIVITY_MAX_FILES:-}"
       CLAUDE_AI_HOST: "${CLAUDE_AI_HOST:-https://claude.ai}"
       CHATGPT_HOST: "${CHATGPT_HOST:-https://chatgpt.com}"
+      # The other half of the exposure setting: DASHBOARD_BIND decides which host interface
+      # the port appears on, this decides which names may be used to reach it (#15).
+      DASHBOARD_ALLOWED_HOSTS: "${DASHBOARD_ALLOWED_HOSTS:-localhost,127.0.0.1,::1}"
       # urllib reads these; both cases, because clients disagree about which one they honour.
       HTTP_PROXY: http://egress:3128
       HTTPS_PROXY: http://egress:3128
@@ -90,8 +93,17 @@ services:
     command:
       ["python", "-m", "app.ingress", "--bind", "0.0.0.0", "--port", "8000", "--target", "codervis:8000"]
     networks: [inside, outside]
+    # The dashboard has no login, so the operator says which clients it serves rather than
+    # leaving it to whichever networks the host happens to join (#15). Published on the
+    # loopback address unless DASHBOARD_BIND names another, so by default no LAN peer and no
+    # co-resident container reaches it -- neither of which a host firewall would stop, since
+    # Docker's DNAT runs ahead of its INPUT rules. Long syntax because an IPv6 address in the
+    # short one has to be bracketed to be told from the port.
     ports:
-      - "${DASHBOARD_PORT:-8765}:8000"
+      - host_ip: "${DASHBOARD_BIND:-127.0.0.1}"
+        published: "${DASHBOARD_PORT:-8765}"
+        target: 8000
+        protocol: tcp
     depends_on:
       codervis:
         condition: service_started

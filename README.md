@@ -30,6 +30,13 @@ refused outright. Docker cannot publish a port from an internal-only container,
 so the port you open in the browser belongs to `ingress`, a relay that forwards
 to the dashboard. Neither gateway service holds a credential.
 
+**Inbound traffic is yours to name.** There is no login, so who can reach the
+dashboard *is* its access control, and the default is this machine and nothing
+else: the port is published on `127.0.0.1` (`DASHBOARD_BIND`) and the app
+answers only the host names you listed (`DASHBOARD_ALLOWED_HOSTS`). Serving
+anyone else is a change you make on purpose — see
+[Serving other machines](#serving-other-machines).
+
 Each provider header has a browser-local toggle. Switching a widget off keeps
 its card visible but dimmed, labels it `disabled`, and removes it from the
 overall status summary. Choices are stored in browser `localStorage`, survive
@@ -88,7 +95,9 @@ Edit `.env`:
 | `CODEX_HOME` | Host path to your Codex CLI data dir. Same Windows caveat. | `~/.codex` |
 | `CLAUDE_ENABLED` | First-visit browser widget default. | `true` |
 | `CODEX_ENABLED` | First-visit browser widget default. | `true` |
-| `DASHBOARD_PORT` | Host port the dashboard listens on. | `8765` |
+| `DASHBOARD_BIND` | Host address the dashboard's port is published on. The default serves this machine alone; `0.0.0.0` serves every interface. Widen it together with `DASHBOARD_ALLOWED_HOSTS`. | `127.0.0.1` |
+| `DASHBOARD_ALLOWED_HOSTS` | Host names a browser may use to reach the dashboard, comma- or space-separated. Checked on every route, `/static` and `/healthz` included; anything else gets `403`. Names match exactly and a port is ignored, so `dash.example` covers `dash.example:8765` but not `sub.dash.example`, and `*.dash.example` is not a pattern — it is dropped with a warning. `*` on its own accepts any name. | `localhost,127.0.0.1,::1` |
+| `DASHBOARD_PORT` | Host port the dashboard listens on. A port alone: an `address:port` value used to work here and no longer does — the address is `DASHBOARD_BIND`. | `8765` |
 | `REFRESH_INTERVAL_SECONDS` | How often the browser is pushed a fresh snapshot. | `5` |
 | `QUOTA_REFRESH_INTERVAL_SECONDS` | How often each provider's quota is fetched in the background. This alone decides how often your token is sent upstream — browsers and tabs do not add fetches. Keep ≥ refresh interval. Old name `QUOTA_CACHE_TTL_SECONDS` still works. | `30` |
 | `CLAUDE_ACTIVITY_REFRESH_INTERVAL_SECONDS` | How often Claude transcript timestamps are scanned. Old name `CLAUDE_ACTIVITY_CACHE_TTL_SECONDS` still works. | `5` |
@@ -143,9 +152,27 @@ path and polls any configured live client.
 docker compose up --build -d
 ```
 
-Open <http://localhost:8765> (or whichever port you set). The default Compose
-port mapping also exposes the dashboard on your LAN at
-`http://<your-host-ip>:8765`.
+Open <http://localhost:8765> (or whichever port you set) on the machine running
+it. By default that is the only machine it answers: the port is published on
+`127.0.0.1` and the app serves only `localhost`, `127.0.0.1` and `::1`.
+
+### Serving other machines
+
+A browser on another machine needs both halves widened, in `.env`:
+
+```bash
+# The interface they reach you on (or 0.0.0.0 for all of them).
+DASHBOARD_BIND=192.168.1.10
+# Every name or address they type, alongside the local ones.
+DASHBOARD_ALLOWED_HOSTS=localhost,127.0.0.1,::1,192.168.1.10
+```
+
+Then `docker compose up -d`. A request whose `Host` is not on the list gets
+`403` from every route, which is also what a page doing DNS rebinding gets.
+
+Anyone who can reach the port can read your dashboard: there is no login, and
+the list of names is not one. Widen it on a network you trust, and see
+[Security notes](#security-notes) before you reach for a reverse proxy.
 
 To confirm the egress bound from inside the dashboard's container:
 
@@ -245,6 +272,7 @@ browser-disabled cards are dimmed.
 | Browser shows `reconnecting…` | The container restarted; SSE will reconnect on its own. |
 | Chip shows `unavailable` with `Tunnel connection failed: 403 Forbidden` | The host is not on the egress allow-list: a `CLAUDE_AI_HOST`/`CHATGPT_HOST` override without a matching `EGRESS_ALLOW` entry, or the vendor redirected to another host. `docker compose logs egress` names the host it refused. |
 | Chip shows `unavailable` with `HTTP Error 405: Method Not Allowed` | A host override uses `http://`. Egress is HTTPS only. |
+| Browser shows `Host not served by this dashboard` (`403`) | The name in the address bar is not in `DASHBOARD_ALLOWED_HOSTS`. Add it (and widen `DASHBOARD_BIND` if the request comes from another machine), then `docker compose up -d`. |
 | `docker compose up` reports `dependency failed to start` | The `egress` proxy is unhealthy, and the dashboard waits for it. Check `docker compose logs egress`. |
 
 `/healthz` returns JSON with `data_root_exists` and `credentials_present`
@@ -253,12 +281,33 @@ flags that are useful for quick diagnosis.
 ## Security notes
 
 - `~/.claude/.credentials.json` and `~/.codex/auth.json` both contain
-  long-lived session tokens. Both bind mounts are read-only. The default
-  Compose port mapping publishes the dashboard on all host interfaces,
-  so machines on your LAN can reach it at `http://<your-host-ip>:8765`.
-  **Don't expose this port to the public internet** — anyone who can
-  reach it can read your usage. If you need remote access, put it behind
-  a reverse proxy with auth.
+  long-lived session tokens. Both bind mounts are read-only.
+- **The dashboard has no login, so reachability is the whole of its access
+  control, and you set it.** `DASHBOARD_BIND` publishes the port on
+  `127.0.0.1` by default, and `DASHBOARD_ALLOWED_HOSTS` names the hosts the
+  app answers; anything else gets `403` on every route. Together they keep out
+  three kinds of client that would otherwise read your usage, your plan tier
+  and — at roughly ten-second resolution, through `last_activity` — whether
+  you are at the keyboard:
+  - machines on any network this host joins;
+  - other containers on this Docker host, which reach a published port
+    through the bridge gateway;
+  - any web page you visit, by pointing a name of its own at `127.0.0.1`
+    (DNS rebinding) — which the host list refuses even on a loopback-only
+    instance.
+
+  A host firewall does not stop the first two: Docker's forwarding runs ahead
+  of ufw's and firewalld's rules, so these settings are what decide it.
+- **To reach it from outside this machine, put a reverse proxy with auth in
+  front of it — and let the proxy be the only way in.** Keep
+  `DASHBOARD_BIND=127.0.0.1` so the dashboard's own port stays off the
+  network, point the proxy at `127.0.0.1:8765`, and put the name browsers type
+  at the proxy in `DASHBOARD_ALLOWED_HOSTS`, alongside the local names —
+  that name is what arrives as `Host` from Caddy or Traefik, while nginx sends
+  the upstream's name unless you set `proxy_set_header Host $host`. A proxy that
+  authenticates callers while port 8765 is published beside it on the same
+  network authenticates nobody. **Do not publish this port to the public
+  internet**, proxy or no proxy.
 - Outbound traffic from the dashboard's container can only reach the hosts on
   the egress allow-list, and only over HTTPS. The proxy sees host names, never
   the TLS session or the tokens inside it. This bounds where a token can be

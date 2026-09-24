@@ -664,7 +664,9 @@ def test_lifespan_starts_and_stops_every_source(monkeypatch) -> None:
     def live_threads() -> int:
         return sum(1 for t in threading.enumerate() if t.name.startswith("refresh:s"))
 
-    with TestClient(main.app) as client:
+    # `http://127.0.0.1:8765`, not `TestClient`'s own `testserver`: the app now serves
+    # only the hosts the operator named (#15), and this test is about the lifespan.
+    with TestClient(main.app, base_url="http://127.0.0.1:8765") as client:
         assert live_threads() == 4
         # The startup wait means the first request is served real outcomes.
         assert all(s.snapshot().published for s in sources)

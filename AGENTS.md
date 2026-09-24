@@ -32,11 +32,15 @@ directories; it must not call upstream quota endpoints or read host tokens.
 
 ## Implementation Notes
 
-- `app/main.py` owns the FastAPI routes, SSE stream, and payload assembly, and
-  the lifespan that starts one refresher per source. `_build_payload()` does no
-  I/O: it reads the last published snapshot. Never call a quota client or an
-  activity reader from a request handler — the refresher's cadence is the only
-  thing that bounds how often a credential is read or a token is sent upstream.
+- `app/main.py` owns the FastAPI routes, SSE stream, payload assembly, the
+  lifespan that starts one refresher per source, and the `Host` allow-list
+  (`DASHBOARD_ALLOWED_HOSTS`) that decides which clients the dashboard answers
+  at all. Keep that check wrapped around the whole app, and pure ASGI: per-route
+  checks miss `/static`, and `BaseHTTPMiddleware` would buffer the SSE stream.
+  `_build_payload()` does no I/O: it reads the last published snapshot. Never
+  call a quota client or an activity reader from a request handler — the
+  refresher's cadence is the only thing that bounds how often a credential is
+  read or a token is sent upstream.
 - `app/refresh.py` owns `SourceRefresher`: one daemon thread per source, a
   fixed cadence, and a published snapshot that records failure as well as
   success. `refresh_once()` must keep catching `Exception` whole; an escape
@@ -63,7 +67,8 @@ directories; it must not call upstream quota endpoints or read host tokens.
 - `app/egress.py` is the allow-listing `CONNECT` proxy that is the dashboard
   container's only route out; `app/ingress.py` publishes the dashboard's port,
   because the dashboard sits on an internal-only network. Keep that container
-  off every non-internal network and free of `ports:`.
+  off every non-internal network and free of `ports:`, and keep the published
+  port on `DASHBOARD_BIND`, which defaults to loopback.
 - `app/static/app.js` is the single source of truth for gauge color calculation
   on both initial paint and SSE updates.
 - `tests/` contains automated coverage for parser tolerance, unavailable
