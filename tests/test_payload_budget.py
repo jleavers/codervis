@@ -1208,7 +1208,7 @@ def test_healthz_does_not_stall_other_routes(monkeypatch) -> None:
 
     class SlowPath(type(Path("/"))):
         def exists(self, *args, **kwargs):
-            time.sleep(1.5)
+            time.sleep(0.4)
             return True
 
     slow = SlowPath("/tmp")
@@ -1247,6 +1247,44 @@ def test_healthz_does_not_stall_other_routes(monkeypatch) -> None:
 
     asyncio.run(drive())
 
-    assert reached_at and reached_at[0] < 0.5, (
+    assert reached_at, "the other coroutine never ran at all"
+    assert reached_at[0] < 0.3, (
         f"an unrelated coroutine waited {reached_at[0]:.2f}s behind /healthz's stats"
     )
+
+
+@pytest.mark.parametrize(
+    "client_module, error_type, credentials",
+    (
+        (quota, quota.LiveQuotaError, ".credentials.json"),
+        (codex_quota, codex_quota.CodexLiveQuotaError, "auth.json"),
+    ),
+)
+def test_a_credential_read_failure_names_the_type_and_not_the_message(
+    tmp_path, monkeypatch, client_module, error_type, credentials
+) -> None:
+    """An OSError's text is the path it failed on, and can be anything.
+
+    `AGENTS.md` forbids an exception's own text reaching the payload, a log
+    line or a test's output. Only `.code` is read today, so this is latent --
+    but it is one edit from becoming a leak.
+    """
+    marker = "SECRET-MARKER-sk-ant-do-not-surface"
+
+    def exploding_read(*args, **kwargs):
+        raise OSError(marker)
+
+    monkeypatch.setattr(client_module, "read_text_capped", exploding_read)
+    client = (
+        quota.LiveQuotaClient(tmp_path, host="https://example.test")
+        if client_module is quota
+        else codex_quota.CodexLiveQuotaClient(tmp_path, host="https://example.test")
+    )
+    (tmp_path / credentials).write_text("{}", encoding="utf-8")
+
+    with pytest.raises(error_type) as raised:
+        client.get()
+
+    assert marker not in str(raised.value)
+    assert "OSError" in str(raised.value)
+    assert raised.value.code == degrade.CREDENTIALS
