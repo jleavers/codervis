@@ -5,8 +5,9 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import Lock
 from typing import Iterator
+
+from .budget import env_float, env_int
 
 
 ACTIVITY_FILES = ("history.jsonl", "session_index.jsonl")
@@ -24,35 +25,43 @@ class CodexActivityReader:
 
     This intentionally stats known activity/session files instead of reading
     their contents, and it never touches auth.json.
+
+    No content is read, so there is no byte budget to set here; what is
+    unbounded is the *walk*, over a tree someone else fills. ``max_files`` and
+    ``scan_deadline_seconds`` bound it, and a truncated walk reports the
+    timestamps already found.
+
+    There is no TTL here any more: the refresher in ``app.main`` owns how often
+    this runs, and caches a failure as well as a success.
     """
 
     def __init__(
         self,
         data_dir: str | Path,
-        cache_ttl_seconds: float = 5.0,
+        scan_deadline_seconds: float = 5.0,
+        max_files: int = 20000,
     ) -> None:
         self.data_dir = Path(data_dir)
-        self.cache_ttl_seconds = cache_ttl_seconds
-        self._lock = Lock()
-        self._cached: tuple[float, CodexActivitySnapshot] | None = None
+        self.scan_deadline_seconds = scan_deadline_seconds
+        self.max_files = max_files
 
     def snapshot(self) -> CodexActivitySnapshot:
-        with self._lock:
-            now = time.monotonic()
-            if self._cached and (now - self._cached[0]) < self.cache_ttl_seconds:
-                return self._cached[1]
-            snap = self._scan()
-            self._cached = (now, snap)
-            return snap
+        """One bounded scan. Called only from this source's refresher."""
+        return self._scan()
 
     def _scan(self) -> CodexActivitySnapshot:
+        deadline = time.monotonic() + self.scan_deadline_seconds
         data_root_exists = self.data_dir.exists()
         last_activity: datetime | None = None
         if data_root_exists:
+            seen = 0
             for path in self._activity_paths():
                 dt = _mtime(path)
                 if dt is not None and (last_activity is None or dt > last_activity):
                     last_activity = dt
+                seen += 1
+                if seen >= self.max_files or time.monotonic() >= deadline:
+                    break
         return CodexActivitySnapshot(
             last_activity=last_activity,
             data_root_exists=data_root_exists,
@@ -85,5 +94,8 @@ def _mtime(path: Path) -> datetime | None:
 
 def reader_from_env() -> CodexActivityReader:
     data_dir = os.environ.get("CODEX_DATA_DIR", "/data/codex")
-    ttl = float(os.environ.get("CODEX_ACTIVITY_CACHE_TTL_SECONDS", "5"))
-    return CodexActivityReader(data_dir, cache_ttl_seconds=ttl)
+    return CodexActivityReader(
+        data_dir,
+        scan_deadline_seconds=env_float("ACTIVITY_SCAN_DEADLINE_SECONDS", 5.0),
+        max_files=env_int("ACTIVITY_MAX_FILES", 20000),
+    )

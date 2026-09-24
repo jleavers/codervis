@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 import math
 import os
-import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import Lock
+
+from .budget import BudgetExceeded, deadline_in, env_float, env_int, read_capped, remaining
 
 
 CLAUDE_AI_HOST = "https://claude.ai"
@@ -44,23 +44,32 @@ class LiveQuotaClient:
 
     The token is short-lived but Claude Code refreshes it itself; we re-read
     the file on every call so we ride along on the host's refresh cadence.
-    A short in-memory result cache avoids hammering the endpoint when many
-    SSE clients are connected.
+
+    ``get()`` always fetches. Nothing caches here any more: the refresher in
+    ``app.main`` is what decides how often this runs, and it is also what keeps
+    a *failure* for the rest of the interval, which the TTL cache that used to
+    live in this class never did.
+
+    ``timeout_seconds`` is urllib's, and so applies to one socket operation.
+    ``total_deadline_seconds`` is the one that bounds the call: a sender that
+    trickles bytes forever renews the socket timeout indefinitely, and only a
+    deadline across the whole fetch cuts it off. ``max_response_bytes`` bounds
+    what a body may cost in memory.
     """
 
     def __init__(
         self,
         data_dir: str | Path,
         host: str = CLAUDE_AI_HOST,
-        cache_ttl_seconds: float = 30.0,
         timeout_seconds: float = 8.0,
+        total_deadline_seconds: float = 10.0,
+        max_response_bytes: int = 1024 * 1024,
     ) -> None:
         self.data_dir = Path(data_dir)
         self.host = host.rstrip("/")
-        self.cache_ttl_seconds = cache_ttl_seconds
         self.timeout_seconds = timeout_seconds
-        self._lock = Lock()
-        self._cached: tuple[float, LiveSnapshot] | None = None
+        self.total_deadline_seconds = total_deadline_seconds
+        self.max_response_bytes = max_response_bytes
 
     @property
     def credentials_path(self) -> Path:
@@ -82,6 +91,7 @@ class LiveQuotaClient:
         return token, oauth.get("subscriptionType")
 
     def _fetch(self) -> LiveSnapshot:
+        deadline = deadline_in(self.total_deadline_seconds)
         token, subscription = self._read_token()
         req = urllib.request.Request(
             self.host + USAGE_PATH,
@@ -92,10 +102,16 @@ class LiveQuotaClient:
             },
         )
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
+            timeout = remaining(deadline, self.timeout_seconds)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
                 if resp.status != 200:
                     raise LiveQuotaError(f"unexpected status {resp.status}")
-                body = resp.read().decode("utf-8", errors="replace")
+                raw_body = read_capped(
+                    resp, max_bytes=self.max_response_bytes, deadline=deadline
+                )
+            body = raw_body.decode("utf-8", errors="replace")
+        except BudgetExceeded as e:
+            raise LiveQuotaError(f"upstream read budget: {e}") from e
         except urllib.error.HTTPError as e:
             raise LiveQuotaError(f"HTTP {e.code}: {e.reason}") from e
         except urllib.error.URLError as e:
@@ -116,13 +132,8 @@ class LiveQuotaClient:
         )
 
     def get(self) -> LiveSnapshot:
-        with self._lock:
-            now = time.monotonic()
-            if self._cached and (now - self._cached[0]) < self.cache_ttl_seconds:
-                return self._cached[1]
-            snap = self._fetch()
-            self._cached = (now, snap)
-            return snap
+        """One bounded upstream call. Called only from this source's refresher."""
+        return self._fetch()
 
 
 def _window(name: str, label: str, raw: dict | None) -> LiveWindow:
@@ -187,5 +198,10 @@ def _float_field(value, field: str) -> float:
 def client_from_env() -> LiveQuotaClient:
     data_dir = os.environ.get("CLAUDE_DATA_DIR", "/data/claude")
     host = os.environ.get("CLAUDE_AI_HOST", CLAUDE_AI_HOST)
-    ttl = float(os.environ.get("QUOTA_CACHE_TTL_SECONDS", "30"))
-    return LiveQuotaClient(data_dir, host=host, cache_ttl_seconds=ttl)
+    return LiveQuotaClient(
+        data_dir,
+        host=host,
+        timeout_seconds=env_float("QUOTA_TIMEOUT_SECONDS", 8.0),
+        total_deadline_seconds=env_float("QUOTA_TOTAL_DEADLINE_SECONDS", 10.0),
+        max_response_bytes=env_int("QUOTA_MAX_RESPONSE_BYTES", 1024 * 1024),
+    )

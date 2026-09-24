@@ -29,7 +29,7 @@ def test_claude_activity_reads_project_transcript_timestamps_only(tmp_path) -> N
         encoding="utf-8",
     )
 
-    snapshot = ClaudeActivityReader(root, cache_ttl_seconds=0).snapshot()
+    snapshot = ClaudeActivityReader(root).snapshot()
 
     assert snapshot.data_root_exists is True
     assert snapshot.last_activity == datetime(2026, 5, 20, 11, 30, tzinfo=timezone.utc)
@@ -53,7 +53,7 @@ def test_codex_activity_uses_known_metadata_and_ignores_auth_json(tmp_path) -> N
     _set_mtime(session, session_time)
     _set_mtime(auth, ignored_auth_time)
 
-    snapshot = CodexActivityReader(root, cache_ttl_seconds=0).snapshot()
+    snapshot = CodexActivityReader(root).snapshot()
 
     assert snapshot.data_root_exists is True
     assert snapshot.last_activity == session_time

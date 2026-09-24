@@ -4,11 +4,49 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app import main
 from app.claude_activity import ClaudeActivitySnapshot
 from app.codex_activity import CodexActivitySnapshot
+from app.refresh import SourceRefresher
+
+
+@pytest.fixture(autouse=True)
+def fresh_sources(monkeypatch):
+    """Give every test its own refreshers, published by nothing until it says so.
+
+    The refreshers in `main` are module-level and would otherwise carry one
+    test's snapshot into the next. These are wired to the same module globals,
+    so a test still swaps a client in with `monkeypatch.setattr(main, "_live",
+    ...)`; it just has to call `_publish()` afterwards. No thread is started:
+    `TestClient(app)` outside a `with` block does not run the lifespan.
+    """
+    sources = {
+        "_claude_quota_source": SourceRefresher(
+            "claude-quota", lambda: main._live.get(), 30.0
+        ),
+        "_claude_activity_source": SourceRefresher(
+            "claude-activity", lambda: main._claude_activity.snapshot(), 5.0
+        ),
+        "_codex_quota_source": SourceRefresher(
+            "codex-quota", lambda: main._codex.get(), 30.0
+        ),
+        "_codex_activity_source": SourceRefresher(
+            "codex-activity", lambda: main._codex_activity.snapshot(), 5.0
+        ),
+    }
+    for name, source in sources.items():
+        monkeypatch.setattr(main, name, source)
+    monkeypatch.setattr(main, "_SOURCES", tuple(sources.values()))
+    return sources
+
+
+def _publish() -> None:
+    """One refresh of every source, on this thread. Handlers read the result."""
+    for source in main._SOURCES:
+        source.refresh_once()
 
 
 class ActivityStub:
@@ -79,6 +117,7 @@ def test_api_usage_returns_live_payload_without_scaling(monkeypatch) -> None:
             )
         ),
     )
+    _publish()
     response = TestClient(main.app).get("/api/usage")
 
     assert response.status_code == 200
@@ -133,6 +172,7 @@ def test_claude_section_renders_stable_fable_window(monkeypatch) -> None:
         ),
     )
 
+    _publish()
     data = main._claude_section()
 
     assert data["windows"] == [
@@ -179,6 +219,7 @@ def test_codex_section_renders_five_hour_and_weekly_windows(monkeypatch) -> None
         ),
     )
 
+    _publish()
     data = main._codex_section()
 
     assert data["source"] == "live"
@@ -225,6 +266,7 @@ def test_payload_contains_unavailable_states_on_live_errors(monkeypatch) -> None
         QuotaClientStub(error=main.CodexLiveQuotaError("codex upstream changed")),
     )
 
+    _publish()
     data = main._build_payload()
 
     assert data["claude"]["source"] == "unavailable"
@@ -274,11 +316,13 @@ def test_provider_defaults_do_not_suppress_live_clients(monkeypatch) -> None:
     monkeypatch.setattr(main, "_live", claude)
     monkeypatch.setattr(main, "_codex", codex)
 
+    _publish()
     data = main._build_payload()
 
     for key in ("claude", "codex"):
         assert data[key]["enabled"] is False
         assert data[key]["source"] == "live"
+    # One refresh, one call each -- and building the payload adds none.
     assert [client.calls for client in (claude, codex)] == [1, 1]
 
 

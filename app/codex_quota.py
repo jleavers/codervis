@@ -8,7 +8,8 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import Lock
+
+from .budget import BudgetExceeded, deadline_in, env_float, env_int, read_capped, remaining
 
 
 CHATGPT_HOST = "https://chatgpt.com"
@@ -43,8 +44,14 @@ class CodexLiveQuotaClient:
 
     The Codex CLI refreshes the access token on the host roughly hourly
     using the stored refresh token; we re-read the file on every call so
-    we ride along on that cadence. A short in-memory result cache avoids
-    hammering the endpoint when many SSE clients are connected.
+    we ride along on that cadence.
+
+    ``get()`` always fetches; the refresher in ``app.main`` owns the cadence
+    and caches the outcome, failure included. ``timeout_seconds`` is urllib's
+    per-socket-operation timeout, so only ``total_deadline_seconds`` bounds the
+    call against a sender that keeps trickling -- and it spans *both* candidate
+    paths, which is why trying the second one can no longer double the stall.
+    ``max_response_bytes`` bounds what a body may cost in memory.
 
     The endpoint is undocumented — reverse-engineered from the codex-rs
     backend client. Window positions have changed over time, so duration
@@ -58,15 +65,15 @@ class CodexLiveQuotaClient:
         self,
         data_dir: str | Path,
         host: str = CHATGPT_HOST,
-        cache_ttl_seconds: float = 30.0,
         timeout_seconds: float = 8.0,
+        total_deadline_seconds: float = 10.0,
+        max_response_bytes: int = 1024 * 1024,
     ) -> None:
         self.data_dir = Path(data_dir)
         self.host = host.rstrip("/")
-        self.cache_ttl_seconds = cache_ttl_seconds
         self.timeout_seconds = timeout_seconds
-        self._lock = Lock()
-        self._cached: tuple[float, CodexLiveSnapshot] | None = None
+        self.total_deadline_seconds = total_deadline_seconds
+        self.max_response_bytes = max_response_bytes
 
     @property
     def credentials_path(self) -> Path:
@@ -94,6 +101,7 @@ class CodexLiveQuotaClient:
         return token, account_id, plan_type
 
     def _fetch(self) -> CodexLiveSnapshot:
+        deadline = deadline_in(self.total_deadline_seconds)
         token, account_id, plan_type = self._read_token()
         headers = {
             "Authorization": f"Bearer {token}",
@@ -110,17 +118,26 @@ class CodexLiveQuotaClient:
         # path returns 401/404 we fall through to the alternate before
         # raising so a single auth/path mismatch doesn't take the panel
         # offline.
+        #
+        # One deadline covers both attempts, so falling through to the
+        # alternate path cannot add a second full timeout to the stall.
         body: str | None = None
         last_err: CodexLiveQuotaError | None = None
         for path in (USAGE_PATH, USAGE_PATH_ALT):
             req = urllib.request.Request(self.host + path, headers=headers)
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
+                timeout = remaining(deadline, self.timeout_seconds)
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
                     if resp.status != 200:
                         last_err = CodexLiveQuotaError(f"unexpected status {resp.status}")
                         continue
-                    body = resp.read().decode("utf-8", errors="replace")
-                    break
+                    raw_body = read_capped(
+                        resp, max_bytes=self.max_response_bytes, deadline=deadline
+                    )
+                body = raw_body.decode("utf-8", errors="replace")
+                break
+            except BudgetExceeded as e:
+                raise CodexLiveQuotaError(f"upstream read budget: {e}") from e
             except urllib.error.HTTPError as e:
                 last_err = CodexLiveQuotaError(f"HTTP {e.code}: {e.reason}")
                 if e.code in (401, 403, 404):
@@ -167,13 +184,8 @@ class CodexLiveQuotaClient:
         )
 
     def get(self) -> CodexLiveSnapshot:
-        with self._lock:
-            now = time.monotonic()
-            if self._cached and (now - self._cached[0]) < self.cache_ttl_seconds:
-                return self._cached[1]
-            snap = self._fetch()
-            self._cached = (now, snap)
-            return snap
+        """One bounded upstream call. Called only from this source's refresher."""
+        return self._fetch()
 
 
 def _pick_window(*containers: dict, keys: tuple[str, ...]) -> tuple[str, dict] | None:
@@ -329,5 +341,10 @@ def _relative_seconds(value: int | float) -> datetime | None:
 def client_from_env() -> CodexLiveQuotaClient:
     data_dir = os.environ.get("CODEX_DATA_DIR", "/data/codex")
     host = os.environ.get("CHATGPT_HOST", CHATGPT_HOST)
-    ttl = float(os.environ.get("QUOTA_CACHE_TTL_SECONDS", "30"))
-    return CodexLiveQuotaClient(data_dir, host=host, cache_ttl_seconds=ttl)
+    return CodexLiveQuotaClient(
+        data_dir,
+        host=host,
+        timeout_seconds=env_float("QUOTA_TIMEOUT_SECONDS", 8.0),
+        total_deadline_seconds=env_float("QUOTA_TOTAL_DEADLINE_SECONDS", 10.0),
+        max_response_bytes=env_int("QUOTA_MAX_RESPONSE_BYTES", 1024 * 1024),
+    )
