@@ -72,6 +72,9 @@ jobs:
           python -m pytest -q
           tests/test_activity_readers.py
           tests/test_quota_parsers.py
+          tests/test_egress.py
+          tests/test_ingress.py
+          tests/test_compose_topology.py
 
       - name: Run JavaScript unit tests
         run: node --test tests/test_app.js tests/test_widget_state.js
@@ -126,3 +129,39 @@ jobs:
         env:
           USERPROFILE: /tmp/codervis-ci
         run: docker compose --env-file .env.example config --quiet
+
+  egress:
+    name: Egress bound
+    runs-on: ubuntu-latest
+    # Synthetic credential files only. Nothing below sends them anywhere: `check` opens CONNECT
+    # tunnels and closes them unused, and /healthz makes no upstream call.
+    env:
+      CLAUDE_HOME: /tmp/codervis-ci/claude
+      CODEX_HOME: /tmp/codervis-ci/codex
+      DASHBOARD_PORT: 127.0.0.1:8765
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Start the stack
+        run: |
+          mkdir -p "$CLAUDE_HOME" "$CODEX_HOME"
+          printf '{"claudeAiOauth":{"accessToken":"ci-not-a-token"}}' > "$CLAUDE_HOME/.credentials.json"
+          printf '{"tokens":{"access_token":"ci-not-a-token"}}' > "$CODEX_HOME/auth.json"
+          docker compose up --build --detach --wait
+
+      - name: Check the bound from inside the dashboard container
+        run: docker compose exec -T codervis python -m app.egress check
+
+      - name: Reach the dashboard through ingress
+        run: |
+          curl --fail --silent --show-error \
+            --retry 15 --retry-all-errors --retry-delay 1 \
+            http://127.0.0.1:8765/healthz
+
+      - name: Show the logs
+        if: failure()
+        run: docker compose logs
+
+      - name: Stop the stack
+        if: always()
+        run: docker compose down

@@ -5,9 +5,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 A local FastAPI dashboard that displays **Claude Code** and **Codex CLI** quota
-utilization as colour-shifting meters. Runs as a single Docker container,
-bind-mounts the host's `~/.claude` and `~/.codex` data directories read-only,
-and authenticates upstream using each agent's own stored credential.
+utilization as colour-shifting meters. Runs as a Docker container that
+bind-mounts the host's `~/.claude` and `~/.codex` data directories read-only
+and authenticates upstream using each agent's own stored credential. Two
+gateway services from the same image bound its network: see "Network
+boundary" below.
 
 User-facing setup, env vars, and troubleshooting live in `README.md`.
 
@@ -92,6 +94,42 @@ both initial payloads and SSE messages. The SSE loop is in `main.py:stream()`;
 relative-time labels stay live between server pushes via a 1-second
 `setInterval`.
 
+## Network boundary
+
+`docker-compose.yml` runs three services from one image:
+
+- **`codervis`** — the dashboard. It joins the `inside` network only, which is
+  `internal: true` and therefore has no default route. `HTTP(S)_PROXY` (both
+  cases) points at `egress`; urllib honours them, so the live clients need no
+  proxy code.
+- **`egress`** — `app/egress.py`, ported from issuebot's `issuebot.egress`.
+  It is a `CONNECT`-only forward proxy that admits `claude.ai` and
+  `chatgpt.com` plus the operator's `EGRESS_ALLOW`, and refuses plain `http://`
+  with 405. It sees host names only, never the TLS session or a token. Its
+  healthcheck is `python -m app.egress healthcheck`, which requires a 403 for
+  the reserved `egress-probe.invalid`.
+- **`ingress`** — `app/ingress.py`, a byte relay that publishes
+  `DASHBOARD_PORT` and forwards to `codervis:8000`. It is needed because Docker
+  ignores `ports:` on an internal-only container. It is also the front door's
+  resource bound: at most 256 connections, and a client must send a complete
+  first request head (at most 16 KiB) within 10 s or get 408/431 before the
+  dashboard is dialled. uvicorn itself arms no timer until it has sent a
+  response. After the head, nothing is timed, so SSE is unaffected.
+
+`egress` and `ingress` join `inside` and `outside`, run as uid 65534 with a
+read-only root filesystem and all capabilities dropped, and hold no credential.
+All three services log to json-file capped at 3 × 10 MB (`x-logging` in the
+compose file), since a peer that reaches the port can make each of them log.
+`python -m app.egress check`, run in the `codervis` container, verifies both
+halves of the bound: the proxy filters by name and admits the configured
+upstream hosts, and there is no direct route round it.
+`tests/test_compose_topology.py` pins the compose shape.
+
+**Keep the bound whole.** Do not give `codervis` a non-internal network or
+`ports:`. Do not add a host to `DEFAULT_ALLOW` that the live clients do not
+call. If a client ever needs another host, add it to `DEFAULT_ALLOW` and to the
+test that checks the defaults cover the clients' own hosts.
+
 ## Load-bearing assumption: every live endpoint is undocumented
 
 Neither endpoint is part of its vendor's public API.
@@ -128,7 +166,10 @@ curl http://localhost:8765/api/usage
 # Automated tests
 python -m pip install -r requirements-dev.txt
 python -m pytest
-python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py
+python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/egress.py app/ingress.py
+
+# Egress bound, from inside the running dashboard container
+docker compose exec codervis python -m app.egress check
 ```
 
 The pytest suite uses FastAPI's `TestClient`, direct parser imports, stubbed
