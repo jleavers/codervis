@@ -14,6 +14,7 @@ import http.client
 import json
 import logging
 import math
+import os
 import socket
 import ssl
 import urllib.error
@@ -1237,6 +1238,11 @@ def test_the_script_form_cannot_break_out_of_the_script_block() -> None:
 # fixture would be lying about what it stands for.
 SERVED_HOST = "127.0.0.1:8765"
 
+requires_default_hosts = pytest.mark.skipif(
+    bool(os.environ.get(main.ALLOWED_HOSTS_ENV)),
+    reason=f"{main.ALLOWED_HOSTS_ENV} is set in this shell, and the app read it at import",
+)
+
 
 def _request(path: str = "/") -> Request:
     return Request(
@@ -1324,6 +1330,7 @@ def test_the_routes_answer_with_a_hostile_provider(deployment, provider, case) -
     }
 
 
+@requires_default_hosts
 @pytest.mark.parametrize("provider", PROVIDERS)
 @pytest.mark.parametrize("case", ("json-null", "percent-nan"))
 def test_the_routes_answer_through_the_whole_stack(deployment, provider, case) -> None:
@@ -1336,17 +1343,27 @@ def test_the_routes_answer_through_the_whole_stack(deployment, provider, case) -
     bodies.
     """
     deployment.bodies[provider] = hostile_bodies(provider)[case]
-    client = TestClient(main.app, base_url=f"http://{SERVED_HOST}")
+    # `raise_server_exceptions=False` so that a regression is reported as the 500 it
+    # would be in the container, rather than re-raised into pytest's traceback: the
+    # exception the boundary exists to contain is the one that quotes the bearer
+    # token, and it must not reach a test's output either.
+    client = TestClient(
+        main.app, base_url=f"http://{SERVED_HOST}", raise_server_exceptions=False
+    )
 
     page = client.get("/")
     usage = client.get("/api/usage")
 
-    assert page.status_code == 200
-    assert usage.status_code == 200
+    assert page.status_code == 200, page.text[:200]
+    assert usage.status_code == 200, usage.text[:200]
     assert usage.headers["content-type"].startswith("application/json")
-    served = assert_payload_in_schema(usage.json())
-    assert usage.json()[provider]["source"] == "unavailable"
-    assert SECRET not in page.text, served
+    payload = usage.json()
+    assert_payload_in_schema(payload)
+    assert payload[provider]["source"] == "unavailable"
+    assert payload[provider]["source_error"] in {
+        degrade.MESSAGES[code] for code in degrade.SERVABLE
+    }
+    assert SECRET not in page.text
     assert SECRET not in usage.text
 
 

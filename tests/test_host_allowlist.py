@@ -20,8 +20,11 @@ from fastapi.testclient import TestClient
 from app import main
 
 # Every route the dashboard answers, plus a path it does not: a request refused before
-# routing is refused on all of them.
-PATHS = ["/", "/api/usage", "/api/stream", "/static/app.js", "/healthz", "/no-such-path"]
+# routing is refused on all of them. `/api/stream` is not here and is covered by
+# `test_the_stream_is_refused_for_a_host_that_is_not` instead: `TestClient` reads a
+# response body to the end, and if the check ever regressed this request would be
+# answered with an SSE stream that never ends, wedging the run rather than failing it.
+PATHS = ["/", "/api/usage", "/static/app.js", "/healthz", "/no-such-path"]
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -155,12 +158,16 @@ def _first_event(path: str, *, headers: list[tuple[bytes, bytes]]) -> tuple[dict
 
 
 def test_the_stream_is_refused_for_a_host_that_is_not() -> None:
-    # Driven as a server would, like the test above: `TestClient` would read an SSE
-    # body that never ends, so a regression here would hang the suite rather than
-    # fail it.
-    start, _ = _first_event("/api/stream", headers=[(b"host", b"attacker.example")])
+    # Driven as a server would, like the served-host test above, and for the same
+    # reason `/api/stream` is not in `PATHS`: `TestClient` would read an SSE body
+    # that never ends, so a regression here would hang the run rather than fail it.
+    start, body = _first_event("/api/stream", headers=[(b"host", b"attacker.example")])
 
     assert start["status"] == 403
+    # The refusal is the same one every other path gets, and it does not echo the
+    # caller's own name into a page a browser renders.
+    assert main.ALLOWED_HOSTS_ENV.encode() in body
+    assert b"attacker.example" not in body
 
 
 @pytest.mark.parametrize(

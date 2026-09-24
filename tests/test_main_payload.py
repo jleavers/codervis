@@ -415,9 +415,9 @@ def test_index_embeds_the_same_serialization_it_renders(monkeypatch) -> None:
             "enabled": False,
             "windows": [],
             "source": "unavailable",
+            "source_error": degrade.MESSAGES[degrade.SHAPE],
             # A plan name that would end the <script> block if it were embedded
             # unescaped.
-            "source_error": degrade.MESSAGES[degrade.SHAPE],
             "subscription_type": "</script><script>alert(1)</script>",
             "last_activity": None,
             "data_root_exists": False,
