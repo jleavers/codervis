@@ -22,7 +22,7 @@ docker compose down
 curl http://localhost:8765/healthz
 curl http://localhost:8765/api/usage
 python -m pytest
-python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/refresh.py app/budget.py app/egress.py app/ingress.py
+python -m py_compile app/main.py app/quota.py app/activity_gate.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/refresh.py app/budget.py app/egress.py app/ingress.py
 docker compose exec codervis python -m app.egress check
 ```
 
@@ -73,16 +73,29 @@ directories; it must not call upstream quota endpoints or read host tokens.
 - `app/quota.py` owns the Claude live client and must convert any upstream,
   auth, parse, or file-read failure into `LiveQuotaError`, including a
   `BudgetExceeded` from a body that is too large or too slow.
-- `app/claude_activity.py` owns Claude last-activity reporting. It should read
-  only project transcript timestamps, must not read `.credentials.json`, and
-  must not compute quota or fallback usage statistics.
+- `app/activity_gate.py` owns what an activity reader may reach: the
+  allow-listed subtrees of that reader's own data root, the operation it was
+  granted (`STAT` for Codex, `STAT | READ` for Claude), and the rule that no
+  link is ever followed — `lstat` on every component below the root,
+  `O_NOFOLLOW` on every read. It is the only way either reader reaches the
+  filesystem; keep it that way, and put a new reader's paths on its allow-list
+  rather than opening them directly. It records what it admitted and refused
+  per scan, which is what the tests assert on. A refusal is not a failure: the
+  path contributes no timestamp and the scan carries on. `PathRefused` carries
+  a reason and never a path, because an operator's project directory names are
+  what the old oracle leaked.
+- `app/claude_activity.py` owns Claude last-activity reporting. It reads only
+  project transcript timestamps and must not compute quota or fallback usage
+  statistics. That it cannot read `.credentials.json` is the gate's doing, not
+  the reader's: its `ActivityGate` admits the `projects` subtree only.
 - `app/codex_quota.py` owns the Codex live client and must convert any failure
   into `CodexLiveQuotaError` so the UI can show `source: "unavailable"`. One
   deadline spans both candidate paths; do not give the second attempt a fresh
   timeout.
-- `app/codex_activity.py` owns Codex last-activity reporting. It should derive
-  timestamps from safe file metadata only and must not read `auth.json` or
-  session contents.
+- `app/codex_activity.py` owns Codex last-activity reporting. It derives
+  timestamps from safe file metadata only; `auth.json` is off its gate's
+  allow-list and session *contents* are off its granted operations, so neither
+  is reachable from here rather than merely avoided here.
 - `app/egress.py` is the allow-listing `CONNECT` proxy that is the dashboard
   container's only route out; `app/ingress.py` publishes the dashboard's port,
   because the dashboard sits on an internal-only network. Keep that container
@@ -92,6 +105,15 @@ directories; it must not call upstream quota endpoints or read host tokens.
   on both initial paint and SSE updates.
 - `tests/` contains automated coverage for parser tolerance, unavailable
   states, disabled Codex state, and safe activity-reader boundaries.
+  `tests/test_activity_readers.py` is the activity boundary: it asserts the set
+  of paths each reader touched and the operations it performed, on the gate's
+  own record, plus the process's real filesystem calls during a scan. It does
+  not assert the timestamp a reader returned, because that is what a reader
+  reading credential files returns too — which is how a reader that opened
+  `.credentials.json`, `auth.json`, `history.jsonl` and a session file once
+  passed the whole suite. Its fixtures are parseable credential files and
+  planted links out of the tree, so a regression changes behaviour.
+  `tests/test_activity_gate.py` pins the gate's own refusals.
   `tests/test_payload_contract.py` is the payload contract: it runs both live
   clients through one matrix of transport faults, hostile response bodies and
   hostile credential files, and asserts the payload always matches the schema
