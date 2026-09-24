@@ -107,15 +107,22 @@ Edit `.env`:
 | `CHATGPT_HOST` | Override the Codex host (rarely needed). Must be `https://`; add the host to `EGRESS_ALLOW`. | `https://chatgpt.com` |
 | `EGRESS_ALLOW` | Extra hosts the egress proxy admits, comma- or space-separated. `host` means port 443, `host:port` names another, and `.example.com` admits the domain and everything under it. It extends the built-in `claude.ai` and `chatgpt.com`; it never replaces them. | empty |
 
-#### Read budgets
+### Read budgets
 
 Everything that feeds the payload is written by someone else: the vendor's
 response body, whatever an operator's `CLAUDE_AI_HOST`/`CHATGPT_HOST` points
-at, and whatever writes under `~/.claude`. Each of those reads therefore has a
-deadline and a byte cap. Exceeding one degrades that source to `unavailable`
-in the UI until its next refresh; nothing grows without bound, and no other
-route is affected. The shipped values suit the real endpoints, and a value
-that cannot be parsed is ignored in favour of the default.
+at, and whatever writes under `~/.claude`. Each of those reads is therefore
+bounded. A byte cap applies to all of them, so nothing grows without bound; a
+deadline applies to the ones that can be given one — the upstream body, and a
+local activity scan as a whole. The credential files get a byte cap only, since
+a read of a hung mount cannot portably be interrupted from here. Exceeding a
+budget degrades that source to `unavailable` in the UI until its next refresh,
+and no other route is affected. As a backstop for the reads that have no
+deadline, a source whose last successful refresh is older than three of its own
+intervals (or its interval plus 30 s, whichever is larger) is also reported
+`unavailable` rather than serving numbers that have stopped being updated. The
+shipped values suit the real endpoints, and a value that cannot be parsed is
+ignored in favour of the default.
 
 | Variable | What it does | Default |
 | --- | --- | --- |
@@ -204,7 +211,7 @@ Install development dependencies, then run the suite:
 ```bash
 python -m pip install -r requirements-dev.txt
 python -m pytest
-python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/egress.py app/ingress.py
+python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/refresh.py app/budget.py app/egress.py app/ingress.py
 ```
 
 The tests use temporary directories and stubbed upstream clients. They do not
@@ -242,6 +249,8 @@ browser-disabled cards are dimmed.
 │   ├── claude_activity.py # Claude local activity timestamp reader
 │   ├── codex_quota.py   # Codex live client → chatgpt.com/backend-api/wham/usage
 │   ├── codex_activity.py # Codex local activity metadata reader
+│   ├── refresh.py       # One background refresher per source: when a source is read
+│   ├── budget.py        # Deadline and byte cap: what a single read may cost
 │   ├── egress.py        # Allow-listing CONNECT proxy: the dashboard's only route out
 │   ├── ingress.py       # Relay that publishes the dashboard's port
 │   ├── templates/

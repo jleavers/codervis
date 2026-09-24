@@ -80,7 +80,9 @@ def read_text_capped(path, *, max_bytes: int) -> str:
 
     There is no deadline: a blocking read of a hung mount cannot portably be
     given one. It is bounded by running off the event loop, where it delays
-    its own source's refresh and nothing else.
+    its own source's refresh and nothing else, and by
+    ``SourceRefresher.current()``, which stops serving that source's last
+    success once it is older than the source's staleness limit.
     """
     with open(path, "rb") as f:
         raw = f.read(max_bytes + 1)

@@ -20,7 +20,8 @@ import threading
 import time
 import tracemalloc
 import urllib.error
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,7 +29,12 @@ from app import codex_quota, main, quota
 from app.budget import BudgetExceeded, bounded_lines, env_float, env_int, read_capped
 from app.claude_activity import ClaudeActivityReader
 from app.codex_activity import CodexActivityReader
-from app.refresh import SourceRefresher, wait_for_first_publish
+from app.refresh import (
+    SourceRefresher,
+    SourceSnapshot,
+    SourceStale,
+    wait_for_first_publish,
+)
 
 
 # --------------------------------------------------------------- byte cap
@@ -808,3 +814,128 @@ def test_bounded_lines_does_not_yield_a_record_the_file_cap_cut_in_half() -> Non
     records = list(bounded_lines(stream, max_line_bytes=1 << 20, max_file_bytes=40))
 
     assert records == [b'{"timestamp":"2026-05-20T08:00:00Z"}']
+
+
+# ------------------------------------------------ staleness: a wedge after a success
+
+
+def test_a_successful_snapshot_stops_being_live_once_it_stops_being_refreshed() -> None:
+    """A source that wedges *after* a success must not serve old numbers as `live`.
+
+    The reads without a deadline of their own -- the credential file, a single
+    transcript file -- can hang a refresher's thread without ever failing it.
+    `at` then stops advancing while `ok` stays true.
+    """
+    source = SourceRefresher("wedges-later", lambda: "fresh", 10.0, stale_after_seconds=30.0)
+    source.refresh_once()
+
+    assert source.current().ok, "a snapshot just published is live"
+    assert source.current().value == "fresh"
+
+    # The thread has not published for well over the limit.
+    stale_at = datetime.now(timezone.utc) - timedelta(seconds=120)
+    source._snapshot = SourceSnapshot(ok=True, value="old", error=None, at=stale_at)
+
+    current = source.current()
+    assert not current.ok, "a snapshot two minutes past the limit is not live"
+    assert isinstance(current.error, SourceStale)
+    assert current.value is None, "the stale reading must not reach the payload"
+    assert "120s ago" in str(current.error)
+    # The raw record is unchanged: staleness is applied on read, not published.
+    assert source.snapshot().ok and source.snapshot().value == "old"
+
+
+def test_a_stale_source_degrades_that_provider_only(stub_sources, monkeypatch) -> None:
+    """AC5 for the wedge-after-success case, end to end through the payload."""
+    live = SimpleNamespace(
+        five_hour=SimpleNamespace(percent=41.0, resets_at=None),
+        seven_day=SimpleNamespace(percent=12.0, resets_at=None),
+        subscription_type="pro",
+    )
+    claude = SourceRefresher("claude-quota", lambda: live, 30.0, stale_after_seconds=90.0)
+    claude.refresh_once()
+    monkeypatch.setattr(main, "_claude_quota_source", claude)
+
+    # Codex publishes its own failure, so the assertion below is about it
+    # keeping that failure rather than about it never having run.
+    main._codex_quota_source.refresh_once()
+
+    assert main._build_payload()["claude"]["source"] == "live"
+
+    claude._snapshot = SourceSnapshot(
+        ok=True,
+        value=live,
+        error=None,
+        at=datetime.now(timezone.utc) - timedelta(seconds=600),
+    )
+    payload = main._build_payload()
+
+    assert payload["claude"]["source"] == "unavailable"
+    assert [w["percent"] for w in payload["claude"]["windows"]] == [None, None, None]
+    assert "600s ago" in payload["claude"]["source_error"]
+    # The other provider is untouched by its neighbour going stale.
+    assert payload["codex"]["source"] == "unavailable"
+    assert "upstream down" in payload["codex"]["source_error"]
+
+
+def test_a_stale_activity_scan_reports_no_activity_rather_than_an_old_time() -> None:
+    from app.claude_activity import ClaudeActivitySnapshot
+
+    scan = ClaudeActivitySnapshot(
+        last_activity=datetime(2020, 1, 1, tzinfo=timezone.utc), data_root_exists=True
+    )
+    source = SourceRefresher("activity", lambda: scan, 5.0, stale_after_seconds=35.0)
+    source._snapshot = SourceSnapshot(
+        ok=True, value=scan, error=None, at=datetime.now(timezone.utc) - timedelta(seconds=90)
+    )
+
+    assert main._activity_fields(source.current()) == (None, False)
+
+
+def test_a_slow_but_working_source_does_not_flap_to_stale() -> None:
+    """The threshold is slack on purpose: a long cycle is not a wedge.
+
+    A 5 s cadence whose scan spends its whole 5 s deadline publishes every
+    ~10 s; three intervals alone would be 15 s and would flap. The grace term
+    is what stops that.
+    """
+    source = SourceRefresher("slow-activity", lambda: "x", 5.0)
+
+    assert source.stale_after_seconds == 35.0
+    source._snapshot = SourceSnapshot(
+        ok=True, value="x", error=None, at=datetime.now(timezone.utc) - timedelta(seconds=12)
+    )
+    assert source.current().ok, "a cycle that ran long is still live"
+
+
+def test_an_already_failed_snapshot_keeps_its_own_error_when_it_ages() -> None:
+    """Age says less about a failed source than the failure does."""
+    source = SourceRefresher("failing", lambda: 1 / 0, 30.0, stale_after_seconds=1.0)
+    source._snapshot = SourceSnapshot(
+        ok=False,
+        value=None,
+        error=quota.LiveQuotaError("upstream down"),
+        at=datetime.now(timezone.utc) - timedelta(seconds=600),
+    )
+
+    current = source.current()
+    assert not current.ok
+    assert isinstance(current.error, quota.LiveQuotaError)
+    assert main._source_error(current, quota.LiveQuotaError) == "upstream down"
+
+
+def test_the_shipped_staleness_limits_clear_each_source_worst_case() -> None:
+    """Every shipped limit must exceed what a healthy cycle of that source can cost."""
+    # Quota: one cycle is at most the total deadline plus one outstanding
+    # socket timeout, on top of the cadence.
+    quota_source = SourceRefresher("q", lambda: None, main.QUOTA_REFRESH_SECONDS)
+    worst_quota_cycle = main.QUOTA_REFRESH_SECONDS + 10.0 + 8.0
+    assert quota_source.stale_after_seconds > worst_quota_cycle
+
+    # Activity: one cycle is at most the whole-scan deadline on top of the cadence.
+    for interval in (
+        main.CLAUDE_ACTIVITY_REFRESH_SECONDS,
+        main.CODEX_ACTIVITY_REFRESH_SECONDS,
+    ):
+        source = SourceRefresher("a", lambda: None, interval)
+        assert source.stale_after_seconds > interval + 5.0

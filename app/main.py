@@ -20,7 +20,12 @@ from .codex_activity import reader_from_env as codex_activity_reader_from_env
 from .codex_quota import CodexLiveQuotaClient, CodexLiveQuotaError
 from .codex_quota import client_from_env as codex_client_from_env
 from .quota import LiveQuotaClient, LiveQuotaError, client_from_env
-from .refresh import SourceRefresher, SourceSnapshot, wait_for_first_publish
+from .refresh import (
+    SourceRefresher,
+    SourceSnapshot,
+    SourceStale,
+    wait_for_first_publish,
+)
 
 BASE_DIR = Path(__file__).parent
 REFRESH_SECONDS = max(1, int(os.environ.get("REFRESH_INTERVAL_SECONDS", "5")))
@@ -226,7 +231,8 @@ templates = Jinja2Templates(directory=BASE_DIR / "templates")
 def _source_error(snapshot: SourceSnapshot, expected: type[Exception]) -> str:
     """The `source_error` string for a source that is not live.
 
-    The client's own error type is surfaced as before. Anything else is named
+    The client's own error type is surfaced as before, and so is a
+    `SourceStale`, whose text this module writes. Anything else is named
     by type only: the refresher has to catch every exception (letting one
     escape would freeze the source), and an exception raised while an upstream
     request is being built can carry the bearer token in its message.
@@ -234,6 +240,9 @@ def _source_error(snapshot: SourceSnapshot, expected: type[Exception]) -> str:
     err = snapshot.error
     if err is None:
         return "waiting for the first refresh"
+    if isinstance(err, SourceStale):
+        # Our own text, built from two numbers: safe to surface whole.
+        return str(err)
     if isinstance(err, expected):
         return str(err)
     return f"unexpected {type(err).__name__} while refreshing"
@@ -263,8 +272,8 @@ def _window_dict(name: str, label: str, percent, resets_at, detail=None) -> dict
 
 
 def _claude_section() -> dict:
-    last_activity, data_root_exists = _activity_fields(_claude_activity_source.snapshot())
-    quota = _claude_quota_source.snapshot()
+    last_activity, data_root_exists = _activity_fields(_claude_activity_source.current())
+    quota = _claude_quota_source.current()
     if quota.ok:
         live = quota.value
         fable = getattr(live, "seven_day_fable", None)
@@ -306,8 +315,8 @@ def _claude_section() -> dict:
 
 
 def _codex_section() -> dict:
-    last_activity, data_root_exists = _activity_fields(_codex_activity_source.snapshot())
-    quota = _codex_quota_source.snapshot()
+    last_activity, data_root_exists = _activity_fields(_codex_activity_source.current())
+    quota = _codex_quota_source.current()
     if quota.ok:
         snap = quota.value
         return {

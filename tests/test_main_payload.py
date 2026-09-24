@@ -48,6 +48,7 @@ def _publish() -> None:
     for source in main._SOURCES:
         source.refresh_once()
 
+
 LOOPBACK = "http://127.0.0.1:8765"
 
 

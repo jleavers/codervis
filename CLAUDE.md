@@ -36,14 +36,25 @@ This is load-bearing, so keep it whole:
   failing provider is retried on the cadence rather than on every tick.
   `refresh_once()` catches `Exception` whole because an escape kills the
   worker thread and freezes that source at its last snapshot forever.
-- **Every payload-feeding read has a deadline and a byte cap** (`app/budget.py`)
-  — the upstream body, the credential file, and each transcript file. Their
-  knobs are the "Read budgets" table in `README.md`, which is the one place
-  they are listed; the cadence knobs are in the table above it.
-  urllib's timeout is per socket operation, so a sender that keeps trickling
-  renews it indefinitely; only `read_capped()`'s total deadline ends that, and
-  `bounded_lines()` is what stops one unterminated transcript record growing
-  until `MemoryError`. If a new read is added, budget it the same way.
+- **Every payload-feeding read is bounded** (`app/budget.py`), but not all by
+  the same means, so be exact about which:
+  - the **upstream body** has a total deadline *and* a byte cap. urllib's
+    timeout is per socket operation, so a sender that keeps trickling renews it
+    indefinitely; only `read_capped()`'s total deadline ends that.
+  - the **transcript scan** has a whole-scan deadline, plus a per-record and a
+    per-file byte cap. `bounded_lines()` is what stops one unterminated record
+    growing until `MemoryError`. The deadline is checked *between* files.
+  - the **credential file** has a byte cap only. `read_text_capped()` says why
+    where it is defined: a blocking read of a hung mount cannot portably be
+    given a deadline from here.
+  A read with no deadline can stop a refresher's thread advancing without ever
+  failing it, so `SourceRefresher.current()` is the backstop: a success older
+  than `stale_after_seconds` is served as `unavailable` carrying `SourceStale`,
+  never as old numbers labelled `live`. **Handlers must read `current()`, not
+  `snapshot()`** — `snapshot()` is the raw record and skips that check.
+  The budget knobs are the "Read budgets" table in `README.md`, which is the
+  one place they are listed; the cadence knobs are in the table above it.
+  If a new read is added, budget it the same way.
 - `source_error` surfaces the client's own error type as before. Anything else
   is named by *type only* — an exception raised while an upstream request is
   built can carry the bearer token in its message.
@@ -229,7 +240,8 @@ Handlers read published snapshots, so a test that swaps a client in must
 publish before asking for a payload — `tests/test_main_payload.py` gives each
 test its own refreshers and calls `_publish()`. `TestClient(app)` starts the
 refresher threads only as a context manager (`with TestClient(app)`).
-`tests/test_payload_budget.py` pins the budgets and the refresher. A test that
+`tests/test_payload_budget.py` pins the budgets, the refresher and the
+staleness bound. A test that
 goes through a route also needs a host the app serves: `TestClient`'s own
 default (`testserver`) is not one, so pass `base_url="http://127.0.0.1:8765"`
 or use `tests/test_main_payload.py`'s `loopback_client()`.

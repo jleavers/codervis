@@ -24,6 +24,18 @@ from typing import Callable, Generic, TypeVar
 T = TypeVar("T")
 
 
+class SourceStale(Exception):
+    """The last refresh of a source is too old to keep reporting it as live.
+
+    Raised by nothing: it is the ``error`` a stale snapshot carries, so that a
+    handler reports the same ``unavailable`` state it would for a failed fetch.
+    A read that hangs with no deadline of its own -- the credential file, one
+    transcript file -- stops the source's thread advancing without ever failing
+    it, and without this the last good percentages would be served as ``live``
+    forever, with nothing in the payload saying how old they are.
+    """
+
+
 @dataclass(frozen=True)
 class SourceSnapshot(Generic[T]):
     """The last outcome a refresher published.
@@ -43,11 +55,25 @@ class SourceSnapshot(Generic[T]):
         """False only for the placeholder served before the first refresh."""
         return self.at is not None
 
+    def age_seconds(self, now: datetime | None = None) -> float | None:
+        """How long ago this was published, or None before the first publish."""
+        if self.at is None:
+            return None
+        return ((now or datetime.now(timezone.utc)) - self.at).total_seconds()
+
 
 _PENDING: SourceSnapshot = SourceSnapshot(ok=False, value=None, error=None, at=None)
 
 # No source is read more often than this, whatever it is asked for.
 MIN_INTERVAL_SECONDS = 0.01
+
+# How far a source may fall behind its own cadence before what it last
+# published stops counting as live. Deliberately slack: this is meant to catch
+# a thread that has stopped advancing altogether, not a cycle that ran long, so
+# a slow-but-working source must never flap to `unavailable`. The grace term is
+# what keeps the fast activity cadences (5 s) from doing exactly that.
+STALE_AFTER_INTERVALS = 3.0
+STALE_GRACE_SECONDS = 30.0
 
 
 class SourceRefresher(Generic[T]):
@@ -58,6 +84,7 @@ class SourceRefresher(Generic[T]):
         name: str,
         fetch: Callable[[], T],
         interval_seconds: float,
+        stale_after_seconds: float | None = None,
     ) -> None:
         self.name = name
         self._fetch = fetch
@@ -65,6 +92,14 @@ class SourceRefresher(Generic[T]):
         # loop against the source by construction, which is the thing this
         # class exists to make impossible.
         self.interval_seconds = max(MIN_INTERVAL_SECONDS, interval_seconds)
+        self.stale_after_seconds = (
+            max(
+                STALE_AFTER_INTERVALS * self.interval_seconds,
+                self.interval_seconds + STALE_GRACE_SECONDS,
+            )
+            if stale_after_seconds is None
+            else stale_after_seconds
+        )
         self._lock = threading.Lock()
         self._snapshot: SourceSnapshot[T] = _PENDING
         # Each thread gets its own stop flag, created in start(). A single
@@ -75,9 +110,41 @@ class SourceRefresher(Generic[T]):
         self._thread: threading.Thread | None = None
 
     def snapshot(self) -> SourceSnapshot[T]:
-        """The last published outcome. Never does I/O, never blocks on a read."""
+        """The last published outcome, exactly as it was published.
+
+        Never does I/O and never blocks on a read. Handlers should use
+        ``current()`` instead; this is the raw record, for the refresher's own
+        tests and for anything that needs to see through the staleness rule.
+        """
         with self._lock:
             return self._snapshot
+
+    def current(self) -> SourceSnapshot[T]:
+        """What a handler should serve: the last outcome, unless it is stale.
+
+        A success that stopped being refreshed becomes a failure carrying
+        ``SourceStale``, so the provider degrades to ``unavailable`` rather
+        than showing old numbers as current. ``value`` is dropped with it, so
+        there is no path by which a stale reading reaches the payload.
+
+        A *failure* is left alone: it is already ``unavailable``, and its own
+        error says more about what is wrong than its age does.
+        """
+        snapshot = self.snapshot()
+        if not snapshot.ok:
+            return snapshot
+        age = snapshot.age_seconds()
+        if age is None or age <= self.stale_after_seconds:
+            return snapshot
+        return SourceSnapshot(
+            ok=False,
+            value=None,
+            error=SourceStale(
+                f"last refresh was {age:.0f}s ago, over the "
+                f"{self.stale_after_seconds:.0f}s limit for this source"
+            ),
+            at=snapshot.at,
+        )
 
     def refresh_once(self) -> SourceSnapshot[T]:
         """Run one guarded fetch on the calling thread and publish the outcome.
