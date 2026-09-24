@@ -37,7 +37,11 @@ directories; it must not call upstream quota endpoints or read host tokens.
   passes through (`_provider_section()`), the payload schema that boundary
   enforces (`_percent`, `_iso`, `_text`), and the single strict serialization
   (`_payload_json()`) that `/api/usage`, the SSE frames and the template's
-  initial payload all share.
+  initial payload all share. It owns the `Host` allow-list
+  (`DASHBOARD_ALLOWED_HOSTS`) that decides which clients the dashboard answers
+  at all, too. Keep that check wrapped around the whole app, and pure ASGI:
+  per-route checks miss `/static`, and `BaseHTTPMiddleware` would buffer the SSE
+  stream.
 - `app/degrade.py` owns the fixed vocabulary the boundary reports failures with.
   `source_error` must always be one of those strings: never `str(exc)`, never a
   repr. It is served unauthenticated, and an exception raised while an upstream
@@ -55,7 +59,8 @@ directories; it must not call upstream quota endpoints or read host tokens.
 - `app/egress.py` is the allow-listing `CONNECT` proxy that is the dashboard
   container's only route out; `app/ingress.py` publishes the dashboard's port,
   because the dashboard sits on an internal-only network. Keep that container
-  off every non-internal network and free of `ports:`.
+  off every non-internal network and free of `ports:`, and keep the published
+  port on `DASHBOARD_BIND`, which defaults to loopback.
 - `app/static/app.js` is the single source of truth for gauge color calculation
   on both initial paint and SSE updates.
 - `tests/` contains automated coverage for parser tolerance, unavailable
