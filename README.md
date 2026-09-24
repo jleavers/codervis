@@ -90,12 +90,33 @@ Edit `.env`:
 | `CODEX_ENABLED` | First-visit browser widget default. | `true` |
 | `DASHBOARD_PORT` | Host port the dashboard listens on. | `8765` |
 | `REFRESH_INTERVAL_SECONDS` | How often the browser is pushed a fresh snapshot. | `5` |
-| `QUOTA_CACHE_TTL_SECONDS` | Server-side cache for the upstream calls. Keep ≥ refresh interval. | `30` |
-| `CLAUDE_ACTIVITY_CACHE_TTL_SECONDS` | Server-side cache for Claude local transcript timestamp scans. | `5` |
-| `CODEX_ACTIVITY_CACHE_TTL_SECONDS` | Server-side cache for Codex local activity metadata scans. | `5` |
+| `QUOTA_REFRESH_INTERVAL_SECONDS` | How often each provider's quota is fetched in the background. This alone decides how often your token is sent upstream — browsers and tabs do not add fetches. Keep ≥ refresh interval. Old name `QUOTA_CACHE_TTL_SECONDS` still works. | `30` |
+| `CLAUDE_ACTIVITY_REFRESH_INTERVAL_SECONDS` | How often Claude transcript timestamps are scanned. Old name `CLAUDE_ACTIVITY_CACHE_TTL_SECONDS` still works. | `5` |
+| `CODEX_ACTIVITY_REFRESH_INTERVAL_SECONDS` | How often Codex activity metadata is scanned. Old name `CODEX_ACTIVITY_CACHE_TTL_SECONDS` still works. | `5` |
+| `STARTUP_REFRESH_WAIT_SECONDS` | How long startup waits for the first refresh of every source, so the first page load shows real data. The app starts either way. | `2` |
 | `CLAUDE_AI_HOST` | Override the Claude host (rarely needed). Must be `https://`; add the host to `EGRESS_ALLOW`. | `https://claude.ai` |
 | `CHATGPT_HOST` | Override the Codex host (rarely needed). Must be `https://`; add the host to `EGRESS_ALLOW`. | `https://chatgpt.com` |
 | `EGRESS_ALLOW` | Extra hosts the egress proxy admits, comma- or space-separated. `host` means port 443, `host:port` names another, and `.example.com` admits the domain and everything under it. It extends the built-in `claude.ai` and `chatgpt.com`; it never replaces them. | empty |
+
+#### Read budgets
+
+Everything that feeds the payload is written by someone else: the vendor's
+response body, whatever an operator's `CLAUDE_AI_HOST`/`CHATGPT_HOST` points
+at, and whatever writes under `~/.claude`. Each of those reads therefore has a
+deadline and a byte cap. Exceeding one degrades that source to `unavailable`
+in the UI until its next refresh; nothing grows without bound, and no other
+route is affected. The shipped values suit the real endpoints, and a value
+that cannot be parsed is ignored in favour of the default.
+
+| Variable | What it does | Default |
+| --- | --- | --- |
+| `QUOTA_TIMEOUT_SECONDS` | urllib's timeout, per socket operation. | `8` |
+| `QUOTA_TOTAL_DEADLINE_SECONDS` | Deadline across a whole quota fetch, including both of Codex's candidate paths. This is what bounds a sender that trickles bytes forever, which the per-operation timeout cannot. | `10` |
+| `QUOTA_MAX_RESPONSE_BYTES` | Most an upstream usage response may be. | `1048576` |
+| `ACTIVITY_SCAN_DEADLINE_SECONDS` | Deadline across a whole local activity scan. A scan that runs out reports what it found and catches up next time. | `5` |
+| `ACTIVITY_MAX_LINE_BYTES` | Most one transcript record may be. A longer one is skipped; the rest of the file is still read. | `1048576` |
+| `ACTIVITY_MAX_FILE_BYTES` | Most that is read from one transcript file. | `16777216` |
+| `ACTIVITY_MAX_FILES` | Most files one activity scan walks. | `20000` |
 
 ### Windows note
 

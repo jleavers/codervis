@@ -22,7 +22,7 @@ docker compose down
 curl http://localhost:8765/healthz
 curl http://localhost:8765/api/usage
 python -m pytest
-python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/egress.py app/ingress.py
+python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/refresh.py app/budget.py app/egress.py app/ingress.py
 docker compose exec codervis python -m app.egress check
 ```
 
@@ -32,14 +32,29 @@ directories; it must not call upstream quota endpoints or read host tokens.
 
 ## Implementation Notes
 
-- `app/main.py` owns the FastAPI routes, SSE stream, and payload assembly.
+- `app/main.py` owns the FastAPI routes, SSE stream, and payload assembly, and
+  the lifespan that starts one refresher per source. `_build_payload()` does no
+  I/O: it reads the last published snapshot. Never call a quota client or an
+  activity reader from a request handler — the refresher's cadence is the only
+  thing that bounds how often a credential is read or a token is sent upstream.
+- `app/refresh.py` owns `SourceRefresher`: one daemon thread per source, a
+  fixed cadence, and a published snapshot that records failure as well as
+  success. `refresh_once()` must keep catching `Exception` whole; an escape
+  would kill the worker and freeze that source.
+- `app/budget.py` owns the deadline and byte cap every payload-feeding read
+  runs under — `read_capped()` for upstream bodies, `bounded_lines()` for
+  transcript records. Any new read of something someone else writes gets the
+  same treatment.
 - `app/quota.py` owns the Claude live client and must convert any upstream,
-  auth, parse, or file-read failure into `LiveQuotaError`.
+  auth, parse, or file-read failure into `LiveQuotaError`, including a
+  `BudgetExceeded` from a body that is too large or too slow.
 - `app/claude_activity.py` owns Claude last-activity reporting. It should read
   only project transcript timestamps, must not read `.credentials.json`, and
   must not compute quota or fallback usage statistics.
 - `app/codex_quota.py` owns the Codex live client and must convert any failure
-  into `CodexLiveQuotaError` so the UI can show `source: "unavailable"`.
+  into `CodexLiveQuotaError` so the UI can show `source: "unavailable"`. One
+  deadline spans both candidate paths; do not give the second attempt a fresh
+  timeout.
 - `app/codex_activity.py` owns Codex last-activity reporting. It should derive
   timestamps from safe file metadata only and must not read `auth.json` or
   session contents.
@@ -50,12 +65,17 @@ directories; it must not call upstream quota endpoints or read host tokens.
 - `app/static/app.js` is the single source of truth for gauge color calculation
   on both initial paint and SSE updates.
 - `tests/` contains automated coverage for parser tolerance, unavailable
-  states, disabled Codex state, and safe activity-reader boundaries.
+  states, disabled Codex state, safe activity-reader boundaries, and — in
+  `tests/test_payload_budget.py` — the read budgets, the refresher, and the
+  property that SSE frames cause no upstream calls. Add cases there when you
+  change what a read is allowed to cost.
 
 ## Safety Rules
 
 - Never log or print OAuth tokens from `.credentials.json`, `auth.json`, `.env`,
-  debug captures, or Docker output.
+  debug captures, or Docker output. `source_error` is served unauthenticated:
+  surface a client's own error type, but name any other exception by type
+  only, because one raised while a request is built can quote the header.
 - Preserve read-only bind mounts for `/data/claude` and `/data/codex`.
 - Preserve the egress bound: the `codervis` service joins internal networks
   only, and `DEFAULT_ALLOW` in `app/egress.py` names only hosts the live

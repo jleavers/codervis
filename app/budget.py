@@ -101,9 +101,14 @@ def bounded_lines(
             del buf[: nl + 1]
             if skipping:
                 skipping = False  # the tail of a record already given up on
-            else:
+            elif len(record) <= max_line_bytes:
                 yield record
+            # else: a complete record over the cap. Dropped here as well as
+            # below, because a chunk can contain one whole -- the pending-buffer
+            # check alone would let anything shorter than a chunk straight past.
         if len(buf) > max_line_bytes:
+            # A record still arriving that is already over the cap: give up on
+            # it now, and skip to the next newline rather than keep building.
             buf.clear()
             skipping = True
     if buf and not skipping:
