@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
+from .activity_gate import STAT, ActivityGate, PathRefused, WalkBudget
 from .budget import env_float, env_int
 
 
@@ -23,13 +24,21 @@ class CodexActivitySnapshot:
 class CodexActivityReader:
     """Derives Codex's local last-activity timestamp from safe file metadata.
 
-    This intentionally stats known activity/session files instead of reading
-    their contents, and it never touches auth.json.
+    What "safe" means is not this docstring: it is ``self.gate``, an
+    ``ActivityGate`` constructed with ``ACTIVITY_FILES``, ``ACTIVITY_DIRS`` and
+    the ``STAT`` operation alone, and this reader reaches the filesystem
+    through nothing else. So auth.json is not stat-able here because it is not
+    on the allow-list, session *contents* are not readable here because this
+    reader was never granted ``READ``, and a link planted under the data root
+    -- ``sessions/x.jsonl`` pointing at the Claude credential file, or an
+    ``archived_sessions`` that is itself a link -- is refused rather than
+    followed. ``tests/test_activity_readers.py`` asserts that on the gate's own
+    record of what it admitted, which is what makes a regression visible.
 
     No content is read, so there is no byte budget to set here; what is
     unbounded is the *walk*, over a tree someone else fills. ``max_files`` and
-    ``scan_deadline_seconds`` bound it, and a truncated walk reports the
-    timestamps already found.
+    ``scan_deadline_seconds`` bound it through one ``WalkBudget`` shared by
+    both subtrees, and a truncated walk reports the timestamps already found.
 
     There is no TTL here any more: the refresher in ``app.main`` owns how often
     this runs, and caches a failure as well as a success.
@@ -44,18 +53,28 @@ class CodexActivityReader:
         self.data_dir = Path(data_dir)
         self.scan_deadline_seconds = scan_deadline_seconds
         self.max_files = max_files
+        self.gate = ActivityGate(
+            self.data_dir,
+            files=ACTIVITY_FILES,
+            trees=ACTIVITY_DIRS,
+            operations={STAT},
+        )
 
     def snapshot(self) -> CodexActivitySnapshot:
         """One bounded scan. Called only from this source's refresher."""
         return self._scan()
 
     def _scan(self) -> CodexActivitySnapshot:
-        deadline = time.monotonic() + self.scan_deadline_seconds
-        data_root_exists = self.data_dir.exists()
+        self.gate.start_scan()
+        budget = WalkBudget(
+            max_entries=self.max_files,
+            deadline=time.monotonic() + self.scan_deadline_seconds,
+        )
+        data_root_exists = self.gate.root_exists()
         last_activity: datetime | None = None
         if data_root_exists:
-            for path in self._activity_paths(deadline):
-                dt = _mtime(path)
+            for st in self._activity_stats(budget):
+                dt = _mtime(st)
                 if dt is not None and (last_activity is None or dt > last_activity):
                     last_activity = dt
         return CodexActivitySnapshot(
@@ -63,34 +82,28 @@ class CodexActivityReader:
             data_root_exists=data_root_exists,
         )
 
-    def _activity_paths(self, deadline: float) -> Iterator[Path]:
-        for name in ACTIVITY_FILES:
-            path = self.data_dir / name
-            if path.is_file():
-                yield path
+    def _activity_stats(self, budget: WalkBudget) -> Iterator[os.stat_result]:
+        """Metadata for every path the gate admits, and for nothing else.
 
-        # The budget is spent on every entry the walk *touches*, not on every
-        # entry it yields: rglob("*") stats each one, so a tree of directories
-        # with no files in it would otherwise cost the whole walk for free.
-        seen = 0
-        for name in ACTIVITY_DIRS:
-            root = self.data_dir / name
-            if not root.is_dir():
-                continue
+        The allow-list is read off the gate rather than restated here: there is
+        one place that decides what this reader may reach.
+        """
+        for name in self.gate.files:
             try:
-                for path in root.rglob("*"):
-                    seen += 1
-                    if seen > self.max_files or time.monotonic() >= deadline:
-                        return
-                    if path.is_file():
-                        yield path
-            except OSError:
+                yield self.gate.stat(self.gate.root / name)
+            except PathRefused:
                 continue
+        for tree in self.gate.trees:
+            for path in self.gate.walk(tree, budget):
+                try:
+                    yield self.gate.stat(path)
+                except PathRefused:
+                    continue
 
 
-def _mtime(path: Path) -> datetime | None:
+def _mtime(st: os.stat_result) -> datetime | None:
     try:
-        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        return datetime.fromtimestamp(st.st_mtime, tz=timezone.utc)
     except (OSError, OverflowError, ValueError):
         return None
 

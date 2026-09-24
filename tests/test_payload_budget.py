@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import os
 import threading
 import time
 import tracemalloc
@@ -805,7 +806,32 @@ def test_a_credentials_file_inside_the_cap_still_works(tmp_path, monkeypatch) ->
 # ------------------------------------------------------- walk budgets
 
 
-def test_codex_walk_is_bounded_by_entries_touched_not_files_yielded(tmp_path) -> None:
+def _counting_scandir(walked: list):
+    """`os.scandir` that records each entry it hands out, still a context manager."""
+    real_scandir = os.scandir
+
+    class _Counting:
+        def __init__(self, it):
+            self._it = it
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._it.close()
+            return False
+
+        def __iter__(self):
+            for entry in self._it:
+                walked.append(entry.path)
+                yield entry
+
+    return lambda *args, **kwargs: _Counting(real_scandir(*args, **kwargs))
+
+
+def test_codex_walk_is_bounded_by_entries_touched_not_files_yielded(
+    tmp_path, monkeypatch
+) -> None:
     """A tree of directories used to cost the whole walk for free."""
     sessions = tmp_path / "sessions"
     for i in range(200):
@@ -813,19 +839,33 @@ def test_codex_walk_is_bounded_by_entries_touched_not_files_yielded(tmp_path) ->
 
     reader = CodexActivityReader(tmp_path, scan_deadline_seconds=30.0, max_files=5)
     walked: list[object] = []
-    real_rglob = type(sessions).rglob
+    # The gate walks with scandir, because rglob follows a symlinked directory
+    # out of the tree. Counting entries is still counting what the walk cost.
+    monkeypatch.setattr(os, "scandir", _counting_scandir(walked))
+    reader.snapshot()
+    monkeypatch.undo()
 
-    def counting_rglob(self, pattern):
-        for path in real_rglob(self, pattern):
-            walked.append(path)
-            yield path
+    assert len(walked) <= 6, f"walked {len(walked)} entries with max_files=5"
 
-    original = type(sessions).rglob
-    type(sessions).rglob = counting_rglob
-    try:
-        reader.snapshot()
-    finally:
-        type(sessions).rglob = original
+
+def test_claude_walk_is_bounded_by_entries_touched_too(tmp_path, monkeypatch) -> None:
+    """The gate charges both readers the same way: per entry it had to look at.
+
+    Claude's walk used to count matches, on the grounds that rglob("*.jsonl")
+    filtered by name without statting. A walk that refuses to follow a link has
+    to look at every entry to know it is skipping one, so the budget is spent
+    on entries again -- which is the stricter of the two.
+    """
+    project = tmp_path / "projects" / "demo"
+    project.mkdir(parents=True)
+    for i in range(200):
+        (project / f"{i}.txt").write_text("x", encoding="utf-8")
+
+    reader = ClaudeActivityReader(tmp_path, scan_deadline_seconds=30.0, max_files=5)
+    walked: list[object] = []
+    monkeypatch.setattr(os, "scandir", _counting_scandir(walked))
+    reader.snapshot()
+    monkeypatch.undo()
 
     assert len(walked) <= 6, f"walked {len(walked)} entries with max_files=5"
 

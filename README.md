@@ -45,7 +45,10 @@ container restarts, and do not affect other browsers.
 If a live endpoint is unreachable for any reason (expired token, network
 down, or the vendor changes the API), that panel renders an "unavailable"
 state. codervis does not estimate quota usage from local transcripts; it only
-reads timestamp/metadata to show each agent's local last activity.
+reads timestamp/metadata to show each agent's local last activity. Each
+reader reaches the filesystem only through `app/activity_gate.py`, which admits
+regular files inside that reader's own allow-listed subtrees and follows no
+link out of them.
 
 ### Caveats
 
@@ -69,6 +72,14 @@ reads timestamp/metadata to show each agent's local last activity.
   and refreshes `~/.claude/.credentials.json`, and the card reads `unavailable`
   with `upstream rejected the stored credential`. Open Claude Code from a
   terminal on the host, then wait for the next dashboard refresh.
+- **A hard-linked data directory reads as no activity.** The activity readers
+  refuse any file with more than one name, because a second name inside the
+  allow-list can be a file outside it and nothing on the path shows which.
+  If a snapshot or deduplication tool (`rsnapshot`, `rsync --link-dest`,
+  `cp -al`, `jdupes -L`, `rdfind`) has hard-linked the files under `~/.claude`
+  or `~/.codex`, that provider's footer reads "no recent activity" however
+  recently you used it. Quota gauges are unaffected. `find ~/.claude/projects
+  -type f -links +1` lists what is being skipped.
 - Read-only bind mounts: codervis never writes to `~/.claude` or `~/.codex`.
 - The `*_ENABLED` variables only choose the initial toggle state for a browser
   with no saved preference. All provider clients are still constructed and
@@ -137,7 +148,7 @@ ignored in favour of the default.
 | `ACTIVITY_SCAN_DEADLINE_SECONDS` | Deadline across a whole local activity scan. A scan that runs out reports what it found and catches up next time. | `5` |
 | `ACTIVITY_MAX_LINE_BYTES` | Most one transcript record may be. A longer one is skipped; the rest of the file is still read. | `1048576` |
 | `ACTIVITY_MAX_FILE_BYTES` | Most that is read from one transcript file. | `16777216` |
-| `ACTIVITY_MAX_FILES` | Most files one activity scan walks. | `20000` |
+| `ACTIVITY_MAX_FILES` | Most directory entries one activity scan walks. Charged per entry looked at, not per file used. | `20000` |
 
 ### Windows note
 
@@ -215,7 +226,7 @@ Install development dependencies, then run the suite:
 ```bash
 python -m pip install -r requirements-dev.txt
 python -m pytest
-python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/refresh.py app/budget.py app/egress.py app/ingress.py
+python -m py_compile app/main.py app/quota.py app/activity_gate.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/refresh.py app/budget.py app/egress.py app/ingress.py
 ```
 
 The tests use temporary directories and stubbed upstream clients. They do not
@@ -253,6 +264,7 @@ browser-disabled cards are dimmed.
 │   ├── main.py          # FastAPI app + SSE stream + the payload boundary
 │   ├── degrade.py       # The fixed vocabulary the boundary reports failures with
 │   ├── quota.py         # Claude live client → claude.ai/api/oauth/usage
+│   ├── activity_gate.py # The one gate both activity readers reach the filesystem through
 │   ├── claude_activity.py # Claude local activity timestamp reader
 │   ├── codex_quota.py   # Codex live client → chatgpt.com/backend-api/wham/usage
 │   ├── codex_activity.py # Codex local activity metadata reader

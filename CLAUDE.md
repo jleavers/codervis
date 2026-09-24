@@ -122,12 +122,15 @@ Live-only by design:
   quota usage locally.
 - **`app/claude_activity.py`** — `ClaudeActivityReader` reports Claude
   `last_activity` from timestamp fields in local project transcript files.
-  It does not read `.credentials.json`, inspect usage fields, or influence
-  quota. It reads transcripts in binary through `bounded_lines()`, under a
+  It does not inspect usage fields or influence quota. That it does not read
+  `.credentials.json` is enforced by `app/activity_gate.py` (see "The activity
+  readers' access gate" below), not by this reader's own care: its gate admits
+  the `projects` subtree only, for `stat` and `read`.
+  It reads transcripts in binary through `bounded_lines()`, under a
   per-record cap, a per-file cap and a whole-scan deadline, because anything
-  that can write under `~/.claude/projects` — including through a symlink —
-  chooses what it reads. Its per-file `(mtime, size)` cache is not a TTL and
-  stays; it is what keeps a steady-state scan cheap.
+  that can write under `~/.claude/projects` chooses what it reads. Its per-file
+  `(mtime, size)` cache is not a TTL and stays; it is what keeps a steady-state
+  scan cheap.
 
 ### Codex (`app/main.py:_codex_section()`)
 
@@ -156,8 +159,10 @@ Live-only by design.
 - **`app/codex_activity.py`** — `CodexActivityReader` reports Codex
   `last_activity` from safe local file metadata only: `history.jsonl`,
   `session_index.jsonl`, and files under `sessions/` and
-  `archived_sessions/`. It does not read `auth.json` or session contents,
-  and it does not influence quota.
+  `archived_sessions/`. That list is its gate's allow-list
+  (`app/activity_gate.py`, below), and the gate grants it `stat` alone, so
+  `auth.json` and session *contents* are out of its reach rather than merely
+  out of its habits. It does not influence quota.
 
 `CLAUDE_ENABLED` and `CODEX_ENABLED` are first-visit browser defaults only.
 All live clients are constructed unconditionally. Browser-local choices live
@@ -174,6 +179,44 @@ validation, effective source state, and global status. The frontend
 both initial payloads and SSE messages. The SSE loop is in `main.py:stream()`;
 relative-time labels stay live between server pushes via a 1-second
 `setInterval`.
+
+### The activity readers' access gate
+
+`app/activity_gate.py` owns *what* an activity reader may reach, and is the
+only way either reader reaches the filesystem. TB-ACTIVITY used to be prose
+here and in two docstrings, which is not an enforcement point: a link planted
+under a data root — `sessions/x.jsonl -> ../../claude/.credentials.json` —
+resolved inside the container, where the two trees are sibling mounts read by
+one process, and the Codex reader published that file's mtime as
+`codex.last_activity`. Each reader now holds one `ActivityGate` that owns:
+
+- **the allow-list**: the named files and the subtrees of *that reader's own*
+  data root it may reach — Claude `projects/`, Codex `history.jsonl`,
+  `session_index.jsonl`, `sessions/`, `archived_sessions/`;
+- **the operation**: `STAT` for Codex, `STAT | READ` for Claude. An operation
+  a reader was not granted is refused on an allow-listed path too;
+- **the no-link rule**: every component below the root is checked with `lstat`
+  and a read `open`s with `O_NOFOLLOW`, so a symbolic link is never followed
+  out of the tree and a symlinked subtree root is no longer an existence
+  oracle; a file with more than one name is refused too, since a hard link is
+  the same escape with nothing to see on the path. The root itself may be a
+  link; it is the operator's own configuration. The module docstring says
+  which race `O_NOFOLLOW` does and does not cover.
+
+The hard-link rule has one operator-visible cost, and it is in README's
+Caveats: a data root whose files have been hard-linked by a snapshot or
+deduplication tool reports no activity, because every name in it is a second
+name. Refusing is the right default — the gate cannot tell which of two names
+is the one inside the tree — but it is indistinguishable from "no activity",
+so it belongs in the docs rather than in a surprised operator's inbox.
+
+The gate records what it admitted and what it refused, per scan.
+**That record is the test suite's only way to see a regression**: a reader
+that opens credential files returns the same timestamp as one that does not,
+so `tests/test_activity_readers.py` asserts the touched set and the
+operations, and watches the process's own filesystem calls to check nothing
+went round the gate. Assert on the record there, never on the timestamp alone,
+and keep new reader I/O going through the gate.
 
 ## Network boundary
 
@@ -265,7 +308,7 @@ curl http://localhost:8765/api/usage
 # Automated tests
 python -m pip install -r requirements-dev.txt
 python -m pytest
-python -m py_compile app/main.py app/quota.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/refresh.py app/budget.py app/egress.py app/ingress.py
+python -m py_compile app/main.py app/quota.py app/activity_gate.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/refresh.py app/budget.py app/egress.py app/ingress.py
 
 # Egress bound, from inside the running dashboard container
 docker compose exec codervis python -m app.egress check
