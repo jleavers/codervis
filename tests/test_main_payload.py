@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from app import main
+from app import degrade, main
 from app.claude_activity import ClaudeActivitySnapshot
 from app.codex_activity import CodexActivitySnapshot
 
@@ -239,12 +240,17 @@ def test_payload_contains_unavailable_states_on_live_errors(monkeypatch) -> None
     data = main._build_payload()
 
     assert data["claude"]["source"] == "unavailable"
-    assert data["claude"]["source_error"] == "claude upstream changed"
+    # source_error comes from the fixed vocabulary, never from the exception:
+    # it is served unauthenticated, and an exception raised while the request
+    # was being built carries the bearer token.
+    assert data["claude"]["source_error"] == degrade.MESSAGES[degrade.UNCLASSIFIED]
+    assert "claude upstream changed" not in data["claude"]["source_error"]
     assert _win(data["claude"], "five_hour")["percent"] is None
     assert _win(data["claude"], "seven_day")["percent"] is None
     assert _win(data["claude"], "seven_day_fable")["percent"] is None
     assert data["codex"]["source"] == "unavailable"
-    assert data["codex"]["source_error"] == "codex upstream changed"
+    assert data["codex"]["source_error"] == degrade.MESSAGES[degrade.UNCLASSIFIED]
+    assert "codex upstream changed" not in data["codex"]["source_error"]
     assert [window["name"] for window in data["codex"]["windows"]] == [
         "five_hour",
         "seven_day",
@@ -352,3 +358,77 @@ def test_index_renders_accessible_widget_toggles(monkeypatch) -> None:
     assert 'data-widget-enabled="false"' in codex_card
     assert html.index("/static/widget-state.js") < html.index("/static/app.js")
     assert "window.__INITIAL_PAYLOAD__" in html
+
+
+def test_api_usage_serves_the_strict_serialization(monkeypatch) -> None:
+    payload = {
+        "claude": {
+            "enabled": True,
+            "windows": [],
+            "source": "live",
+            "source_error": None,
+            "subscription_type": "max",
+            "last_activity": None,
+            "data_root_exists": True,
+        },
+        "codex": {
+            "enabled": True,
+            "windows": [],
+            "source": "unavailable",
+            "source_error": degrade.MESSAGES[degrade.TRANSPORT],
+            "subscription_type": None,
+            "last_activity": None,
+            "data_root_exists": True,
+        },
+        "server_time": "2026-06-08T00:00:00+00:00",
+    }
+    monkeypatch.setattr(main, "_build_payload", lambda: payload)
+
+    response = loopback_client().get("/api/usage")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.text == main._payload_json(payload)
+    assert response.json() == payload
+
+
+def test_index_embeds_the_same_serialization_it_renders(monkeypatch) -> None:
+    payload = {
+        "claude": {
+            "enabled": True,
+            "windows": [
+                {
+                    "name": "five_hour",
+                    "label": "5-Hour Window",
+                    "percent": 12.5,
+                    "resets_at": None,
+                    "detail": None,
+                }
+            ],
+            "source": "live",
+            "source_error": None,
+            "subscription_type": "max",
+            "last_activity": None,
+            "data_root_exists": True,
+        },
+        "codex": {
+            "enabled": False,
+            "windows": [],
+            "source": "unavailable",
+            "source_error": degrade.MESSAGES[degrade.SHAPE],
+            # A plan name that would end the <script> block if it were embedded
+            # unescaped.
+            "subscription_type": "</script><script>alert(1)</script>",
+            "last_activity": None,
+            "data_root_exists": False,
+        },
+        "server_time": "2026-06-08T00:00:00+00:00",
+    }
+    monkeypatch.setattr(main, "_build_payload", lambda: payload)
+
+    html = loopback_client().get("/").text
+
+    serialized = main._payload_json(payload)
+    assert f"window.__INITIAL_PAYLOAD__ = {main._payload_script_json(serialized)};" in html
+    assert "<script>alert(1)</script>" not in html
+    assert json.loads(main._payload_script_json(serialized)) == payload

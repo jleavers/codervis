@@ -18,6 +18,30 @@ User-facing setup, env vars, and troubleshooting live in `README.md`.
 The JSON payload is keyed by provider — `claude` and `codex` — assembled in
 `app/main.py:_build_payload()` from two independent sections.
 
+**One boundary, one schema, one serialization.** `app/main.py` holds the only
+place a provider section is built: `_provider_section()` treats the quota
+clients and the activity readers as untrusted, catches everything they raise,
+and checks everything they return against the schema declared above it
+(`_percent`, `_iso`, `_text` — a percentage is a finite float in 0–100 or null,
+a date is in range or null, a string is bounded and printable or null). A part
+that fails becomes that part's own degraded state, never an exception and never
+an out-of-schema value. `_payload_json()` then serializes the payload once with
+`allow_nan=False`, and `/api/usage`, the SSE frames and the template's
+`__INITIAL_PAYLOAD__` all serve that one string. The boundary logs one line per
+degraded source — the classification and the exception's type name, never its
+message and never a traceback — and only when that classification changes, since
+a browser asks for a fresh payload every few seconds. A failed activity read is
+logged under its own `activity` classification; that one is never served, since
+a failed activity read simply leaves `last_activity` null.
+
+**`source_error` comes from the fixed vocabulary in `app/degrade.py` and from
+nowhere else** — never `str(exc)`, never a repr. It is served unauthenticated,
+and an exception raised while an upstream request is being built carries the
+bearer token, so an exception's own text must not reach the payload or the log.
+The live clients tag each failure they raise with one of `degrade`'s codes; the
+boundary maps the code to its message, and an untagged or unknown code reports
+the generic one.
+
 Each section exposes a `windows` list (rather than fixed `five_hour` /
 `seven_day` keys) so providers can report differently-shaped quota windows.
 Each window dict is `{name, label, percent, resets_at, detail}` — `name` is
@@ -43,10 +67,11 @@ Live-only by design:
   (Fable)”) slot so initial unavailable/missing data can recover through SSE.
   A missing or malformed optional Fable entry produces `percent: null` only
   for that gauge and does not make the Claude section unavailable.
-- On any failure (`LiveQuotaError`) the section returns
-  `source: "unavailable"` with `percent: null` for all three gauges and the
-  error string surfaced to the UI. The app does not estimate quota usage
-  locally.
+- On any failure the section returns `source: "unavailable"` with
+  `percent: null` for all three gauges and a fixed-vocabulary message surfaced
+  to the UI. `LiveQuotaError` is the failure the client declares, but the
+  boundary contains anything else it raises too. The app does not estimate
+  quota usage locally.
 - **`app/claude_activity.py`** — `ClaudeActivityReader` reports Claude
   `last_activity` from timestamp fields in local project transcript files.
   It does not read `.credentials.json`, inspect usage fields, or influence
@@ -72,9 +97,9 @@ Live-only by design.
   `remaining_percent` is present.
 - `_codex_section()` emits stable `five_hour` ("5-Hour Window") and `seven_day`
   ("Weekly Window") gauges. An omitted upstream window remains live with
-  `percent: null`; failures
-  (`CodexLiveQuotaError`) return `source: "unavailable"` with `percent: null`
-  for both gauges and surface the error in the UI. The frontend never
+  `percent: null`; failures (`CodexLiveQuotaError`, or anything else the client
+  raises) return `source: "unavailable"` with `percent: null` for both gauges
+  and surface a fixed-vocabulary message in the UI. The frontend never
   synthesizes fake numbers.
 - **`app/codex_activity.py`** — `CodexActivityReader` reports Codex
   `last_activity` from safe local file metadata only: `history.jsonl`,
@@ -156,7 +181,16 @@ to degrade visibly.
 - in `codex_quota.py`, preserve the "any failure →
   `CodexLiveQuotaError` → `unavailable` state" contract — and keep
   field-name parsing tolerant (`_pick()` / the cascading checks in
-  `_window()`).
+  `_window()`);
+- keep the two clients' `_float_field` in step with each other. Both reject
+  booleans, non-finite values and unrepresentable integers. They are tolerant
+  parsing, not the enforcing boundary: the boundary in `app/main.py` is what
+  guarantees the payload schema, and `tests/test_payload_contract.py` runs both
+  clients through the same matrix of transport faults, hostile bodies and
+  hostile credential files. A case added there must run for both providers. The
+  only exception is a case naming a shape one provider cannot have, which must
+  skip explicitly for the other so the gap is visible in the test report rather
+  than quietly testing a single client, which is how Codex drifted.
 
 ## Commands
 
@@ -203,6 +237,6 @@ files or call the live undocumented quota endpoints.
   `app/static/app.js:colorFor()` as HSL — hue glides 90° → 45° at 60%,
   then 45° → 5° to 100%. Initial payload and SSE-driven updates both go
   through this function, so keep them in sync if you change the curve.
-- Percentage values exposed to the frontend are floats 0–100. Claude/Codex
-  live APIs already report that scale. Never multiply already-normalized
-  utilization values by 100.
+- Percentage values exposed to the frontend are floats 0–100, enforced by
+  `_percent()` in `app/main.py`. Claude/Codex live APIs already report that
+  scale. Never multiply already-normalized utilization values by 100.

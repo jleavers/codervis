@@ -80,7 +80,8 @@
   </main>
 
   <script>
-    window.__INITIAL_PAYLOAD__ = {{ data | tojson }};
+    // The same strict serialization /api/usage and the SSE frames serve.
+    window.__INITIAL_PAYLOAD__ = {{ payload_json | safe }};
   </script>
   <script src="/static/widget-state.js"></script>
   <script src="/static/app.js"></script>
