@@ -1,7 +1,9 @@
 .git
 .gitignore
-__pycache__
-*.pyc
+# Any depth, not just the context root: `COPY app ./app` would otherwise ship
+# app/__pycache__, i.e. bytecode from whatever the build host last ran.
+**/__pycache__
+**/*.pyc
 .venv
 .env
 .idea
