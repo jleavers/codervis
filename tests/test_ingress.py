@@ -7,12 +7,22 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import inspect
 import socket
 import time
 
 import pytest
 
-from app.ingress import MAX_CONNECTIONS, MAX_REQUEST_HEAD_BYTES, Relay, parse_target, serve
+from app import ingress
+from app.ingress import (
+    CONNECT_TIMEOUT_S,
+    MAX_CONNECTIONS,
+    MAX_REQUEST_HEAD_BYTES,
+    REQUEST_TIMEOUT_S,
+    Relay,
+    parse_target,
+    serve,
+)
 
 HEAD = b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"
 
@@ -189,6 +199,111 @@ async def test_a_request_head_that_never_ends_is_bounded() -> None:
     assert answer.startswith(b"HTTP/1.1 431 ")
     server.close()
     await target.stop()
+
+
+@asynctest
+async def test_the_port_the_dashboard_is_published_on_carries_the_head_cap_too() -> None:
+    """The bound has to be armed by `serve()`, which is the only thing production calls.
+
+    Every other test here builds its own server, and `_relay` passes the cap in itself, so
+    `serve()` could stop arming it -- leaving the published port on asyncio's own default --
+    with the whole suite green (#46). The flood is sized off the literal bound rather than the
+    constant, so raising the constant is caught here as well.
+    """
+    target = _Target()
+    await target.start()
+    server = await serve("127.0.0.1", target.port, bind="127.0.0.1", port=0)
+    port = server.sockets[0].getsockname()[1]
+    # Just over 16 KiB, as above: small enough to fit the socket buffers, so the answer is not
+    # lost to the reset that closing on unread input sends.
+    flood = b"GET / HTTP/1.1\r\n" + b"X: y\r\n" * (16 * 1024 // 6 + 16)
+
+    def first_answer() -> bytes:
+        with socket.create_connection(("127.0.0.1", port), 5) as sock:
+            sock.settimeout(5)
+            sock.sendall(flood)
+            return sock.recv(4096)
+
+    try:
+        answer = await asyncio.to_thread(first_answer)
+    except TimeoutError:
+        # Without the cap the head fits asyncio's own larger default, so nothing answers until
+        # the head deadline does. Named here, because a bare "timed out" says nothing.
+        pytest.fail("no answer: an oversized head is only a prompt 431 while the cap is armed")
+    assert answer.startswith(b"HTTP/1.1 431 ")
+    server.close()
+    await target.stop()
+
+
+@asynctest
+async def test_serve_leaves_the_relay_on_those_bounds(monkeypatch) -> None:
+    """The other half of arming them: the values above are only a bound if `serve()` takes them.
+
+    The head cap is armed on the listening socket, and the test above that. The other three live
+    on the relay, where `serve()` passing its own would override them silently -- the whole suite
+    would stay green, because every other test here builds its `Relay` itself. So this watches
+    what `serve()` hands the relay, rather than reaching into the relay for what it holds: an
+    override is allowed only where it is the documented value anyway.
+    """
+    handed: list[dict[str, object]] = []
+    documented = {
+        "connect_timeout_s": CONNECT_TIMEOUT_S,
+        "request_timeout_s": REQUEST_TIMEOUT_S,
+        "max_connections": MAX_CONNECTIONS,
+    }
+
+    class Recording(Relay):
+        def __init__(self, host: str, port: int, **kwargs: object) -> None:
+            handed.append(kwargs)
+            super().__init__(host, port, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ingress, "Relay", Recording)
+    server = await serve("127.0.0.1", 9, bind="127.0.0.1", port=0)
+    try:
+        (overrides,) = handed
+        assert set(overrides) <= set(documented), (
+            f"serve() hands the relay a bound no test reads: {set(overrides) - set(documented)}"
+        )
+        widened = {
+            name: overrides[name]
+            for name, value in documented.items()
+            if name in overrides and overrides[name] != value
+        }
+        assert not widened, (
+            f"serve() handed the relay bounds other than the documented ones: {widened}"
+        )
+    finally:
+        server.close()
+
+
+def test_the_front_doors_bounds_are_the_ones_it_documents() -> None:
+    """The values, because none of the tests above reads a default of its own accord.
+
+    They each pass the bound they exercise in, and the flood test sizes its flood off
+    `MAX_REQUEST_HEAD_BYTES`, so a cap raised to 16 MiB or a deadline raised to ten minutes
+    was invisible to the whole suite (#46). These are the numbers `README.md` and `CLAUDE.md`
+    describe -- a complete head at most 16 KiB, within 10 s, and at most 256 connections; the
+    16 KiB is `CLAUDE.md`'s, and README repeats the other two -- so widening one is a change made
+    here and in those documents, on purpose. `CONNECT_TIMEOUT_S`
+    is the fourth and no shipped document states it: it bounds the relay's own dial to the
+    dashboard rather than anything a peer can do, and it is pinned here alone. The values rather
+    than only the wiring: a default that still reads its constant says nothing about what that
+    constant became.
+    """
+    assert (
+        MAX_REQUEST_HEAD_BYTES,
+        REQUEST_TIMEOUT_S,
+        CONNECT_TIMEOUT_S,
+        MAX_CONNECTIONS,
+    ) == (16 * 1024, 10.0, 10.0, 256)
+    # And a relay built the way `serve()` builds one gets them, rather than a default that has
+    # drifted away from the constant beside it.
+    defaults = {
+        name: parameter.default for name, parameter in inspect.signature(Relay).parameters.items()
+    }
+    assert defaults["connect_timeout_s"] == CONNECT_TIMEOUT_S
+    assert defaults["request_timeout_s"] == REQUEST_TIMEOUT_S
+    assert defaults["max_connections"] == MAX_CONNECTIONS
 
 
 @asynctest

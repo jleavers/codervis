@@ -8,6 +8,7 @@ reach today but which the next reader would.
 from __future__ import annotations
 
 import os
+import threading
 import time
 import traceback
 
@@ -92,22 +93,97 @@ def test_a_linked_directory_between_the_root_and_the_file_is_refused(
         gate.stat(tmp_path / "sessions" / "linked" / "a.jsonl")
 
 
-def test_the_open_refuses_a_link_even_if_admission_were_passed(
-    gate, tmp_path, monkeypatch
-) -> None:
-    """O_NOFOLLOW is the check that survives the gap after the lstat.
+def _open_off_the_main_thread(
+    gate: ActivityGate, path, timeout: float = 5.0
+) -> BaseException | None:
+    """`open_bytes(path)` on a thread this test stops waiting for.
 
-    A file swapped for a link between the two is the race the lstat alone
-    cannot see, so admission is stubbed out here to leave only the `open`.
+    An `open` that blocks is the failure one of these rules prevents, and a
+    blocking call made from the test body would hang the suite rather than fail
+    it -- which is the same thing as not testing the rule at all. So the call
+    runs on a daemon thread, and a thread still alive when the wait is over is
+    the refusal not having been prompt.
+
+    Returns what the call raised, or ``None`` if it opened the file.
     """
-    target = tmp_path / "auth.json"
-    link = tmp_path / "sessions" / "swapped.jsonl"
-    link.symlink_to(target)
+    raised: list[BaseException] = []
+    opened: list[bool] = []
+
+    def run() -> None:
+        try:
+            with gate.open_bytes(path):
+                opened.append(True)
+        except BaseException as exc:  # noqa: BLE001 - reported, not handled
+            raised.append(exc)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    assert not thread.is_alive(), (
+        f"the open did not return within {timeout}s: a refresher's thread would "
+        "be stopped here for good, and the source served stale until a restart"
+    )
+    assert not opened, "the open succeeded on a path no reader may read"
+    return raised[0] if raised else None
+
+
+@pytest.mark.parametrize(
+    ("plant", "reason"),
+    [
+        ("fifo", "was not a regular file when opened"),
+        ("symlink", "could not be opened without following a link"),
+        ("missing", "could not be opened without following a link"),
+    ],
+)
+def test_the_open_refuses_promptly_what_admission_would_never_have_reached(
+    gate, tmp_path, monkeypatch, plant: str, reason: str
+) -> None:
+    """The three defences `open_bytes` holds *after* the lstat that admitted the path.
+
+    A file swapped after admission is the race the lstat alone cannot see, so
+    admission is stubbed out to leave the `open` and nothing else -- the only
+    way these defences are reached at all, since a fifo, a link and a missing
+    file are each refused at admission. Three rules answer here, and each is
+    the subject of a named mutation in `tests/test_negative_controls.py`:
+    `O_NOFOLLOW`, so a link is not read through; `O_NONBLOCK` with the
+    post-open `S_ISREG`, so a fifo's `open` returns instead of parking this
+    thread until somebody writes; and `from None`, so the `OSError` that
+    prompted the refusal -- whose text and `.filename` are the path -- is not
+    rendered with it.
+
+    The reason a missing file is refused with reads as link-flavoured, and is
+    meant to: the gate answers `ENOENT` and `ELOOP` alike, because a reason that
+    told them apart would say whether the path exists, which is the oracle this
+    module was written to close.
+
+    Three, not every flag in that loop: `O_CLOEXEC` is the fourth, and nothing
+    here or in the mutation list pins it, because there is nothing to pin.
+    Python has made every descriptor `os.open` returns non-inheritable since
+    PEP 446, so removing the flag changes no behaviour a test could see. Saying
+    so is the point -- a docstring claiming the loop whole would be the defect
+    this test was written for.
+    """
+    path = tmp_path / "sessions" / "an-operators-project-name.jsonl"
+    if plant == "fifo":
+        os.mkfifo(path)
+    elif plant == "symlink":
+        path.symlink_to(tmp_path / "auth.json")
     monkeypatch.setattr(ActivityGate, "_admit", lambda self, path, op: None)
 
-    with pytest.raises(PathRefused):
-        with gate.open_bytes(link):
-            pass  # pragma: no cover - the open never succeeds
+    raised = _open_off_the_main_thread(gate, path)
+
+    assert isinstance(raised, PathRefused), f"refused with {raised!r}"
+    assert (reason, "sessions/an-operators-project-name.jsonl") in gate.refused.entries
+    # The same discipline as the refusals above: the reason is all a caller carries.
+    rendered = "".join(
+        traceback.format_exception(type(raised), raised, raised.__traceback__)
+    )
+    assert "an-operators-project-name" not in rendered
+    assert str(tmp_path) not in rendered
+    assert raised.__cause__ is None
+    assert (
+        raised.__context__ is None or raised.__suppress_context__
+    ), "a chained OSError renders as the path it failed on"
 
 
 def test_a_fifo_is_not_a_regular_file(gate, tmp_path) -> None:

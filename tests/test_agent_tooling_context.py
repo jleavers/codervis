@@ -1,7 +1,7 @@
 """What repo-shipped agent tooling says, as distinct from where it runs.
 
-This repository ships text that agents execute -- the archived plans under
-`docs/superpowers/plans/`, the security-sweep skill and its workflow. That text used to make
+This repository ships text that agents execute -- the archived documents under
+`docs/superpowers/`, the security-sweep skill and its workflow. That text used to make
 its own local choices about the environment it ran in, which is how one plan came to name a
 fixed directory in world-writable `/tmp` as a package cache six times (#21).
 
@@ -9,13 +9,14 @@ The environment an operator's agents run in is the operator's own to configure. 
 repository does not ship a `.claude/settings.json` that confines it: one did (#31), and it
 turned every shell command the operator ran in this checkout into a permission prompt and
 blocked the harness's own auto-memory, which secured nothing for anyone who clones the
-repository. What these tests hold instead is the shipped text: that no document carries its
-own environment prefix, that none reads as work still to do, and that every sweep prompt
-tells its agent that what it reads is data.
+repository. What these tests hold instead is the shipped text: that no document carries its own
+environment prefix, that nothing under `docs/superpowers/` reads as work still to do, and that
+every sweep prompt tells its agent that what it reads is data.
 """
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -23,8 +24,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_SETTINGS = ROOT / ".claude" / "settings.json"
 
-PLANS_DIR = ROOT / "docs" / "superpowers" / "plans"
+DOCS_DIR = ROOT / "docs" / "superpowers"
+PLANS_DIR = DOCS_DIR / "plans"
 WORKFLOW = ROOT / ".claude" / "workflows" / "security-sweep.js"
+
+# What an archived document opens with. The plans carry this sentence; the two design specs
+# beside them did not, which is how they outlived the archiving of their own plans and went on
+# reading as designs someone had yet to implement (#46). Requiring it of every document here
+# leaves no room for a live one, which is the state of this subtree and not a law of nature:
+# a design that is genuinely outstanding belongs somewhere this check does not cover, or the
+# check gets widened on purpose -- not a pasted header that makes it read as finished.
+ARCHIVED_MARKER = "> **Archived —"
 
 TEXT_SUFFIXES = {".md", ".js", ".json", ".yml", ".yaml", ".py", ".sh", ".toml", ".ini"}
 
@@ -41,7 +51,7 @@ FIXED_TMP_PATH = re.compile(r"(?<![\w/])/tmp/[\w.${}-]+")
 TMP_PATH_EXEMPT: tuple[str, ...] = ()
 
 
-def _shipped_text_files() -> list[Path]:
+def _shipped_files() -> list[Path]:
     """What a clone gets, which is what an agent reads: the tracked files, and only those.
 
     `git ls-files` rather than a walk, so a developer's `.venv`, a pytest cache or an
@@ -55,10 +65,19 @@ def _shipped_text_files() -> list[Path]:
         text=True,
         timeout=60,
         check=True,
+        # `cwd` decides which repository this reads, so nothing in the environment may: an
+        # exported GIT_DIR or GIT_WORK_TREE -- a git hook's, a CI wrapper's -- would otherwise
+        # answer for a tree nobody here named.
+        env={name: value for name, value in os.environ.items() if not name.startswith("GIT_")},
     ).stdout
     paths = [ROOT / name for name in listed.split("\0") if name]
     assert paths, "git ls-files returned nothing; is this a checkout?"
-    return [p for p in paths if p.suffix in TEXT_SUFFIXES and p.is_file()]
+    return [path for path in paths if path.is_file()]
+
+
+def _shipped_text_files() -> list[Path]:
+    """The shipped files this module can scan as text."""
+    return [path for path in _shipped_files() if path.suffix in TEXT_SUFFIXES]
 
 
 def _const_body(source: str, name: str) -> str:
@@ -109,24 +128,52 @@ def test_no_shipped_document_names_a_fixed_path_in_shared_tmp() -> None:
     assert not offenders, f"fixed path in shared /tmp in shipped text: {offenders}"
 
 
-def test_no_plan_reads_as_work_still_to_do() -> None:
-    """A plan whose boxes are unticked is a plan an agent picks up and works through.
+def test_no_document_under_superpowers_reads_as_work_still_to_do() -> None:
+    """A document whose work reads as outstanding is one an agent picks up and works through.
 
-    Both of this repository's plans describe work that is over -- one shipped, one for
-    providers that were deleted -- so neither has any business carrying an unticked box or
-    telling a reader to execute it task by task.
+    Named for the subtree it reads, not for every shipped document: the check beside it really
+    does read them all, and one name for two reaches is how the last one came to promise more
+    than it looked at. Every document under `docs/superpowers/` describes work that is over --
+    some shipped, some for providers that were deleted -- so none has any business carrying an
+    unticked box, carrying the sub-skill marker that tells an agent to execute the document, or
+    omitting the header that says which kind of finished it is. Prose can still read as work --
+    both specs carry numbered steps under "Tests" -- and no substring check catches that; what
+    answers for it is the header, up front, saying the work is over.
+
+    The reach is the whole subtree, not `plans/` alone. It was `plans/` alone until #46, while
+    this module's own docstring promised that no shipped document reads as pending: the two
+    design specs under `specs/` were never archived when their plans were (#21), so they went
+    on reading as live designs -- one of them describing a credential mount this tree does not
+    have as one that "remains", and asserting that implementing it needs no Compose change.
+
+    And the subject is what a clone gets, so it comes from the tracked files like every other
+    check here, rather than from a walk of the worktree: an untracked scratch file a developer
+    left under `docs/` is not this suite's business, and a committed one cannot escape by
+    being something other than Markdown -- everything shipped there has to be a document this
+    check can read, or the check would be narrower than it says again.
     """
-    plans = list(PLANS_DIR.rglob("*.md"))
+    docs = [path for path in _shipped_files() if DOCS_DIR in path.parents]
+    assert docs, f"no documents under {DOCS_DIR}; has this check outlived its subject?"
+    unreadable = [path.relative_to(ROOT) for path in docs if path.suffix != ".md"]
+    assert not unreadable, (
+        f"shipped under {DOCS_DIR.relative_to(ROOT)} and not a Markdown document, so nothing "
+        f"below reads it: {unreadable}. Make it one, or widen this check on purpose."
+    )
+    plans = [path for path in docs if PLANS_DIR in path.parents]
     assert plans, f"no plans under {PLANS_DIR}; has this check outlived its subject?"
 
-    live = [p for p in plans if "archive" not in p.relative_to(PLANS_DIR).parts]
+    live = [path for path in plans if "archive" not in path.relative_to(PLANS_DIR).parts]
     assert not live, f"a plan outside the archive reads as pending: {live}"
 
-    for path in plans:
+    for path in docs:
         text = path.read_text(encoding="utf-8")
         name = path.relative_to(ROOT)
         assert "- [ ]" not in text, f"{name} still carries an unticked box"
         assert "REQUIRED SUB-SKILL" not in text, f"{name} still tells an agent to execute it"
+        # Near the top, where a reader sees it before the body: a marker at the foot of a
+        # document an agent has already started working through is no marker at all.
+        head = "\n".join(text.splitlines()[:8])
+        assert ARCHIVED_MARKER in head, f"{name} does not say, up front, that it is archived"
 
 
 def test_every_sweep_agent_is_told_its_input_is_data() -> None:
