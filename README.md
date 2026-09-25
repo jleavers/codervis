@@ -261,10 +261,15 @@ which is a route round the proxy; or the connection never left the container
 (`example.com:443 could not be dialled`), which is `unverified` like the two
 above — nothing was established either way.
 
-The address on the on-link line is whatever the container's own routing table
-yields — the first address of each on-link subnet, plus any gateway a route
+The address on the on-link line is whatever the container's own routing tables
+yield — the first address of each on-link subnet, plus any gateway a route
 names — so it differs between deployments,
-and a container on two networks gets one line per network. The admission probes
+and a container on two networks gets one line per network. Both families are
+read (`/proc/net/route` and `/proc/net/ipv6_route`), so a network with
+`enable_ipv6` has its second gateway address dialled as well: that address is
+on-link in the container's own prefix and needs no route either. A container on
+a kernel with no IPv6 has no second table, and the line says nothing about a
+family that is not there. The admission probes
 open a TCP connection to each host through the proxy and send nothing; the
 on-link and direct probes open one directly and send nothing either. An address
 that answers at all answers at once; it is the `OK` that costs one timeout per
@@ -324,12 +329,15 @@ How to read the on-link line, in the order the cases are worth knowing:
 - A `FAIL` that says **unverified** — on this line or on the public-name one —
   is not a reachable host: it means the check could not ask. The causes, all of
   the ones a run of this command can print: the container's routing table was
-  unreadable; it yielded no address to
+  unreadable; its IPv6 routing table was there and unreadable, which leaves that
+  one family unknown while the addresses of the other are still dialled; it
+  yielded no address to
   dial; it yielded more than the check will dial, and the rest are named on that
   line; a connection never left the container (a local reject rule, a descriptor
   limit); or the public name could not be looked up, and the container either
-  has a default route or has a routing table that could not be read, so neither
-  way of telling whether it can reach off its own subnets was available. An
+  has a default route in either family or has a routing table that could not be
+  read, so neither way of telling whether it can reach off its own subnets was
+  available. An
   unasked question is reported as a failure rather than passed over, because
   that is the defect these lines exist to prevent.
 
