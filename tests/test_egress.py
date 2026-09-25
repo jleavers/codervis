@@ -686,6 +686,9 @@ def test_the_check_command_exits_nonzero_when_any_assertion_failed(capsys, monke
         ([(True, "a"), (True, "b")], 0),
         ([(True, "a"), (False, "b")], 1),
         ([(False, "a")], 1),
+        # `all([])` is True, so a check that asserted nothing would otherwise exit 0 -- the one
+        # shape that turns CI's gate into a no-op while every test here stays green.
+        ([], 1),
     ):
         monkeypatch.setattr(egress, "check", lambda _environ, _r=results: _r)
         assert egress.main(["check"]) == expected, results
@@ -797,9 +800,16 @@ def test_readme_shows_the_lines_the_check_actually_prints(monkeypatch) -> None:
     # README counts the public-name line's forms for an operator checking they have seen them
     # all, so the count comes from the code rather than from whoever last edited the sentence.
     # One of them is in the first fence, hence "N more forms".
+    # Both prefixes are seven characters, so the payload starts at 7; only the public-name
+    # line's payload begins with the probed host.
     direct_forms = {line for line in producible if line[7:].startswith("example.com")}
     spelled = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven"}
-    assert f"{spelled[len(direct_forms) - 1]} more forms" in flowed, sorted(direct_forms)
+    beyond_the_fence = len(direct_forms) - 1
+    assert beyond_the_fence in spelled, (
+        f"{len(direct_forms)} public-name forms is outside what README spells out; "
+        f"give the count a word and update the sentence: {sorted(direct_forms)}"
+    )
+    assert f"{spelled[beyond_the_fence]} more forms" in flowed, sorted(direct_forms)
 
     # Acceptance criterion 5 lives in prose the fences cannot hold: an engine floor, and what
     # an operator on an older engine does instead. Deleting either left the suite green.

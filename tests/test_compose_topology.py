@@ -202,7 +202,8 @@ def _workflow() -> dict:
 
 def test_ci_requires_docker_for_the_job_that_runs_this_file() -> None:
     """`REQUIRE_DOCKER` is what turns "no docker CLI" from a skip into a failure."""
-    jobs = _workflow()["jobs"]
+    workflow = _workflow()
+    jobs = workflow["jobs"]
     running = [
         job
         for job in jobs.values()
@@ -211,7 +212,14 @@ def test_ci_requires_docker_for_the_job_that_runs_this_file() -> None:
     assert running, "no job runs pytest any more"
     for job in running:
         step = next(s for s in job["steps"] if "pytest" in str(s.get("run", "")))
-        env = {**(job.get("env") or {}), **(step.get("env") or {})}
+        # All three scopes, in the order GitHub resolves them: a variable set for the whole
+        # workflow is as good as one set on the step, and rejecting that would fail a
+        # configuration that works.
+        env = {
+            **(workflow.get("env") or {}),
+            **(job.get("env") or {}),
+            **(step.get("env") or {}),
+        }
         assert str(env.get(REQUIRE_DOCKER_ENV, "")).strip().lower() not in (
             "",
             "0",
