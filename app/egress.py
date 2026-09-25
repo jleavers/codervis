@@ -40,7 +40,7 @@ import signal
 import socket
 import struct
 import sys
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from ipaddress import IPv4Network, ip_address
 from urllib.parse import urlsplit
@@ -579,6 +579,11 @@ def on_link_addresses(route_table: str, *, own: Collection[str] = ()) -> list[st
       itself proves nothing.
 
     Ordered gateways first, deduplicated, and loopback and the unspecified address dropped.
+
+    IPv4 only, which is the whole of what reaches this bridge: the compose network sets no
+    ``enable_ipv6``, and the topology test refuses one that does without the matching IPv6
+    gateway isolation. A network that grows a second family needs ``/proc/net/ipv6_route`` read
+    here as well.
     """
     found: list[str] = []
     for line in route_table.splitlines()[1:]:
@@ -652,11 +657,15 @@ def probe_on_link(addr: str, port: int, *, timeout_s: float) -> str:
         return ON_LINK_NO_ANSWER
 
 
+# A probe's shape, so the check can be given one: (address, port, timeout_s) -> outcome.
+OnLinkProbe = Callable[..., str]
+
+
 def check_on_link(
     addresses: Sequence[str],
     *,
     ports: Sequence[int] = PROBE_ONLINK_PORTS,
-    probe=probe_on_link,
+    probe: OnLinkProbe = probe_on_link,
     timeout_s: float,
 ) -> list[tuple[bool, str]]:
     """One result per address: reachable at all is a failure, whoever answered."""
@@ -712,7 +721,7 @@ def check(
     direct: tuple[str, int] = (PROBE_DIRECT_HOST, DEFAULT_TARGET_PORT),
     on_link: Sequence[str] | None = None,
     on_link_ports: Sequence[int] = PROBE_ONLINK_PORTS,
-    on_link_probe=probe_on_link,
+    on_link_probe: OnLinkProbe = probe_on_link,
     timeout_s: float = 10.0,
 ) -> list[tuple[bool, str]]:
     """Both halves of the bound, as seen from inside the dashboard's container.
@@ -785,7 +794,11 @@ def check(
 
 
 def _on_link_results(
-    on_link: Sequence[str] | None, *, ports: Sequence[int], probe, timeout_s: float
+    on_link: Sequence[str] | None,
+    *,
+    ports: Sequence[int],
+    probe: OnLinkProbe,
+    timeout_s: float,
 ) -> list[tuple[bool, str]]:
     """The on-link half, including the case where there is nothing to probe.
 
