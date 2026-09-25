@@ -16,6 +16,11 @@ if (!args || !args.runDir) {
 }
 const { stamp, sha, repo, worktree, runDir } = args
 const escalationCap = Number.isInteger(args.escalationCap) ? args.escalationCap : 3
+// Where agents put everything temporary: venvs, clones, stub servers, throwaway compose copies.
+// Inside the repository (under the gitignored .claude/worktrees/) but outside the worktree,
+// because .claude/settings.json blocks reads outside the working directories, and every
+// agent sent to /tmp costs the operator a permission prompt per command.
+const scratch = args.scratch || `${worktree}-scratch`
 
 // Which lane set to run. `baseline` is the four threat models a first sweep of this tree wants.
 // `gaps` re-aims four lanes at what the first run's completeness critic said nobody owned.
@@ -191,7 +196,7 @@ stop, rebuild or recreate the operator's compose project (\`codervis\`). Only a 
 says so in as many words may start a throwaway copy of the stack, and then only under its own
 project name, with synthetic credential files, published on loopback, torn down with its
 images before it returns. To demonstrate behaviour, run the app from the worktree against synthetic
-credential files and a stub server in a temporary directory outside the worktree, with
+credential files and a stub server in your scratch directory (below), with
 \`PYTHONDONTWRITEBYTECODE=1\` and pytest's \`-p no:cacheprovider\` so nothing lands in the
 worktree.
 
@@ -214,6 +219,19 @@ const WHERE = `You are auditing the codervis repository at commit ${sha}, checke
 Report every path repository-relative (\`app/quota.py\`), never absolute. Change nothing in the
 worktree. You already have this repository's CLAUDE.md; use it for the layout and the provider
 contracts rather than rediscovering them.
+
+**Your scratch directory is \`${scratch}\`.** Everything temporary goes in a subdirectory of it
+named for your task: venvs, clones and mirrors, synthetic data, stub servers, copies of the
+worktree, throwaway client configuration. Wherever a brief says "a temporary directory", it
+means there. Never use \`/tmp\` or any other path outside the repository: the operator's
+settings block reads outside the working directories, and every command sent there costs them
+a permission prompt. Remove nothing from the scratch directory that another agent made; the
+launching session deletes it after the run.
+
+**Keep each command's output small** -- pipe through \`head\`, \`grep\`, \`wc\` or \`sort | uniq -c\`,
+or write a large result to a file in your scratch directory and read slices of it. Output too
+large for the tool is saved under \`~/.claude\`, which the operator's settings deny you, so a
+large dump is simply lost and has to be produced again.
 
 ${HANDS_OFF}
 

@@ -36,6 +36,13 @@ settings file does not reach a tool that never loads it.
 
 ## Phase 0: preflight
 
+**Run the sweep with the session in auto mode.** `.claude/settings.json` sets
+`autoAllowBashIfSandboxed: false`, so outside auto mode every shell command an agent runs asks
+the operator first — several hundred prompts across a run. Where the sandbox backend cannot
+start (a host whose AppArmor restricts unprivileged user namespaces), nothing is auto-approved
+on the sandbox's account either. Auto mode's classifier approves the routine read-only commands
+and still stops the risky ones. Check the mode before launching, not after the prompts start.
+
 On Windows chain with `;` and use PowerShell equivalents; the commands below are the Bash form.
 
 ```bash
@@ -46,8 +53,13 @@ git fetch origin
 git rev-list --count main..origin/main          # informational only
 git worktree add --detach "$WT" origin/main
 git -C "$WT" rev-parse HEAD                     # the swept SHA
-mkdir -p "$RD"
+mkdir -p "$RD" "$WT-scratch"
 ```
+
+`$WT-scratch` is where every agent puts anything temporary (venvs, clones, stub servers,
+throwaway stacks). It sits inside the repository, so `blockReadsOutsideWorkingDirectories`
+does not refuse it, and under `.claude/worktrees/`, so git ignores it. The workflow derives it
+from `worktree` unless `scratch` is passed.
 
 Then write `$RD/run.json`:
 
@@ -185,11 +197,15 @@ instead of re-finding it as new.
 ```bash
 git worktree remove .claude/worktrees/security-sweep-$STAMP
 git worktree list
+docker ps -a --format '{{.Names}}' | grep '^sweep-'      # a lane's throwaway stack, left behind?
+rm -rf -- ".claude/worktrees/security-sweep-$STAMP-scratch"
 ```
 
-Never `rm -rf`, and never `--force`. If the remove fails because the worktree is dirty — it
-should not be; the prompts send any executed code to a temporary directory with bytecode and
-pytest caches off — report it and leave it for the operator.
+Never `rm -rf` the worktree, and never `--force`. If the remove fails because the worktree is
+dirty — it should not be; the prompts send any executed code to the scratch directory with
+bytecode and pytest caches off — report it and leave it for the operator. The scratch
+directory is the one path this skill deletes, by its exact name. A throwaway stack a lane left
+running is the operator's to see before anything removes it: report it.
 
 **Keep the run directory.** It is the comparison the next sweep needs.
 
