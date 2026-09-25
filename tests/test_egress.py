@@ -956,7 +956,7 @@ async def test_the_check_dials_the_gateway_an_engine_that_ignored_the_option_lef
     assert "172.30.0.1:443 accepted a direct connection" in failures[0]
 
 
-@pytest.mark.parametrize("proxy", ["http://egress:3128", "egress:3128"])
+@pytest.mark.parametrize("proxy", ["http://egress:3128", "egress:3128", "https://egress:3128"])
 def test_the_peers_are_this_container_and_the_proxy(monkeypatch, proxy: str) -> None:
     """Two peers and no more: reaching either is the bound working, and anything else on-link
     is dialled. A proxy name that will not resolve contributes nothing, so its address is
@@ -984,29 +984,46 @@ def test_the_peers_are_this_container_and_the_proxy(monkeypatch, proxy: str) -> 
     assert egress.peer_addresses(proxy) == {"172.30.0.2": "this container's own address"}
 
 
-@pytest.mark.parametrize(
-    ("proxy", "host"),
-    [
-        ("http://egress:3128", "egress"),
-        ("egress:3128", "egress"),
-        ("https://egress:3128", "egress"),
-    ],
-)
-def test_both_readers_of_the_proxy_variable_see_the_same_host(proxy: str, host: str) -> None:
-    """The scheme-less spelling urllib accepts is the one `peer_addresses` used to read as no
-    host at all, which had the check dial the proxy's own address."""
-    assert egress.split_proxy_url(proxy).hostname == host
-
-
-@pytest.mark.parametrize("proxy", ["[::1", "", "://"])
-def test_a_proxy_variable_that_will_not_parse_is_reported_rather_than_raised(proxy: str) -> None:
-    """`[::1` makes urlsplit raise, which would have come out of `check` as a traceback once
-    `peer_addresses` began parsing the variable too. Nothing here opens a socket or resolves a
-    name that is not this host's own: each of these names no proxy host to dial."""
-    assert egress.split_proxy_url(proxy).hostname is None
-    assert egress.peer_addresses(proxy) == egress.peer_addresses("")
+@pytest.mark.parametrize("proxy", ["[::1", "://"])
+def test_a_proxy_variable_that_will_not_parse_is_reported_rather_than_raised(
+    proxy: str, monkeypatch
+) -> None:
+    """`[::1` makes urlsplit raise, which came out of `check` as a traceback once
+    `peer_addresses` began parsing the variable too. Both readers are driven, because a raise
+    from either is the defect. Nothing here opens a socket or resolves a name that is not this
+    host's own: neither value names a proxy host to dial."""
+    monkeypatch.setattr(egress, "own_addresses", lambda: frozenset({"172.30.0.2"}))
+    assert egress.peer_addresses(proxy) == {"172.30.0.2": "this container's own address"}
     answer = probe_proxy(proxy, "example.com", timeout_s=0.5)
     assert isinstance(answer, str) and "proxy URL" in answer
+
+
+@asynctest
+async def test_the_check_reports_a_proxy_variable_that_will_not_parse(monkeypatch) -> None:
+    """End to end, which is where the traceback would have come out: every proxy line fails,
+    and the on-link half dials the address it could not account for rather than passing it."""
+    dialled: list[str] = []
+
+    def record(addr: str, port: int, **_kwargs: object) -> str:
+        dialled.append(addr)
+        return ON_LINK_NO_ANSWER
+
+    monkeypatch.setattr(egress, "read_route_table", lambda *a, **k: INTERNAL_ROUTE_TABLE)
+    monkeypatch.setattr(egress, "own_addresses", lambda: frozenset({"172.30.0.2"}))
+    async with _CheckRig() as rig:
+        results = await asyncio.to_thread(
+            functools.partial(
+                check,
+                {**rig.environ, "HTTPS_PROXY": "[::1"},
+                direct=("127.0.0.1", _dead_port()),
+                on_link=None,
+                on_link_probe=record,
+                timeout_s=2,
+            )
+        )
+    failures = [line for ok, line in results if not ok]
+    assert failures and all("is not a proxy URL" in line for line in failures)
+    assert set(dialled) == {"172.30.0.1"}
 
 
 def test_the_on_link_half_fails_when_it_is_given_no_ports() -> None:

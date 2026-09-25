@@ -101,10 +101,10 @@ link out of them.
 - Docker Engine 28.0+ with Compose v2 — a Docker Desktop new enough to bundle
   it counts. The `inside` network asks the bridge driver for
   `gateway_mode_ipv4: isolated`, so that the host holds no address on it. Older
-  engines fail in two different ways: 27.x refuses to create the network at all,
-  and 26.x and older start the stack with the host still on that bridge, saying
-  nothing. [Check the egress bound](#check-the-egress-bound) has both, and what
-  to do if you cannot upgrade.
+  engines leave that undone in two different ways: 27.x refuses to create the
+  network at all, and 26.x and older start the stack with the host still on that
+  bridge, saying nothing. [Check the egress bound](#check-the-egress-bound) has
+  both, and what to do if you cannot upgrade.
 - Either or both of, installed and signed in on the host:
   - Claude Code (so `~/.claude/.credentials.json` exists)
   - Codex CLI (so `~/.codex/auth.json` exists)
@@ -268,13 +268,12 @@ Which engine you have decides which of those you see:
 
 How to read the on-link line, in the order the cases are worth knowing:
 
-- A `FAIL` on it means the host is reachable from the dashboard's
-  container, whether it *accepted* the connection or *refused* it — a refusal
-  comes from a live host, so only what it happens to be listening on stands
-  between a compromised dependency and the host. The firewall rule in the last
-  bullet below closes it, and the line reads `OK` once it is in place — which is
-  the one thing to
-  read carefully: silence bounds the probe, not the network. An `OK` there says
+- A `FAIL` on it means the host is reachable from the dashboard's container,
+  whether it *accepted* the connection or *refused* it — a refusal comes from
+  a live host, so only what it happens to be listening on stands between a
+  compromised dependency and the host. The firewall rule below closes it, and
+  the line reads `OK` once it is in place — which is the one thing to read
+  carefully: silence bounds the probe, not the network. An `OK` there says
   nothing answered the three ports asked, and a host that drops packets from
   that bridge looks exactly the same as a host that is not on it. That is why
   the bound is three assertions and not this one.
@@ -290,11 +289,12 @@ How to read the on-link line, in the order the cases are worth knowing:
   address to dial, or it yielded more than the check will dial and the rest are
   named on that line. An unasked question is reported as a failure here rather
   than passed over, because that is the defect this line exists to prevent.
-- **If you cannot upgrade to 28.0+**, add a host firewall rule that drops new
-  inbound connections arriving on that bridge's interface; nothing in the stack
-  ever connects to the host over it. On 27.x you must also delete the
-  `driver_opts` block from the `inside` network, or the network is not created
-  at all; on 26.x and older the block is ignored and can stay.
+
+**If you cannot upgrade to 28.0+**, add a host firewall rule that drops new
+inbound connections arriving on that bridge's interface; nothing in the stack
+ever connects to the host over it. On 27.x you must also delete the
+`driver_opts` block from the `inside` network, or the network is not created
+at all; on 26.x and older the block is ignored and can stay.
 
 ### Stop
 

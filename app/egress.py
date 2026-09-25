@@ -1,10 +1,10 @@
 """The dashboard's network egress, bounded by an allow-listing ``CONNECT`` proxy.
 
 The dashboard holds two long-lived bearer tokens and needs exactly two hosts. This proxy is the
-only route off the host its container has -- which the network below is what makes true, and
-``check`` is what establishes -- and it admits only the hosts on its allow-list, so a redirect,
-a host override or a compromised dependency cannot send a token to a host that is not on that
-list.
+only route off the host its container has -- the network below is what makes that true, and
+``check`` is what establishes it -- and it admits only the hosts on its allow-list, so a
+redirect, a host override or a compromised dependency cannot send a token to a host that is not
+on that list.
 
 **That bounds the destination host, and nothing else.** ``CONNECT`` is relayed without being
 opened, so which account or tenant a request reaches at ``claude.ai`` or ``chatgpt.com``, and
@@ -516,21 +516,20 @@ async def serve_until_stopped(
     return 0
 
 
-def split_proxy_url(proxy_url: str) -> SplitResult:
+def split_proxy_url(proxy_url: str) -> SplitResult | None:
     """A proxy variable as urllib reads one, ``egress:3128`` and ``http://egress:3128`` alike.
 
     One spelling for every caller. Where the check parsed the variable twice with two rules,
     the scheme-less form named a proxy to dial and no host to account for on-link, which failed
     a deployment that was whole.
 
-    A variable urllib will not parse at all (``[::1``, an unclosed bracket) comes back empty
-    rather than raising, so it is reported as the proxy URL it is not, by the one caller whose
-    job that is.
+    ``None`` where urllib will not parse it at all (``[::1``, an unclosed bracket), so that it
+    is reported by the caller whose job that is rather than raised out of `check`.
     """
     try:
         return urlsplit(proxy_url if "//" in proxy_url else f"//{proxy_url}")
     except ValueError:
-        return SplitResult("", "", "", "", "")
+        return None
 
 
 def probe_proxy(
@@ -542,6 +541,8 @@ def probe_proxy(
     accepted TCP connection and no bytes.
     """
     parts = split_proxy_url(proxy_url)
+    if parts is None:
+        return f"{proxy_url} is not a proxy URL"
     try:
         proxy_host, proxy_port = parts.hostname, parts.port or DEFAULT_PORT
     except ValueError:
@@ -917,7 +918,8 @@ def peer_addresses(proxy: str) -> dict[str, str]:
       dialled like any other.
     """
     peers = {addr: "this container's own address" for addr in own_addresses()}
-    host = split_proxy_url(proxy).hostname
+    parts = split_proxy_url(proxy)
+    host = parts.hostname if parts else None
     if host:
         for addr in resolved_addresses(host):
             peers.setdefault(addr, f"the proxy {proxy}")
