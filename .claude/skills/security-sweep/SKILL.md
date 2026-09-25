@@ -28,13 +28,21 @@ After a run, audit what the agents actually ran before presenting: the per-agent
 sit beside the workflow's `journal.jsonl`. Look for `docker exec`, traffic to the published
 port, and reads of any secret store.
 
-Those rules are prompt text, and ingested text can argue with prompt text. What does not argue
-is `.claude/settings.json`: the sandbox, the block on reads outside the working directories,
-and the deny entries for the host's secret stores apply to every agent this workflow starts.
-Keep the prompts saying it anyway — a sweep agent should know why it is refused, and the
-settings file does not reach a tool that never loads it.
+Those rules are prompt text, and ingested text can argue with prompt text. The repository
+deliberately does not back them with a project `.claude/settings.json`, because that would bind
+the operator's own sessions too (it was tried for #21 and reverted). That is why the audit
+above is not optional.
+
+**The sweep secures the application for the people who run and clone it; it does not
+configure the operator's environment.** The workflow's triage prompt says so, and a cluster
+whose proposed fix would bind the operator's own sessions is to be pushed back on, not filed.
 
 ## Phase 0: preflight
+
+**Run the sweep with the session in auto mode.** Outside it, every shell command an agent runs
+asks the operator first — several hundred prompts across a run. Auto mode's classifier
+approves the routine read-only commands and still stops the risky ones. Check the mode before
+launching, not after the prompts start.
 
 On Windows chain with `;` and use PowerShell equivalents; the commands below are the Bash form.
 
@@ -46,8 +54,13 @@ git fetch origin
 git rev-list --count main..origin/main          # informational only
 git worktree add --detach "$WT" origin/main
 git -C "$WT" rev-parse HEAD                     # the swept SHA
-mkdir -p "$RD"
+mkdir -p "$RD" "$WT-scratch"
 ```
+
+`$WT-scratch` is where every agent puts anything temporary (venvs, clones, stub servers,
+throwaway stacks). It sits inside the repository rather than in shared `/tmp`, where a fixed
+name is one another local principal can create first, and under `.claude/worktrees/`, so git
+ignores it. The workflow derives it from `worktree` unless `scratch` is passed.
 
 Then write `$RD/run.json`:
 
@@ -117,6 +130,21 @@ The `gaps` lanes (`args.lanes: "gaps"`), built from the first run's completeness
 | `publication` | what becomes public with the repository: history beyond the first scan, PR heads, issue/PR threads, Actions logs |
 | `ambient-inputs` | inputs nobody typed for this app: proxy/CA variables, Docker client config, uvicorn env, `${USERPROFILE}`, the Codex tree |
 
+The `fixes` lanes (`args.lanes: "fixes"`) are for the tree after the first two runs' issues
+were fixed (from `9b0612b`). Pass the closed issues as `known`, so the lanes test the fixes
+rather than rediscover the original findings:
+
+| Lane | Threat model |
+| --- | --- |
+| `fix-holds` | each closed issue's invariant, treated as a claim to break: `Host` spellings, the boundary and vocabulary, refreshers and budgets, the activity gate's documented race and its test watcher, the front door, and the text repo-shipped tooling carries |
+| `egress-topology` | what the dashboard container can still reach besides the proxy (embedded DNS, the host, `ingress`, IPv6), what the proxy lets through, and whether the tests enforce or only exercise it; may start a throwaway copy of the stack under its own project name |
+| `publication` | the second run's publication lane again, with a coverage record that makes an empty result mean clean |
+| `ambient` | proxy and CA variables now that a proxy is set on purpose, uvicorn's environment, the `${USERPROFILE}` mount defaults, the suite in a developer's shell, and image drift |
+
+Every lane in every set returns `coverage`, a concrete record of what it examined, and the
+completeness critic is given all of them. A lane with no findings and a thin record has not
+cleared its surface.
+
 ## Phase 6: present, and get approval
 
 The harness refuses report files written by subagents, so the report comes back as text: write
@@ -170,11 +198,15 @@ instead of re-finding it as new.
 ```bash
 git worktree remove .claude/worktrees/security-sweep-$STAMP
 git worktree list
+docker ps -a --format '{{.Names}}' | grep '^sweep-'      # a lane's throwaway stack, left behind?
+rm -rf -- ".claude/worktrees/security-sweep-$STAMP-scratch"
 ```
 
-Never `rm -rf`, and never `--force`. If the remove fails because the worktree is dirty — it
-should not be; the prompts send any executed code to a temporary directory with bytecode and
-pytest caches off — report it and leave it for the operator.
+Never `rm -rf` the worktree, and never `--force`. If the remove fails because the worktree is
+dirty — it should not be; the prompts send any executed code to the scratch directory with
+bytecode and pytest caches off — report it and leave it for the operator. The scratch
+directory is the one path this skill deletes, by its exact name. A throwaway stack a lane left
+running is the operator's to see before anything removes it: report it.
 
 **Keep the run directory.** It is the comparison the next sweep needs.
 
