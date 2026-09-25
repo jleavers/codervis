@@ -131,14 +131,31 @@ def _denied_roots() -> frozenset[str]:
         Path("/data/codex"),
         *(Path(value) for value in _AMBIENT_DATA_DIRS if value),
     ]
+    # A denied root that contains the checkout, the home directory or the
+    # session scratch is not a bound, it is a suite that cannot run: pytest
+    # reads its own cache, the repository and the scratch trees constantly.
+    # An ambient variable *can* name one -- `CLAUDE_HOME=/home/someone` -- so
+    # the skip is here rather than left to whoever meets it.
+    never_denied = {
+        os.path.abspath(Path(__file__).resolve().parents[1]),
+        os.path.abspath(home),
+        os.path.abspath(_SCRATCH),
+        os.path.abspath(tempfile.gettempdir()),
+        os.sep,
+    }
     roots: set[str] = set()
     for candidate in candidates:
-        absolute = os.path.abspath(candidate)
-        if absolute in (str(_SCRATCH / "claude"), str(_SCRATCH / "codex")):
-            continue
-        roots.add(absolute)
-        # A root reached through a symlinked HOME is the same root.
-        roots.add(os.path.realpath(absolute))
+        for absolute in (
+            os.path.abspath(candidate),
+            # A root reached through a symlinked HOME is the same root.
+            os.path.realpath(os.path.abspath(candidate)),
+        ):
+            if any(
+                absolute == keep or keep.startswith(absolute.rstrip(os.sep) + os.sep)
+                for keep in never_denied
+            ):
+                continue
+            roots.add(absolute)
     return frozenset(roots)
 
 
@@ -233,12 +250,16 @@ class ForbiddenResource(Exception):
 
 
 def _hook(event: str, args: tuple) -> None:
+    # Called for every audit event CPython raises, so the miss is first and
+    # cheap. A hook that raised on an event it did not understand would break
+    # whatever raised it, which is why the arity is checked rather than
+    # assumed.
     if event not in _WATCHED:
         return
     if event == "socket.connect":
-        message = AUDIT.saw_address(args[1])
+        message = AUDIT.saw_address(args[1]) if len(args) > 1 else None
     else:
-        message = AUDIT.saw_path(_KINDS[event], args[0])
+        message = AUDIT.saw_path(_KINDS[event], args[0]) if args else None
     if message is not None:
         raise ForbiddenResource(message)
 
