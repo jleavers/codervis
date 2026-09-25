@@ -1,8 +1,11 @@
 """The allow-listing CONNECT proxy that is the dashboard container's only route out.
 
 Hermetic: every connection here is to a loopback socket the test started, so nothing reaches a
-name the proxy would have to resolve. The compose topology around the proxy is covered by
-tests/test_compose_topology.py and, end to end, by the CI `egress` job.
+name the proxy would have to resolve. The check's on-link half is driven the same way -- a
+loopback address standing in for the bridge gateway, and a stub probe where the case under test
+is "nothing answers", which must not become a packet to a real subnet. The compose topology
+around the proxy is covered by tests/test_compose_topology.py and, end to end, by the CI
+`egress` job.
 """
 
 from __future__ import annotations
@@ -20,21 +23,31 @@ from app.egress import (
     ALLOW_ENV,
     DEFAULT_ALLOW,
     MAX_CONNECTIONS,
+    MAX_ONLINK_PROBES,
     MAX_REQUEST_BYTES,
     MAX_TUNNELS,
+    ON_LINK_ACCEPTED,
+    ON_LINK_NO_ANSWER,
+    ON_LINK_REFUSED,
     PROBE_DENIED_HOST,
+    PROBE_ONLINK_PORTS,
     PROXY_ENV_NAMES,
     Proxy,
     Rule,
     allow_rules,
     allowed,
     check,
+    check_on_link,
     configured_proxy,
     normalise_host,
+    on_link_addresses,
+    own_addresses,
     parse_allow,
     parse_connect_target,
     parse_rule,
+    probe_on_link,
     probe_proxy,
+    read_route_table,
     reachable_directly,
     serve,
     serve_until_stopped,
@@ -528,6 +541,119 @@ def test_reachable_directly_is_true_for_one_that_answers() -> None:
         assert reachable_directly("127.0.0.1", listener.getsockname()[1], timeout_s=2) is True
 
 
+# A routing table shaped like the dashboard container's: one on-link subnet, no default route,
+# which is what `internal: true` produces. The columns are little-endian hex, as the kernel
+# renders them: 172.30.0.0/16 on eth0, holding this container at 172.30.0.2.
+INTERNAL_ROUTE_TABLE = """\
+Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT
+eth0\t00001EAC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0
+"""
+# The same container given a default route as well, which is what joining a non-internal network
+# does: 172.17.0.1 is the gateway it names.
+ROUTED_ROUTE_TABLE = """\
+Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT
+eth0\t00000000\t010011AC\t0003\t0\t0\t0\t00000000\t0\t0\t0
+eth0\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0
+"""
+
+
+def test_the_on_link_addresses_are_the_bridge_gateway_internal_true_leaves_behind() -> None:
+    """The address `internal: true` does not remove: the first of the container's own subnet,
+    which is where Docker puts the bridge's gateway, reachable with no route at all (#37)."""
+    assert on_link_addresses(INTERNAL_ROUTE_TABLE) == ["172.30.0.1"]
+    assert on_link_addresses(INTERNAL_ROUTE_TABLE, own={"172.30.0.2"}) == ["172.30.0.1"]
+
+
+def test_a_gateway_a_route_names_comes_first_and_is_not_repeated() -> None:
+    assert on_link_addresses(ROUTED_ROUTE_TABLE) == ["172.17.0.1"]
+
+
+def test_the_on_link_addresses_leave_out_this_container_and_loopback() -> None:
+    """Reaching itself proves nothing, and a container whose own address is the first of the
+    subnet would otherwise fail its own check."""
+    assert on_link_addresses(INTERNAL_ROUTE_TABLE, own={"172.30.0.1"}) == []
+    loopback = INTERNAL_ROUTE_TABLE.replace(
+        "eth0\t00001EAC", "lo\t0000007F"
+    )
+    assert on_link_addresses(loopback) == []
+
+
+@pytest.mark.parametrize(
+    "table",
+    [
+        "",
+        "Iface\tDestination\tGateway \n",
+        "header\neth0\tnonsense\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n",
+        # /31 and /32 hold no gateway address of their own to derive.
+        "header\neth0\t00001EAC\t00000000\t0001\t0\t0\t0\tFEFFFFFF\t0\t0\t0\n",
+    ],
+)
+def test_an_unreadable_routing_table_yields_no_addresses_rather_than_raising(table: str) -> None:
+    assert on_link_addresses(table) == []
+
+
+def test_read_route_table_says_when_there_is_none() -> None:
+    assert read_route_table("/nonexistent/proc/net/route") is None
+
+
+def test_own_addresses_is_best_effort_and_holds_addresses(monkeypatch) -> None:
+    assert all(isinstance(addr, str) for addr in own_addresses())
+    monkeypatch.setattr(socket, "gethostname", lambda: "no-such-host.invalid")
+    monkeypatch.setattr(
+        socket, "getaddrinfo", lambda *a, **k: (_ for _ in ()).throw(socket.gaierror("no"))
+    )
+    assert own_addresses() == frozenset()
+
+
+def test_probe_on_link_tells_an_accept_from_a_refusal_from_silence() -> None:
+    """A refusal is the finding that matters: an RST comes from a live host, so the address is
+    reachable even though nothing was listening on the port asked."""
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        assert probe_on_link("127.0.0.1", port, timeout_s=2) == ON_LINK_ACCEPTED
+    assert probe_on_link("127.0.0.1", _dead_port(), timeout_s=2) == ON_LINK_REFUSED
+    # An address with no route to it at all, without leaving the host: a link-local address on
+    # no interface here.
+    assert probe_on_link("169.254.0.1", 443, timeout_s=0.2) == ON_LINK_NO_ANSWER
+
+
+def test_the_on_link_half_passes_only_when_nothing_answers() -> None:
+    def silent(*_args: object, **_kwargs: object) -> str:
+        return ON_LINK_NO_ANSWER
+
+    results = check_on_link(["172.30.0.1"], probe=silent, timeout_s=1)
+    assert [ok for ok, _ in results] == [True]
+    assert "no host on-link" in results[0][1]
+
+
+def test_the_on_link_half_names_an_accept_over_a_refusal_on_another_port() -> None:
+    """Every port is tried, so a closed 443 does not hide a service on 22 -- both fail, but the
+    operator is told which one to go and look at."""
+    answers = {443: ON_LINK_REFUSED, 80: ON_LINK_NO_ANSWER, 22: ON_LINK_ACCEPTED}
+    results = check_on_link(
+        ["172.30.0.1"], probe=lambda _a, port, **k: answers[port], timeout_s=1
+    )
+    assert [ok for ok, _ in results] == [False]
+    assert "172.30.0.1:22 accepted" in results[0][1]
+
+
+def test_the_on_link_half_probes_no_more_than_its_cap() -> None:
+    """A check, not a scan of whatever a surprising routing table held."""
+    asked: list[str] = []
+
+    def record(addr: str, _port: int, **_kwargs: object) -> str:
+        asked.append(addr)
+        return ON_LINK_NO_ANSWER
+
+    addresses = [f"10.0.0.{n}" for n in range(1, MAX_ONLINK_PROBES + 4)]
+    results = check_on_link(addresses, probe=record, timeout_s=1)
+    assert len(results) == MAX_ONLINK_PROBES
+    assert set(asked) == set(addresses[:MAX_ONLINK_PROBES])
+    assert len(asked) == MAX_ONLINK_PROBES * len(PROBE_ONLINK_PORTS)
+
+
 def test_the_proxy_variables_are_both_cases_of_all_three() -> None:
     assert set(PROXY_ENV_NAMES) == {
         "HTTP_PROXY",
@@ -575,13 +701,33 @@ class _CheckRig:
         self.server.close()
         await self.upstream.stop()
 
-    async def run(self, environ: dict[str, str] | None = None, *, direct: int | None = None):
+    async def run(
+        self,
+        environ: dict[str, str] | None = None,
+        *,
+        direct: int | None = None,
+        on_link: list[str] | None = None,
+        on_link_ports: list[int] | None = None,
+        on_link_probe=None,
+    ):
         direct_port = _dead_port() if direct is None else direct
+        # An on-link address that answers nothing, stubbed rather than dialled: the real
+        # gateway of whatever network the suite is running on is not this test's business, and
+        # the case has to be reproducible on a developer's machine and on a runner alike.
+        def silent(*_args: object, **_kwargs: object) -> str:
+            return ON_LINK_NO_ANSWER
+
+        probe = on_link_probe or silent
         return await asyncio.to_thread(
-            check,
-            self.environ if environ is None else environ,
-            direct=("127.0.0.1", direct_port),
-            timeout_s=2,
+            functools.partial(
+                check,
+                self.environ if environ is None else environ,
+                direct=("127.0.0.1", direct_port),
+                on_link=["172.30.0.1"] if on_link is None else on_link,
+                on_link_ports=on_link_ports or [443],
+                on_link_probe=probe,
+                timeout_s=2,
+            )
         )
 
 
@@ -590,7 +736,9 @@ async def test_the_check_passes_a_confined_container_behind_the_proxy() -> None:
     async with _CheckRig() as rig:
         results = await rig.run()
     assert all(ok for ok, _ in results), results
-    assert len(results) == 4
+    # The proxy's own filtering, one line per configured upstream, the on-link address and the
+    # public name: both directions off a container, neither standing in for the other.
+    assert len(results) == 5
 
 
 @asynctest
@@ -618,6 +766,50 @@ async def test_the_check_fails_a_route_round_the_proxy() -> None:
             results = await rig.run(direct=listener.getsockname()[1])
     assert results[-1][0] is False
     assert "route round the proxy" in results[-1][1]
+
+
+@asynctest
+async def test_the_check_fails_an_on_link_address_that_answers() -> None:
+    """The container this check runs in has just reached something that is not the proxy, with
+    no route involved. Before #37 the same container passed, because the only thing asked was
+    whether a public name routed -- which `internal: true` answers on its own."""
+    async with _CheckRig() as rig:
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            results = await rig.run(
+                on_link=["127.0.0.1"],
+                on_link_ports=[listener.getsockname()[1]],
+                on_link_probe=probe_on_link,
+            )
+    failures = [line for ok, line in results if not ok]
+    assert len(failures) == 1
+    assert "accepted a direct connection" in failures[0]
+    # The public-name half still passed, which is exactly how the gap went unseen.
+    assert results[-1][0] is True
+
+
+@asynctest
+async def test_the_check_fails_an_on_link_address_that_refuses() -> None:
+    """A refusal is a live host: the address is reachable, and what it happens to be listening
+    on is not a bound anybody chose."""
+    async with _CheckRig() as rig:
+        results = await rig.run(
+            on_link=["127.0.0.1"], on_link_ports=[_dead_port()], on_link_probe=probe_on_link
+        )
+    failures = [line for ok, line in results if not ok]
+    assert len(failures) == 1
+    assert "refused a direct connection" in failures[0]
+
+
+@asynctest
+async def test_the_check_fails_when_it_cannot_tell_what_is_on_link() -> None:
+    """A half that probed nothing has established nothing, so it may not print OK."""
+    async with _CheckRig() as rig:
+        results = await rig.run(on_link=[])
+    failures = [line for ok, line in results if not ok]
+    assert len(failures) == 1
+    assert "unverified" in failures[0]
 
 
 @asynctest

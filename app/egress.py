@@ -6,9 +6,20 @@ a redirect, a host override or a compromised dependency cannot carry a token any
 Two halves, and neither is sufficient alone:
 
 * **The network** makes the proxy unavoidable: docker-compose.yml puts the dashboard on an
-  ``internal`` network only, which has no default route.
+  ``internal`` network only, which has no default route, and sets that network's gateway mode to
+  ``isolated``, so the host holds no address on its bridge either. Both are needed, and the
+  second is the one that is easy to miss: ``internal: true`` withholds the default route, while
+  the bridge's own gateway address sits in the container's subnet and is reachable with no route
+  at all (#37). An engine that ignores the gateway-mode option leaves that address in place, and
+  ``check`` below is what tells an operator which they have.
 * **The allow-list** makes the route narrow: ``claude.ai`` and ``chatgpt.com``, extended by
   the operator's ``EGRESS_ALLOW``.
+
+``check`` asserts the whole bound from inside the dashboard's container, and asserts it by
+probing what is reachable rather than by restating the design: the proxy filters by name and
+admits the configured upstreams, no address the container can dial on-link answers, and a public
+name does not resolve-and-connect. A refusal on an on-link address is a failure like an accept,
+because an RST comes from a live host.
 
 ``CONNECT`` is deliberately all of it. The proxy reads the host name from the request line and
 never sees a byte of the TLS session it relays, so it holds no certificate authority and never
@@ -27,10 +38,11 @@ import logging
 import os
 import signal
 import socket
+import struct
 import sys
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from ipaddress import ip_address
+from ipaddress import IPv4Network, ip_address
 from urllib.parse import urlsplit
 
 from .codex_quota import CHATGPT_HOST
@@ -62,6 +74,18 @@ UPSTREAM_ENV: tuple[tuple[str, str], ...] = (
 PROBE_DENIED_HOST = "egress-probe.invalid"
 # Off the allow-list but answering on 443, so "no route" is the container's doing.
 PROBE_DIRECT_HOST = "example.com"
+# The container's own routing table, which is where the addresses it can dial without a route
+# come from. Linux only, which is what the image is.
+ROUTE_TABLE_PATH = "/proc/net/route"
+# The ports an on-link address is tried on. Which one answers decides the wording, not the
+# verdict: a refusal proves the address is live as surely as an accept does (see
+# `probe_on_link`), so one port would be enough to establish reach. Three, because a firewall
+# rule that covers a single port must not read as "nothing there", and these are the ports a
+# host is likeliest to be listening on.
+PROBE_ONLINK_PORTS: tuple[int, ...] = (443, 80, 22)
+# How many derived addresses are probed. A container has one or two interfaces; the cap is
+# what stops a surprising routing table turning a check into a scan.
+MAX_ONLINK_PROBES = 4
 DEFAULT_PORT = 3128
 # Loopback unless told otherwise; compose passes 0.0.0.0 behind the internal network.
 DEFAULT_BIND = "127.0.0.1"
@@ -513,10 +537,13 @@ def probe_proxy(
 
 
 def reachable_directly(host: str, port: int = DEFAULT_TARGET_PORT, *, timeout_s: float) -> bool:
-    """Whether a TCP connection to ``host`` leaves this container without the proxy.
+    """Whether a TCP connection to a name off this container's own subnets leaves it.
 
     Opened and closed at once; nothing is sent. A name that will not resolve, a refusal and a
-    timeout all read as "no route", which is what an internal-only container looks like.
+    timeout all read as "no route", which is what an internal-only container looks like. This is
+    the off-link half only: it is a public name, so it needs a default route, and a False here
+    says nothing about the addresses the container can dial without one. ``probe_on_link`` is
+    that half.
     """
     try:
         with socket.create_connection((host, port), timeout_s):
@@ -525,16 +552,180 @@ def reachable_directly(host: str, port: int = DEFAULT_TARGET_PORT, *, timeout_s:
         return False
 
 
+# What an on-link probe found. Two of the three mean the address is live, and the wording says
+# which, because they call for different reading: something answered, or the host is there with
+# nothing on that port.
+ON_LINK_ACCEPTED = "accepted"
+ON_LINK_REFUSED = "refused"
+ON_LINK_NO_ANSWER = "no answer"
+
+
+def _address(little_endian_hex: str) -> str:
+    """One of /proc/net/route's address columns, which are little-endian hex."""
+    return socket.inet_ntoa(struct.pack("<L", int(little_endian_hex, 16)))
+
+
+def on_link_addresses(route_table: str, *, own: Collection[str] = ()) -> list[str]:
+    """The addresses this container can dial with no route at all, from its own routing table.
+
+    Two kinds, and neither is a constant this module could carry:
+
+    * **A gateway a route names.** On a network with a default route that is the way off the
+      host; the probe exists to catch a dashboard that has been given one.
+    * **The first address of each on-link subnet.** This is the one ``internal: true`` does not
+      remove: Docker gives a bridge network's gateway the first address of its subnet and puts
+      it on the host's end of the bridge, so it sits in the container's own subnet and needs no
+      route to be reached. A container's own addresses are excluded (``own``), since reaching
+      itself proves nothing.
+
+    Ordered gateways first, deduplicated, and loopback and the unspecified address dropped.
+    """
+    found: list[str] = []
+    for line in route_table.splitlines()[1:]:
+        fields = line.split()
+        if len(fields) < 8 or fields[0] == "lo":
+            continue
+        try:
+            gateway = _address(fields[2])
+            destination = _address(fields[1])
+            netmask = _address(fields[7])
+        except (OSError, ValueError, struct.error):
+            continue
+        if ip_address(gateway).is_unspecified:
+            try:
+                subnet = IPv4Network(f"{destination}/{netmask}", strict=False)
+            except ValueError:
+                continue
+            # /31 and /32 hold no separate gateway address to derive.
+            if subnet.prefixlen > 30:
+                continue
+            found.append(str(subnet.network_address + 1))
+        else:
+            found.insert(0, gateway)
+    addresses: list[str] = []
+    for addr in found:
+        parsed = ip_address(addr)
+        if parsed.is_loopback or parsed.is_unspecified or addr in own or addr in addresses:
+            continue
+        addresses.append(addr)
+    return addresses
+
+
+def read_route_table(path: str = ROUTE_TABLE_PATH) -> str | None:
+    """The routing table as the kernel renders it, or None where there is none to read."""
+    try:
+        with open(path, encoding="ascii", errors="replace") as handle:
+            return handle.read(64 * 1024)
+    except OSError:
+        return None
+
+
+def own_addresses() -> frozenset[str]:
+    """This container's own addresses, as far as its name resolves to them.
+
+    Best effort: a name that does not resolve costs only a candidate that would have probed
+    this container itself, which reports reach that leads nowhere off the project.
+    """
+    try:
+        info = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+    except (OSError, UnicodeError):
+        return frozenset()
+    return frozenset(str(entry[4][0]) for entry in info)
+
+
+def probe_on_link(addr: str, port: int, *, timeout_s: float) -> str:
+    """How an on-link address answers a TCP connection. Nothing is sent, and it is closed at once.
+
+    A refusal is not "no route": an RST comes from a live host that chose not to serve this
+    port, so it proves the address is reachable just as an accept does, and both are failures
+    of the bound. Only silence -- a timeout, or the kernel saying there is no way to the
+    address -- means the container cannot reach it.
+    """
+    try:
+        with socket.create_connection((addr, port), timeout_s):
+            return ON_LINK_ACCEPTED
+    except ConnectionRefusedError:
+        return ON_LINK_REFUSED
+    except OSError:
+        # ETIMEDOUT, ENETUNREACH, EHOSTUNREACH, EACCES from a local reject rule: nothing came
+        # back, which is what an address with nobody holding it looks like.
+        return ON_LINK_NO_ANSWER
+
+
+def check_on_link(
+    addresses: Sequence[str],
+    *,
+    ports: Sequence[int] = PROBE_ONLINK_PORTS,
+    probe=probe_on_link,
+    timeout_s: float,
+) -> list[tuple[bool, str]]:
+    """One result per address: reachable at all is a failure, whoever answered."""
+    results: list[tuple[bool, str]] = []
+    for addr in addresses[:MAX_ONLINK_PROBES]:
+        answers = [
+            (port, outcome)
+            for port, outcome in ((port, probe(addr, port, timeout_s=timeout_s)) for port in ports)
+            if outcome != ON_LINK_NO_ANSWER
+        ]
+        # An accept is the more useful thing to report, so every port is tried rather than
+        # stopping at the first answer: a refusal on 443 would otherwise hide a service on 22.
+        # They cost nothing extra, since an address that answers at all answers at once.
+        answered = next(
+            (answer for answer in answers if answer[1] == ON_LINK_ACCEPTED), answers[0] if answers else None
+        )
+        if answered is None:
+            results.append(
+                (
+                    True,
+                    f"{addr} answers nothing on {_ports(ports)}: no host on-link, so the proxy "
+                    "is the only peer that leads anywhere",
+                )
+            )
+        elif answered[1] == ON_LINK_ACCEPTED:
+            results.append(
+                (
+                    False,
+                    f"{addr}:{answered[0]} accepted a direct connection: that address is "
+                    "on-link, reachable with no route, and it is not the proxy -- so egress is "
+                    "not the only way off this container",
+                )
+            )
+        else:
+            results.append(
+                (
+                    False,
+                    f"{addr} refused a direct connection on port {answered[0]}: a refusal comes "
+                    "from a live host, so the address is reachable with no route and only what "
+                    "it happens to be listening on bounds where a token can go",
+                )
+            )
+    return results
+
+
+def _ports(ports: Sequence[int]) -> str:
+    return ", ".join(str(port) for port in ports) or "no ports"
+
+
 def check(
     environ: Mapping[str, str],
     *,
     direct: tuple[str, int] = (PROBE_DIRECT_HOST, DEFAULT_TARGET_PORT),
+    on_link: Sequence[str] | None = None,
+    on_link_ports: Sequence[int] = PROBE_ONLINK_PORTS,
+    on_link_probe=probe_on_link,
     timeout_s: float = 10.0,
 ) -> list[tuple[bool, str]]:
     """Both halves of the bound, as seen from inside the dashboard's container.
 
     The proxy must refuse a name that resolves nowhere, admit every host the live clients are
-    configured for, and be the only way out.
+    configured for, and be the only way out. "The only way out" is asserted in both directions
+    a container has: the addresses it can dial on-link -- the bridge's own gateway among them,
+    which no route is needed to reach -- and a public name, which is what a container that has
+    been given a default route can resolve and reach. Neither implies the other, and the
+    on-link half is the one `internal: true` does not settle.
+
+    ``on_link`` defaults to whatever the container's routing table yields; a caller passes it
+    to probe a set of its own.
     """
     proxy = configured_proxy(environ)
     if proxy is None:
@@ -568,6 +759,11 @@ def check(
             )
         else:
             results.append((True, f"{name}: {host}:{port} admitted"))
+    results.extend(
+        _on_link_results(
+            on_link, ports=on_link_ports, probe=on_link_probe, timeout_s=min(timeout_s, 2.0)
+        )
+    )
     host, port = direct
     if reachable_directly(host, port, timeout_s=min(timeout_s, 3.0)):
         results.append(
@@ -578,8 +774,46 @@ def check(
             )
         )
     else:
-        results.append((True, f"{host}:{port} unreachable directly: no route round the proxy"))
+        results.append(
+            (
+                True,
+                f"{host}:{port} unreachable directly: no route to a public address round the "
+                "proxy",
+            )
+        )
     return results
+
+
+def _on_link_results(
+    on_link: Sequence[str] | None, *, ports: Sequence[int], probe, timeout_s: float
+) -> list[tuple[bool, str]]:
+    """The on-link half, including the case where there is nothing to probe.
+
+    An empty candidate list is reported as a failure rather than passed over: the invariant is
+    that no on-link address answers, and a check that probed none of them has not established
+    it. Saying so is the whole point of this half -- the bound used to read as kept because the
+    one thing it asked was a question `internal: true` answers on its own.
+    """
+    if on_link is None:
+        table = read_route_table()
+        if table is None:
+            return [
+                (
+                    False,
+                    f"{ROUTE_TABLE_PATH} could not be read, so the addresses this container can "
+                    "reach on-link are unknown and the bound is unverified",
+                )
+            ]
+        on_link = on_link_addresses(table, own=own_addresses())
+    if not on_link:
+        return [
+            (
+                False,
+                "no on-link address could be derived from the routing table, so the bound is "
+                "unverified: a container joined to a network has a subnet to derive one from",
+            )
+        ]
+    return check_on_link(on_link, ports=ports, probe=probe, timeout_s=timeout_s)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
