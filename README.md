@@ -22,13 +22,23 @@ gets live updates via Server-Sent Events; CSS animates the meter fill and the
 colour shifts as the percentage rises.
 
 **Outbound traffic is allow-listed.** The dashboard's container sits on an
-internal Docker network with no route off the host. Its only way out is the
-`egress` service, a CONNECT-only proxy that admits `claude.ai` and
-`chatgpt.com` and nothing else. A redirect, a host override or a compromised
-dependency therefore cannot carry a token anywhere else, and plain `http://` is
-refused outright. Docker cannot publish a port from an internal-only container,
-so the port you open in the browser belongs to `ingress`, a relay that forwards
-to the dashboard. Neither gateway service holds a credential.
+internal Docker network that gives it no default route and leaves the host no
+address on the network's bridge, so every peer it can dial is another
+container in this project. Its only way out is the `egress` service, a
+CONNECT-only proxy that admits `claude.ai` and `chatgpt.com` and nothing else.
+A redirect, a host override or a compromised dependency therefore cannot send
+a token to a host that is not on that list, and plain `http://` is refused
+outright. What that does **not** bound is what happens inside an allowed
+tunnel: the proxy relays the TLS session without opening it, so the account or
+tenant a request reaches at an allowed host is not something it can see, let
+alone limit. Both halves of the network bound are asserted by probing, not by
+assumption: `python -m app.egress check` dials what the container can actually
+reach ([below](#check-the-egress-bound)), and it needs Docker Engine 28.0+ to
+be true — an engine from before then either refuses the option that keeps the
+host off the bridge or ignores it, and the check is what says which. Docker
+cannot publish a port from an internal-only container, so the port you open in
+the browser belongs to `ingress`, a relay that forwards to the dashboard.
+Neither gateway service holds a credential.
 
 **Inbound traffic is yours to name.** There is no login, so who can reach the
 dashboard *is* its access control, and the default is this machine and nothing
@@ -88,7 +98,13 @@ link out of them.
 
 ## Prerequisites
 
-- Docker Desktop (or any recent Docker + Compose v2)
+- Docker Engine 28.0+ with Compose v2 — a Docker Desktop new enough to bundle
+  it counts. The `inside` network asks the bridge driver for
+  `gateway_mode_ipv4: isolated`, so that the host holds no address on it. Older
+  engines leave that undone in two different ways: 27.x refuses to create the
+  network at all, and 26.x and older start the stack with the host still on that
+  bridge, saying nothing. [Check the egress bound](#check-the-egress-bound) has
+  both, and what to do if you cannot upgrade.
 - Either or both of, installed and signed in on the host:
   - Claude Code (so `~/.claude/.credentials.json` exists)
   - Codex CLI (so `~/.codex/auth.json` exists)
@@ -196,7 +212,9 @@ Anyone who can reach the port can read your dashboard: there is no login, and
 the list of names is not one. Widen it on a network you trust, and see
 [Security notes](#security-notes) before you reach for a reverse proxy.
 
-To confirm the egress bound from inside the dashboard's container:
+### Check the egress bound
+
+To confirm it from inside the dashboard's container:
 
 ```bash
 docker compose exec codervis python -m app.egress check
@@ -206,14 +224,110 @@ docker compose exec codervis python -m app.egress check
 [ OK ] http://egress:3128 refused egress-probe.invalid (403)
 [ OK ] CLAUDE_AI_HOST: claude.ai:443 admitted
 [ OK ] CHATGPT_HOST: chatgpt.com:443 admitted
-[ OK ] example.com:443 unreachable directly: no route round the proxy
+[ OK ] 172.30.0.1 is on-link by design: the proxy http://egress:3128, which is the allow-listed way off this project rather than a way round it
+[ OK ] example.com:443 unreachable directly: no route to a public address round the proxy
 ```
 
-The admission probes open a TCP connection to each host through the proxy and
-send nothing. To change the allow-list, edit `EGRESS_ALLOW` in `.env` and run
-`docker compose up -d egress`.
+The last line has five more forms, and the difference between the first three
+is what a failed name lookup is allowed to prove. A container whose
+resolver declines public names — which is what an internal network's usually
+does — cannot look `example.com` up at all, and a lookup that failed says
+nothing on its own about whether packets can leave. So the check reads the
+routing table, which is where `internal: true` shows up as the absence of a
+default route:
 
-To stop:
+```text
+[ OK ] example.com does not resolve here, and the routing table names no default route: there is no route round the proxy to take
+[FAIL] example.com could not be looked up, and this container has a default route: it has a way off its own subnets, and whether that reaches round the proxy is unverified
+[FAIL] example.com could not be looked up and /proc/net/route could not be read, so neither way of telling whether this container has a route off it was available and the bound is unverified
+```
+
+Only the first is a pass, and the routing table is what makes it one. The
+remaining two are both `FAIL`s: the name resolved and something answered it,
+which is a route round the proxy; or the connection never left the container
+(`example.com:443 could not be dialled`), which is `unverified` like the two
+above — nothing was established either way.
+
+The address on the on-link line is whatever the container's own routing table
+yields — the first address of each on-link subnet, plus any gateway a route
+names — so it differs between deployments,
+and a container on two networks gets one line per network. The admission probes
+open a TCP connection to each host through the proxy and send nothing; the
+on-link and direct probes open one directly and send nothing either. An address
+that answers at all answers at once; it is the `OK` that costs one timeout per
+port, so that is the line that can take a few seconds to print. To change the
+allow-list, edit `EGRESS_ALLOW` in `.env` and run `docker compose up -d egress`.
+
+The two directions are separate bounds, and the on-link line is the one an
+internal network does not settle on its own. `internal: true` withholds the
+default route, which is what the last line asks about. It does **not** withhold
+the host's own address on the network's bridge: that address is on-link in the
+container's subnet and needs no route, so whatever the host listens on is a
+second way off the dashboard. The compose file closes it with
+`com.docker.network.bridge.gateway_mode_ipv4: isolated`.
+
+**What the on-link line is really telling you** is who holds the first address
+of the container's subnet, which is the address a bridge's gateway takes:
+
+- **The proxy holds it** — the line above. An engine honouring `isolated`
+  allocates no gateway address at all, so that address is free and the first
+  container attached takes it, which the compose file's start order makes
+  `egress`. The host is not on the bridge, and the proxy being there is the
+  evidence of it.
+- **Nobody answers on it** — also `OK`. Nothing holds the address, or nothing on
+  it answers ports 443, 80 and 22.
+- **It is this container's own address** — `OK`, and nothing was dialled:
+  reaching yourself establishes nothing either way, so the line says so rather
+  than passing over it.
+- **Something that is neither answers** — `FAIL`, and on an engine that ignored
+  the option that something is the host.
+
+Which engine you have decides which of those you see:
+
+| Docker Engine | What it does with `gateway_mode_ipv4: isolated` | What you see |
+|---|---|---|
+| 28.0 and newer | Honours it. No gateway address is allocated, and the bridge gets none. | The stack starts; the on-link line reads `OK`. |
+| 27.x | Knows the option, not that value. Network creation fails with `unknown gateway mode isolated`. | `docker compose up` fails on the `inside` network. |
+| 26.x and older | Does not know the option, and ignores it without a word. | The stack starts, the host keeps its address on the bridge, and the on-link line reads `FAIL`. |
+
+How to read the on-link line, in the order the cases are worth knowing:
+
+- A `FAIL` on it means the host is reachable from the dashboard's container,
+  whether it *accepted* the connection or *refused* it — a refusal comes from
+  a live host, so only what it happens to be listening on stands between a
+  compromised dependency and the host. The firewall rule below closes it, and
+  the line reads `OK` once it is in place — which is the one thing to read
+  carefully: silence bounds the probe, not the network. An `OK` there says
+  nothing answered the three ports asked, and a host that drops packets from
+  that bridge looks exactly the same as a host that is not on it. That is why
+  the bound is three assertions and not this one.
+- A `FAIL` naming an address that turns out to be **another container in this
+  project** is the start order, not the host: the check accounts for this
+  container and the proxy, and on an engine honouring `isolated` the subnet's
+  first address belongs to whichever container attached first. If `docker
+  network inspect` (on the host) shows the address belongs to `ingress` rather
+  than to `egress`, the bound is intact; `docker compose up -d --force-recreate`
+  puts the start order back.
+- A `FAIL` that says **unverified** — on this line or on the public-name one —
+  is not a reachable host: it means the check could not ask. The causes, all of
+  the ones a run of this command can print: the container's routing table was
+  unreadable; it yielded no address to
+  dial; it yielded more than the check will dial, and the rest are named on that
+  line; a connection never left the container (a local reject rule, a descriptor
+  limit); or the public name could not be looked up, and the container either
+  has a default route or has a routing table that could not be read, so neither
+  way of telling whether it can reach off its own subnets was available. An
+  unasked question is reported as a failure rather than passed over, because
+  that is the defect these lines exist to prevent.
+
+**If you cannot upgrade to 28.0+**, add a host firewall rule that drops new
+inbound connections arriving on that bridge's interface; nothing in the stack
+ever connects to the host over it. On 27.x you must also delete the
+`driver_opts` block from the `inside` network, or the network is not created
+at all — which then fails `tests/test_compose_topology.py`, since that block is
+what the test pins; on 26.x and older the block is ignored and can stay.
+
+### Stop
 
 ```bash
 docker compose down
@@ -234,7 +348,8 @@ read your real credential files and do not call the live quota endpoints. The
 proxy and relay tests use loopback sockets only.
 `tests/test_compose_topology.py` renders `docker-compose.yml` with
 `docker compose config`, which needs the Docker CLI but no daemon. It is skipped
-where Docker is not installed.
+where Docker is not installed, unless `REQUIRE_DOCKER=1` says it must not be —
+CI sets that, so the compose pins fail rather than vanish into a skip.
 
 ## What you see
 
@@ -305,6 +420,8 @@ browser-disabled cards are dimmed.
 | Browser shows `reconnecting…` | The container restarted; SSE will reconnect on its own. |
 | Every chip reads `unavailable` and `docker compose logs egress` shows a refused host | The host is not on the egress allow-list: a `CLAUDE_AI_HOST`/`CHATGPT_HOST` override without a matching `EGRESS_ALLOW` entry, or the vendor redirected to another host. |
 | Browser shows `Host not served by this dashboard` (`403`) | The name in the address bar is not in `DASHBOARD_ALLOWED_HOSTS`. Add it (and widen `DASHBOARD_BIND` if the request comes from another machine), then `docker compose up -d`. |
+| `python -m app.egress check` reports a `FAIL` on the on-link line, naming an address that accepted or refused | Something that is neither this container nor the proxy is on-link. On an engine older than 28.0 that is the host: a 26.x engine ignores `gateway_mode_ipv4` without a word and keeps its address on the bridge. Upgrade, or see [Check the egress bound](#check-the-egress-bound) for the firewall rule that replaces it — and for the case where the address is another container in this project. |
+| `docker compose up` fails creating the `inside` network with `unknown gateway mode isolated` | A 27.x engine: it knows the option but not that value. Upgrade to 28.0+, or delete the `driver_opts` block from the `inside` network and use the firewall rule instead. |
 | `docker compose up` reports `dependency failed to start` | The `egress` proxy is unhealthy, and the dashboard waits for it. Check `docker compose logs egress`. |
 
 `/healthz` returns JSON with `data_root_exists` and `credentials_present`
@@ -344,6 +461,18 @@ flags that are useful for quick diagnosis.
   the egress allow-list, and only over HTTPS. The proxy sees host names, never
   the TLS session or the tokens inside it. This bounds where a token can be
   sent; it does not change who can reach the published port.
+- That bound is two things, and the second is easy to miss: the container has no
+  default route, *and* the host holds no address on its network's bridge. Without
+  the second, the bridge's gateway is on-link in the container's subnet and
+  reachable with no route at all, so whatever the host listens on is a way off
+  the dashboard for a compromised dependency holding both tokens.
+  `docker compose exec codervis python -m app.egress check` is what tells you
+  which you have, by dialling the addresses the container can reach rather than
+  by trusting the compose file
+  ([Check the egress bound](#check-the-egress-bound)). An engine older than 28.0
+  either refuses the option (27.x) or ignores it without saying so (26.x and
+  older), and there a host firewall rule that drops new inbound connections
+  arriving on that bridge's interface is what closes it.
 - Whoever can reach the port is bounded in what they can cost: `ingress` holds
   at most 256 connections, and it drops a client that has not sent a complete
   request within 10 seconds. Every service's log is capped at 3 × 10 MB.

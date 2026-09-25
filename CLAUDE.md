@@ -223,15 +223,34 @@ and keep new reader I/O going through the gate.
 `docker-compose.yml` runs three services from one image:
 
 - **`codervis`** — the dashboard. It joins the `inside` network only, which is
-  `internal: true` and therefore has no default route. `HTTP(S)_PROXY` (both
-  cases) points at `egress`; urllib honours them, so the live clients need no
-  proxy code.
+  `internal: true` and therefore has no default route, and asks the bridge
+  driver for `gateway_mode_ipv4: isolated` so the host holds no address on that
+  bridge either. **Both, because `internal: true` is not "`egress` is the only
+  peer".** It withholds the default route and the forwarding to other networks;
+  the bridge's own gateway address belongs to the host and is on-link in the
+  container's subnet, so it needs no route to be reached, and whatever the host
+  listens on was a second way off the dashboard until #37. The option needs
+  Docker Engine 28.0+. Older engines split two ways: 27.x knows the option but
+  not that value and refuses to create the network, while 26.x and older have no
+  case for the label at all and ignore it, so the stack starts with the host
+  still on the bridge. `check` below, not a successful `docker compose up`, is
+  what establishes which an operator has. An operator who cannot run 28.0+ closes
+  the path with a host firewall rule dropping new inbound connections on that
+  bridge's interface; nothing in the stack ever dials the host over it.
+  `HTTP(S)_PROXY` (both cases) points at `egress`; urllib honours them, so the
+  live clients need no proxy code.
 - **`egress`** — `app/egress.py`, ported from issuebot's `issuebot.egress`.
   It is a `CONNECT`-only forward proxy that admits `claude.ai` and
   `chatgpt.com` plus the operator's `EGRESS_ALLOW`, and refuses plain `http://`
   with 405. It sees host names only, never the TLS session or a token. Its
   healthcheck is `python -m app.egress healthcheck`, which requires a 403 for
   the reserved `egress-probe.invalid`.
+  **What it bounds is the destination host, and only that.** It relays the
+  tunnel without opening it, so which account or tenant a request reaches at an
+  allowed host, and anything else inside the session, are not bounded by
+  anything here (#45). "A compromised dependency cannot carry a token anywhere
+  else" is the claim to avoid: it can still use a token against the hosts the
+  live clients use.
 - **`ingress`** — `app/ingress.py`, a byte relay that publishes
   `DASHBOARD_PORT` and forwards to `codervis:8000`. It is needed because Docker
   ignores `ports:` on an internal-only container. It is also the front door's
@@ -253,15 +272,50 @@ pins the behaviour.
 read-only root filesystem and all capabilities dropped, and hold no credential.
 All three services log to json-file capped at 3 × 10 MB (`x-logging` in the
 compose file), since a peer that reaches the port can make each of them log.
-`python -m app.egress check`, run in the `codervis` container, verifies both
-halves of the bound: the proxy filters by name and admits the configured
-upstream hosts, and there is no direct route round it.
-`tests/test_compose_topology.py` pins the compose shape.
+`python -m app.egress check`, run in the `codervis` container, verifies the
+bound by dialling, never by restating the design — which is how the gateway
+went unnoticed: the proxy filters by name and admits the configured upstream
+hosts, the addresses it derives as **on-link** are each a peer or answer
+nothing, and a public name does not resolve-and-connect — or, where it will not
+resolve at all, the routing table names no default route it could have used,
+since a failed lookup on its own says nothing about whether packets can leave.
+The on-link half derives its candidates from the container's own routing table
+(every gateway a route names, and the first address of each on-link subnet,
+which is where Docker puts a bridge's gateway), and it fails on a refusal as
+well as on an accept, because an RST comes from a live host. Those candidates
+are not every address the container could dial: a second host address further
+into the subnet, or a gateway placed elsewhere by an explicit
+`ipam.config.gateway`, is not probed, and a compose change that puts one there
+has to extend `on_link_addresses`. What it does *not* dial is a candidate that
+is this container or the proxy (`peer_addresses`): both are on-link by design,
+and on an engine honouring `isolated` the proxy is where the gateway would be —
+no gateway address is allocated for such a network, so the subnet's first
+address falls to the first container attached, which the compose file's start
+order makes `egress`. Finding it there is the evidence the option took effect;
+an engine that ignored it holds that address on the bridge, and then it is
+dialled like any other. Silence from a dialled address is the weak half of the
+assertion — a host dropping packets from that bridge looks the same — which is
+why the bound is three assertions and not this one. A half with nothing to
+probe fails as unverified rather than passing, since "it asked a question the
+network answers anyway" is the defect it exists to prevent, and so does a
+candidate list longer than the cap on how many it will dial, naming what went
+unprobed. What it may account for and still pass is a candidate that is one of
+the two peers above — this container, because reaching itself establishes
+nothing either way, or the proxy, which is the allow-listed way off the project
+rather than a way round it. A probe that never left this container (a local
+`EPERM`, a descriptor limit) is not silence either, and fails as unverified
+rather than reading as "nothing answered". `tests/test_compose_topology.py`
+pins the compose shape, gateway mode included, and CI sets `REQUIRE_DOCKER` so
+that file fails rather than skips where the Docker CLI has gone missing.
 
 **Keep the bound whole.** Do not give `codervis` a non-internal network or
-`ports:`. Do not add a host to `DEFAULT_ALLOW` that the live clients do not
-call. If a client ever needs another host, add it to `DEFAULT_ALLOW` and to the
-test that checks the defaults cover the clients' own hosts.
+`ports:`, and do not drop a network's gateway-mode option: an internal network
+without it puts the host back on the dashboard's bridge. A network that turns
+on `enable_ipv6` needs `gateway_mode_ipv6: isolated` too, since that is a
+second gateway address. Do not add a host to `DEFAULT_ALLOW` that the live
+clients do not call. If a client ever needs another host, add it to
+`DEFAULT_ALLOW` and to the test that checks the defaults cover the clients' own
+hosts.
 
 ## Load-bearing assumption: every live endpoint is undocumented
 

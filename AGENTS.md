@@ -174,8 +174,15 @@ What the repository does control is the text itself:
   the exception raised for a malformed header quotes the whole header value.
 - Preserve read-only bind mounts for `/data/claude` and `/data/codex`.
 - Preserve the egress bound: the `codervis` service joins internal networks
-  only, and `DEFAULT_ALLOW` in `app/egress.py` names only hosts the live
-  clients call.
+  only, those networks keep the bridge driver's `gateway_mode_ipv4: isolated`
+  so the host holds no address on them (`internal: true` alone leaves one, and
+  it is on-link in the container's subnet — #37), and `DEFAULT_ALLOW` in
+  `app/egress.py` names only hosts the live clients call. The option needs
+  Docker Engine 28.0+, and `python -m app.egress check` is what says whether an
+  engine honoured it. README's network section carries what an operator on an
+  older engine does to their own deployment instead — that is advice to them,
+  never a change to make here, and dropping the option from this repository is
+  the thing this rule forbids.
 - Do not add token refresh or OAuth flow logic here; the host CLIs own that.
 - Do not multiply live utilization values by 100. The live APIs are expected
   to already be on a 0-100 scale.

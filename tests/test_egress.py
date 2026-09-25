@@ -1,47 +1,95 @@
 """The allow-listing CONNECT proxy that is the dashboard container's only route out.
 
 Hermetic: every connection here is to a loopback socket the test started, so nothing reaches a
-name the proxy would have to resolve. The compose topology around the proxy is covered by
-tests/test_compose_topology.py and, end to end, by the CI `egress` job.
+name the proxy would have to resolve. The check's on-link half is driven the same way -- a
+loopback address standing in for the bridge gateway, a synthetic routing table where the case is
+about what gets derived, and a stub probe where the case under test is "nothing answers", which
+must not become a packet to whatever subnet the suite happens to be running on.
+
+Two probes here do touch the machine, and both stay on it: `probe_on_link`'s silence case dials
+169.254.0.1, a link-local address no route reaches, and `own_addresses` resolves this host's own
+name. Neither leaves the host, and neither is the thing being asserted anywhere else.
+
+The compose topology around the proxy is covered by tests/test_compose_topology.py and, end to
+end, by the CI `egress` job.
 """
 
 from __future__ import annotations
 
 import asyncio
+import errno
 import functools
 import logging
+import re
 import socket
+import sys
+from pathlib import Path
+from unittest import mock
 from urllib.parse import urlsplit
 
 import pytest
+
+from app import egress
+
 
 from app.codex_quota import CHATGPT_HOST
 from app.egress import (
     ALLOW_ENV,
     DEFAULT_ALLOW,
+    DIRECT_ANSWERED,
+    DIRECT_NO_DNS,
+    DIRECT_NO_ROUTE,
+    DIRECT_UNVERIFIED,
     MAX_CONNECTIONS,
+    MAX_ONLINK_PROBES,
     MAX_REQUEST_BYTES,
     MAX_TUNNELS,
+    ON_LINK_ACCEPTED,
+    ON_LINK_NO_ANSWER,
+    ON_LINK_REFUSED,
+    ON_LINK_UNVERIFIED,
     PROBE_DENIED_HOST,
+    PROBE_ONLINK_PORTS,
+    ROUTE_TABLE_PATH,
     PROXY_ENV_NAMES,
     Proxy,
     Rule,
     allow_rules,
     allowed,
     check,
+    check_on_link,
     configured_proxy,
+    has_default_route,
     normalise_host,
+    on_link_addresses,
+    own_addresses,
     parse_allow,
     parse_connect_target,
     parse_rule,
+    probe_direct,
+    probe_on_link,
     probe_proxy,
-    reachable_directly,
+    read_route_table,
     serve,
     serve_until_stopped,
     split_allow,
     upstream_targets,
 )
 from app.quota import CLAUDE_AI_HOST
+
+def as_oserror(number: int) -> OSError:
+    """An OSError carrying this errno and nothing else.
+
+    `OSError(errno.ETIMEDOUT, "x")` does not build one: the two-argument form maps the errno to
+    its subclass, so it returns `TimeoutError` and the `NO_ANSWER_ERRNOS` membership a table
+    row means to exercise is never reached. Same for `EPERM` and `PermissionError`.
+    """
+    failure = OSError("probe failed")
+    failure.errno = number
+    return failure
+
+
+ROOT_README = Path(__file__).resolve().parents[1] / "README.md"
 
 
 def asynctest(fn):
@@ -517,15 +565,505 @@ def test_probe_proxy_words_its_own_failure() -> None:
     assert isinstance(probe_proxy("ftp://proxy.test", "example.com"), str)
 
 
-def test_reachable_directly_is_false_for_a_port_with_nobody_on_it() -> None:
-    assert reachable_directly("127.0.0.1", _dead_port(), timeout_s=1) is False
+def test_nothing_to_probe_names_where_the_candidates_should_have_come_from() -> None:
+    """Both empty-candidate paths fail, and neither blames the other's source.
+
+    A caller that passed an empty list was told the routing table yielded nothing, which is a
+    table it never read.
+    """
+    def stub(*_args: object, **_kwargs: object) -> str:
+        return ON_LINK_NO_ANSWER
+
+    from_caller = egress._on_link_results([], ports=[443], probe=stub, timeout_s=1)
+    assert [ok for ok, _ in from_caller] == [False]
+    assert "the candidates passed in" in from_caller[0][1]
+    assert "routing table" not in from_caller[0][1]
+
+    # A header-only table, so the other branch is pinned without reading this machine's state.
+    with mock.patch.object(egress, "read_route_table", lambda *a, **k: ROUTE_HEADER):
+        from_table = egress._on_link_results(None, ports=[443], probe=stub, timeout_s=1)
+    assert [ok for ok, _ in from_table] == [False]
+    assert "the routing table" in from_table[0][1]
+    assert "the candidates passed in" not in from_table[0][1]
 
 
-def test_reachable_directly_is_true_for_one_that_answers() -> None:
+def test_has_default_route_reads_the_table_rather_than_the_network() -> None:
+    """The evidence the direct half falls back on when a name will not resolve."""
+    assert has_default_route(INTERNAL_ROUTE_TABLE) is False
+    assert has_default_route(ROUTED_ROUTE_TABLE) is True
+    assert has_default_route(ROUTE_HEADER) is False
+    # A default route with no gateway named -- `ip route add default dev eth0`. It is still a
+    # way off this container's subnets, so it must not read as "no default route" and turn the
+    # direct half's one passing branch into a false pass. `on_link_addresses` has a fixture for
+    # this table shape and derives nothing from it; this half must still see the route.
+    on_link_default = ROUTE_HEADER + _route("eth0", "0.0.0.0", "0.0.0.0", "0.0.0.0", "0001")
+    assert has_default_route(on_link_default) is True
+
+
+@asynctest
+async def test_a_name_that_will_not_resolve_passes_only_with_no_default_route() -> None:
+    """A failed lookup is not a routing fact, and `check` stops treating it as one.
+
+    An internal network's resolver declines public names, so a confined container reaches this
+    branch on every run -- it has to pass there, or the check fails every correct deployment.
+    What makes it a pass is the routing table naming no default route, not the lookup failing.
+    A container that has a route off the host and merely cannot resolve is unverified, which is
+    the case that used to read as "no route round the proxy".
+    """
+    async with _CheckRig() as rig:
+        for table, expected, fragment in (
+            (INTERNAL_ROUTE_TABLE, True, "names no default route"),
+            (ROUTED_ROUTE_TABLE, False, "this container has a default route"),
+            (None, False, f"{ROUTE_TABLE_PATH} could not be read"),
+        ):
+            with mock.patch.object(egress, "read_route_table", lambda *a, **k: table):
+                results = await rig.run(direct_probe=lambda *_a, **_k: DIRECT_NO_DNS)
+            line = [(ok, text) for ok, text in results if "example.com" in text]
+            assert len(line) == 1, results
+            assert line[0][0] is expected, line
+            assert fragment in line[0][1], line
+            assert expected or "unverified" in line[0][1], line
+
+
+@asynctest
+async def test_a_direct_probe_that_never_left_the_container_fails_the_check() -> None:
+    """The other new branch: no packet went out, so nothing was established."""
+    async with _CheckRig() as rig:
+        results = await rig.run(direct_probe=lambda *_a, **_k: DIRECT_UNVERIFIED)
+    line = [(ok, text) for ok, text in results if "example.com" in text]
+    assert line and line[0][0] is False
+    assert "unverified" in line[0][1]
+
+
+def test_the_peer_wording_says_what_each_peer_is() -> None:
+    """The constants themselves, not `peer_addresses` reading them back.
+
+    Every other assertion about these lines builds its expectation from the same constant, so
+    it holds for any wording -- including the claim this check used to print, that the proxy
+    "leads nowhere off this compose project". The proxy is precisely what leads off it, by the
+    one route the allow-list bounds, and an operator reading that line is reading the whole
+    output of this half. So the claim is pinned here in words.
+    """
+    assert "leads nowhere" not in egress.PEER_PROXY
+    assert "the allow-listed way off this project rather than a way round it" in egress.PEER_PROXY
+    assert "{proxy}" in egress.PEER_PROXY
+    assert "establishes nothing either way" in egress.PEER_SELF
+
+
+def test_the_probe_outcome_vocabularies_are_the_ones_the_suite_drives() -> None:
+    """A new outcome has to be driven, not just added.
+
+    The README pin builds what `check` can print by running it with stubs, so a branch for an
+    outcome no stub returns is invisible to it -- README could then go stale about a line the
+    code really prints. Pinning the vocabulary makes adding a fifth constant fail here, which
+    is the prompt to give it a scenario in `test_readme_shows_the_lines_the_check_actually_prints`
+    and a reading in README.
+    """
+    names = {n for n in dir(egress) if n.startswith("ON_LINK_")}
+    assert names == {
+        "ON_LINK_ACCEPTED",
+        "ON_LINK_REFUSED",
+        "ON_LINK_NO_ANSWER",
+        "ON_LINK_UNVERIFIED",
+    }
+    assert {n for n in dir(egress) if n.startswith("DIRECT_")} == {
+        "DIRECT_ANSWERED",
+        "DIRECT_NO_ROUTE",
+        "DIRECT_NO_DNS",
+        "DIRECT_UNVERIFIED",
+    }
+
+
+def test_the_check_command_exits_nonzero_when_any_assertion_failed(capsys, monkeypatch) -> None:
+    """The CLI's exit status, which is the whole of what CI gates on.
+
+    `.github/workflows/ci.yml` runs `docker compose exec -T codervis python -m app.egress check`
+    and reads nothing but the status, so a `main` that returned 0 unconditionally would disable
+    the enforcement of #37 with every assertion in this file still green. Nothing called `main`
+    before this.
+    """
+    for results, expected in (
+        ([(True, "a"), (True, "b")], 0),
+        ([(True, "a"), (False, "b")], 1),
+        ([(False, "a")], 1),
+        # `all([])` is True, so a check that asserted nothing would otherwise exit 0 -- the one
+        # shape that turns CI's gate into a no-op while every test here stays green.
+        ([], 1),
+    ):
+        monkeypatch.setattr(egress, "check", lambda _environ, _r=results: _r)
+        assert egress.main(["check"]) == expected, results
+        printed = capsys.readouterr().out.splitlines()
+        assert printed == [egress.format_result(ok, line) for ok, line in results]
+
+
+def test_readme_shows_the_lines_the_check_actually_prints(monkeypatch) -> None:
+    """README's sample output is what an operator compares their own run against.
+
+    It is quoted prose, so nothing else makes it follow the code. The expectation here is not a
+    second copy of the wording -- it is `check` itself, run with every probe stubbed and its
+    results formatted the way `main` formats them. Change any line `check` prints and this
+    fails until README is changed with it, which is what a literal expectation would not do.
+    """
+    proxy = "http://egress:3128"
+    gateway = "172.30.0.1"
+
+    def admitted(_proxy: str, host: str, port: int = 443, **_kwargs: object):
+        return (403, "Forbidden") if host == egress.PROBE_DENIED_HOST else (200, "OK")
+
+    monkeypatch.setattr(egress, "probe_proxy", admitted)
+    monkeypatch.setattr(egress, "own_addresses", frozenset)
+    monkeypatch.setattr(egress, "resolved_addresses", lambda _host: frozenset({gateway}))
+
+    results = check(
+        {"HTTPS_PROXY": proxy},
+        direct=("example.com", 443),
+        direct_probe=lambda *_a, **_k: DIRECT_NO_ROUTE,
+        on_link=[gateway],
+        on_link_probe=lambda *_a, **_k: ON_LINK_NO_ANSWER,
+        timeout_s=1,
+    )
+    assert all(ok for ok, _ in results), results
+    produced = [egress.format_result(ok, line) for ok, line in results]
+
+    readme = ROOT_README.read_text()
+    fence = re.search(r"```text\n(\[ OK \] http://egress:3128.*?)```", readme, re.S)
+    assert fence, "README no longer shows the expected `check` output"
+    shown = [line for line in fence.group(1).splitlines() if line.strip()]
+    assert shown == produced
+
+    # The direct half's other three lines are shown in a fence of their own, because prose
+    # that merely contains the wording pins nothing: a README could quote both lines verbatim
+    # and still call them both passes. Comparing the formatted line -- verdict prefix included
+    # -- is what ties each one to the `OK` or `FAIL` README claims for it.
+    def direct_line(table: str | None) -> str:
+        with mock.patch.object(egress, "read_route_table", lambda *a, **k: table):
+            results = check(
+                {"HTTPS_PROXY": proxy},
+                direct=("example.com", 443),
+                direct_probe=lambda *_a, **_k: DIRECT_NO_DNS,
+                on_link=[gateway],
+                on_link_probe=lambda *_a, **_k: ON_LINK_NO_ANSWER,
+                timeout_s=1,
+            )
+        ok, text = next((ok, t) for ok, t in results if t.startswith("example.com"))
+        return egress.format_result(ok, text)
+
+    no_dns_fence = re.search(
+        r"```text\n(\[ OK \] example\.com does not resolve.*?)```", readme, re.S
+    )
+    assert no_dns_fence, "README no longer shows the no-DNS outcomes"
+    no_dns = [direct_line(INTERNAL_ROUTE_TABLE), direct_line(ROUTED_ROUTE_TABLE), direct_line(None)]
+    assert [line for line in no_dns_fence.group(1).splitlines() if line.strip()] == no_dns
+
+    # Pinning the two fences pins only what they quote. A second fence above them, showing the
+    # same failures as passes, would be invisible to that -- and it is a fence an operator
+    # diffs their own run against. So every sample line anywhere in README must be one `check`
+    # can produce, with the verdict README gives it.
+    # Several scenarios, not one: README is entitled to show an on-link address that answered,
+    # one that is this container, or a list over the cap, and a set built from a single run
+    # would reject those as "not producible" rather than checking them.
+    def scenario(**over: object) -> list[str]:
+        opts: dict = {
+            "direct": ("example.com", 443),
+            "direct_probe": lambda *_a, **_k: DIRECT_NO_ROUTE,
+            "on_link": [gateway],
+            "on_link_probe": lambda *_a, **_k: ON_LINK_NO_ANSWER,
+            "timeout_s": 1,
+        }
+        opts.update(over)
+        return [egress.format_result(ok, line) for ok, line in check({"HTTPS_PROXY": proxy}, **opts)]
+
+    flowed = " ".join(readme.split())
+    producible = set(produced) | set(no_dns)
+    for over in (
+        {"on_link_probe": lambda *_a, **_k: ON_LINK_ACCEPTED},
+        {"on_link_probe": lambda *_a, **_k: ON_LINK_REFUSED},
+        {"on_link_probe": lambda *_a, **_k: ON_LINK_UNVERIFIED},
+        {"on_link": [f"10.0.0.{n}" for n in range(1, MAX_ONLINK_PROBES + 3)]},
+        {"direct_probe": lambda *_a, **_k: DIRECT_ANSWERED},
+        {"direct_probe": lambda *_a, **_k: DIRECT_UNVERIFIED},
+    ):
+        producible |= set(scenario(**over))
+    with mock.patch.object(egress, "own_addresses", lambda: frozenset({gateway})):
+        producible |= set(scenario())
+
+    # Anchored with optional indentation: a fence indented inside a list item is valid Markdown,
+    # renders as a code block, and is exactly as much a sample an operator diffs their run
+    # against -- a column-0 anchor would not see it.
+    samples = [m.strip() for m in re.findall(r"^[ \t]*(\[(?: OK |FAIL)\] .*?)[ \t]*$", readme, re.M)]
+    assert samples, "README shows no sample output at all"
+    assert set(samples) <= producible, sorted(set(samples) - producible)
+
+    # The verdicts the fences carry are also claimed in prose, which no fence comparison holds.
+    assert "Only the first is a pass, and the routing table is what makes it one." in flowed
+
+    # README counts the public-name line's forms for an operator checking they have seen them
+    # all, so the count comes from the code rather than from whoever last edited the sentence.
+    # One of them is in the first fence, hence "N more forms".
+    # Both prefixes are seven characters, so the payload starts at 7; only the public-name
+    # line's payload begins with the probed host.
+    direct_forms = {line for line in producible if line[7:].startswith("example.com")}
+    spelled = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven"}
+    beyond_the_fence = len(direct_forms) - 1
+    assert beyond_the_fence in spelled, (
+        f"{len(direct_forms)} public-name forms is outside what README spells out; "
+        f"give the count a word and update the sentence: {sorted(direct_forms)}"
+    )
+    assert f"{spelled[beyond_the_fence]} more forms" in flowed, sorted(direct_forms)
+
+    # Acceptance criterion 5 lives in prose the fences cannot hold: an engine floor, and what
+    # an operator on an older engine does instead. Deleting either left the suite green.
+    assert "Docker Engine 28.0" in flowed
+    assert "drops new inbound connections arriving on that bridge's interface" in flowed
+    assert "A `FAIL` that says **unverified**" in flowed
+    assert "is not a reachable host: it means the check could not ask" in flowed
+
+
+def test_the_public_name_probe_reads_a_refusal_as_reach_not_as_no_route() -> None:
+    """The defect this half had, in the half that was not touched first.
+
+    A refused port means packets left the container and something answered with an RST, so a
+    route round the proxy exists. Reading that as "no route" -- which is what the old blanket
+    `except OSError` did -- printed `[ OK ]` over it.
+    """
+    assert probe_direct("127.0.0.1", _dead_port(), timeout_s=1) == DIRECT_ANSWERED
+
+
+def test_the_public_name_probe_reads_an_accept_as_reach() -> None:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         listener.listen(1)
-        assert reachable_directly("127.0.0.1", listener.getsockname()[1], timeout_s=2) is True
+        assert probe_direct("127.0.0.1", listener.getsockname()[1], timeout_s=2) == DIRECT_ANSWERED
+
+
+def test_the_public_name_probe_tells_no_route_from_no_resolver_from_no_probe() -> None:
+    """Three not-reached outcomes, and only one of them is evidence on its own.
+
+    A timeout or an unreachable network means the probe went out and nothing came back. A name
+    the resolver declines is neither verdict here -- `check` settles that one against the
+    routing table, because a failed lookup says nothing about whether packets can leave. A
+    connection that never left this container is a failure, for the same reason the on-link
+    half fails one.
+    """
+    for failure, expected in (
+        (socket.gaierror(-2, "Name or service not known"), DIRECT_NO_DNS),
+        (TimeoutError(), DIRECT_NO_ROUTE),
+        (as_oserror(errno.ENETUNREACH), DIRECT_NO_ROUTE),
+        (as_oserror(errno.EPERM), DIRECT_UNVERIFIED),
+        (as_oserror(errno.ENETDOWN), DIRECT_UNVERIFIED),
+        (ConnectionResetError(errno.ECONNRESET, "reset"), DIRECT_ANSWERED),
+    ):
+        with mock.patch.object(egress.socket, "create_connection", side_effect=failure):
+            assert probe_direct("example.com", 443, timeout_s=0.1) == expected, failure
+
+
+ROUTE_HEADER = (
+    "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
+)
+
+
+def _column(address: str) -> str:
+    """An address as /proc/net/route renders it: the `__be32` printed as one host-order word.
+
+    Built rather than written out, because that is exactly what `_address` reverses. A literal
+    would be the little-endian rendering, and these fixtures would then be the one thing that
+    fails on the big-endian machine the native-order unpacking exists for.
+    """
+    return f"{int.from_bytes(socket.inet_aton(address), sys.byteorder):08X}"
+
+
+def _route(iface: str, destination: str, gateway: str, netmask: str, flags: str) -> str:
+    columns = (_column(destination), _column(gateway), flags, "0", "0", "0", _column(netmask))
+    return iface + "\t" + "\t".join(columns) + "\t0\t0\t0\n"
+
+
+# A routing table shaped like the dashboard container's: one on-link subnet, no default route,
+# which is what `internal: true` produces -- 172.30.0.0/16 on eth0, holding this container at
+# 172.30.0.2.
+INTERNAL_ROUTE_TABLE = ROUTE_HEADER + _route(
+    "eth0", "172.30.0.0", "0.0.0.0", "255.255.0.0", "0001"
+)
+# The same container given a default route as well, which is what joining a non-internal network
+# does: 172.17.0.1 is the gateway it names.
+ROUTED_ROUTE_TABLE = (
+    ROUTE_HEADER
+    + _route("eth0", "0.0.0.0", "172.17.0.1", "0.0.0.0", "0003")
+    + _route("eth0", "172.17.0.0", "0.0.0.0", "255.255.0.0", "0001")
+)
+
+
+def test_the_on_link_addresses_are_the_bridge_gateway_internal_true_leaves_behind() -> None:
+    """The address `internal: true` does not remove: the first of the container's own subnet,
+    which is where Docker puts the bridge's gateway, reachable with no route at all (#37)."""
+    assert on_link_addresses(INTERNAL_ROUTE_TABLE) == ["172.30.0.1"]
+
+
+def test_a_gateway_a_route_names_comes_first_and_is_not_repeated() -> None:
+    assert on_link_addresses(ROUTED_ROUTE_TABLE) == ["172.17.0.1"]
+
+
+def test_the_on_link_addresses_leave_out_loopback() -> None:
+    """Which candidates are this project rather than the host is `peer_addresses`' job, so the
+    derivation drops only what is nobody's: loopback, and the unspecified address."""
+    loopback = ROUTE_HEADER + _route("lo", "127.0.0.0", "0.0.0.0", "255.0.0.0", "0001")
+    assert on_link_addresses(loopback) == []
+
+
+@pytest.mark.parametrize(
+    "table",
+    [
+        "",
+        "Iface\tDestination\tGateway \n",
+        "header\neth0\tnonsense\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n",
+        # /31 and /32 hold no gateway address of their own to derive.
+        ROUTE_HEADER + _route("eth0", "172.30.0.0", "0.0.0.0", "255.255.255.254", "0001"),
+    ],
+)
+def test_an_unreadable_routing_table_yields_no_addresses_rather_than_raising(table: str) -> None:
+    assert on_link_addresses(table) == []
+
+
+def test_an_on_link_default_route_derives_nothing() -> None:
+    """`ip route add default dev eth0`: a /0 is not a subnet this container is on, and deriving
+    its first address would report 0.0.0.1 as checked. The public-name probe covers that case."""
+    on_link_default = (
+        "header\n"
+        "eth0\t00000000\t00000000\t0001\t0\t0\t0\t00000000\t0\t0\t0\n"
+    )
+    assert on_link_addresses(on_link_default) == []
+
+
+def test_read_route_table_says_when_there_is_none() -> None:
+    assert read_route_table("/nonexistent/proc/net/route") is None
+
+
+def test_own_addresses_is_best_effort_and_holds_addresses(monkeypatch) -> None:
+    assert all(isinstance(addr, str) for addr in own_addresses())
+    monkeypatch.setattr(socket, "gethostname", lambda: "no-such-host.invalid")
+    monkeypatch.setattr(
+        socket, "getaddrinfo", lambda *a, **k: (_ for _ in ()).throw(socket.gaierror("no"))
+    )
+    assert own_addresses() == frozenset()
+
+
+def test_probe_on_link_tells_an_accept_from_a_refusal_from_silence() -> None:
+    """A refusal is the finding that matters: an RST comes from a live host, so the address is
+    reachable even though nothing was listening on the port asked."""
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        assert probe_on_link("127.0.0.1", port, timeout_s=2) == ON_LINK_ACCEPTED
+    assert probe_on_link("127.0.0.1", _dead_port(), timeout_s=2) == ON_LINK_REFUSED
+    # "Nothing came back" is asserted through a mocked ENETUNREACH rather than by dialling a
+    # link-local address for real: what a machine does with 169.254.0.1 is its own business,
+    # and a runner that routes it would fail this for the wrong reason.
+    with mock.patch.object(
+        egress.socket, "create_connection", side_effect=as_oserror(errno.ENETUNREACH)
+    ):
+        assert probe_on_link("169.254.0.1", 443, timeout_s=0.2) == ON_LINK_NO_ANSWER
+
+
+def test_the_on_link_half_passes_only_when_nothing_answers() -> None:
+    def silent(*_args: object, **_kwargs: object) -> str:
+        return ON_LINK_NO_ANSWER
+
+    results = check_on_link(["172.30.0.1"], probe=silent, timeout_s=1)
+    assert [ok for ok, _ in results] == [True]
+    assert "answered nothing on" in results[0][1]
+
+
+def test_a_probe_that_never_left_the_container_is_not_reported_as_silence() -> None:
+    """The rule this whole check rests on, applied to the socket call itself.
+
+    `ON_LINK_NO_ANSWER` is evidence: the probe went out and nothing came back. A local failure
+    -- `EPERM` from a reject rule, `EMFILE` from running out of descriptors -- sent no packet,
+    so it establishes nothing about the address, and reporting it as silence would print
+    `[ OK ] ... answered nothing` for an address that was never dialled. That is the defect
+    this file exists to prevent, one layer further down.
+    """
+    for failure, expected in (
+        (as_oserror(errno.ETIMEDOUT), ON_LINK_NO_ANSWER),
+        (as_oserror(errno.ENETUNREACH), ON_LINK_NO_ANSWER),
+        (as_oserror(errno.EHOSTUNREACH), ON_LINK_NO_ANSWER),
+        (as_oserror(errno.EHOSTDOWN), ON_LINK_NO_ANSWER),
+        (TimeoutError(), ON_LINK_NO_ANSWER),
+        (as_oserror(errno.EPERM), ON_LINK_UNVERIFIED),
+        (as_oserror(errno.EMFILE), ON_LINK_UNVERIFIED),
+        (as_oserror(errno.EAFNOSUPPORT), ON_LINK_UNVERIFIED),
+        # This container's interface, not the address: never dialled, so never "no answer".
+        (as_oserror(errno.ENETDOWN), ON_LINK_UNVERIFIED),
+        (socket.gaierror(-2, "Name or service not known"), ON_LINK_UNVERIFIED),
+        (ConnectionResetError(errno.ECONNRESET, "reset"), ON_LINK_REFUSED),
+    ):
+        with mock.patch.object(egress.socket, "create_connection", side_effect=failure):
+            assert probe_on_link("172.30.0.1", 443, timeout_s=0.1) == expected, failure
+
+
+def test_the_on_link_half_fails_an_address_it_could_not_dial() -> None:
+    """A probe that did not happen fails, and says so rather than borrowing another verdict."""
+    results = check_on_link(
+        ["172.30.0.1"], probe=lambda *_a, **_k: ON_LINK_UNVERIFIED, timeout_s=1
+    )
+    assert [ok for ok, _ in results] == [False]
+    assert "could not be dialled" in results[0][1]
+    assert "unverified" in results[0][1]
+
+
+def test_an_address_that_answered_outranks_one_port_that_could_not_be_dialled() -> None:
+    """A refusal establishes the address is live; "not probed" establishes nothing. The line an
+    operator reads must be the one that found something."""
+    answers = {443: ON_LINK_UNVERIFIED, 80: ON_LINK_REFUSED, 22: ON_LINK_UNVERIFIED}
+    results = check_on_link(
+        ["172.30.0.1"], probe=lambda addr, port, **k: answers[port], timeout_s=1
+    )
+    assert [ok for ok, _ in results] == [False]
+    assert "refused a direct connection on port 80" in results[0][1]
+
+
+def test_the_on_link_half_names_an_accept_over_a_refusal_on_another_port() -> None:
+    """Every port is tried, so a closed 443 does not hide a service on 22 -- both fail, but the
+    operator is told which one to go and look at."""
+    answers = {443: ON_LINK_REFUSED, 80: ON_LINK_NO_ANSWER, 22: ON_LINK_ACCEPTED}
+    results = check_on_link(
+        ["172.30.0.1"], probe=lambda addr, port, **k: answers[port], timeout_s=1
+    )
+    assert [ok for ok, _ in results] == [False]
+    assert "172.30.0.1:22 accepted" in results[0][1]
+
+
+def test_the_on_link_half_probes_no_more_than_its_cap() -> None:
+    """A check, not a scan of whatever a surprising routing table held."""
+    asked: list[str] = []
+
+    def record(addr: str, port: int, **_kwargs: object) -> str:
+        asked.append(addr)
+        return ON_LINK_NO_ANSWER
+
+    addresses = [f"10.0.0.{n}" for n in range(1, MAX_ONLINK_PROBES + 1)]
+    results = check_on_link(addresses, probe=record, timeout_s=1)
+    assert [ok for ok, _ in results] == [True] * MAX_ONLINK_PROBES
+    assert set(asked) == set(addresses)
+    assert len(asked) == MAX_ONLINK_PROBES * len(PROBE_ONLINK_PORTS)
+
+
+def test_the_on_link_half_fails_rather_than_passing_over_what_the_cap_left() -> None:
+    """The cap bounds the dialling; it may not bound what the check claims. A probe not made
+    establishes nothing, so the addresses past the cap are named and the verdict is a failure."""
+    asked: list[str] = []
+
+    def record(addr: str, port: int, **_kwargs: object) -> str:
+        asked.append(addr)
+        return ON_LINK_NO_ANSWER
+
+    addresses = [f"10.0.0.{n}" for n in range(1, MAX_ONLINK_PROBES + 3)]
+    results = check_on_link(addresses, probe=record, timeout_s=1)
+    failures = [line for ok, line in results if not ok]
+    assert len(failures) == 1
+    assert "unverified" in failures[0]
+    for addr in addresses[MAX_ONLINK_PROBES:]:
+        assert addr in failures[0]
+        assert addr not in asked
 
 
 def test_the_proxy_variables_are_both_cases_of_all_three() -> None:
@@ -575,13 +1113,44 @@ class _CheckRig:
         self.server.close()
         await self.upstream.stop()
 
-    async def run(self, environ: dict[str, str] | None = None, *, direct: int | None = None):
-        direct_port = _dead_port() if direct is None else direct
+    async def run(
+        self,
+        environ: dict[str, str] | None = None,
+        *,
+        direct: int | None = None,
+        on_link: list[str] | None = None,
+        on_link_ports: list[int] | None = None,
+        on_link_probe=None,
+        direct_probe=None,
+    ):
+        direct_target = ("example.com", 443) if direct is None else ("127.0.0.1", direct)
+        # An on-link address that answers nothing, stubbed rather than dialled: the real
+        # gateway of whatever network the suite is running on is not this test's business, and
+        # the case has to be reproducible on a developer's machine and on a runner alike.
+        def silent(*_args: object, **_kwargs: object) -> str:
+            return ON_LINK_NO_ANSWER
+
+        probe = on_link_probe or silent
+
+        # The direct half is stubbed for the same reason: what a real connect to a supposedly
+        # unroutable address does is the machine's business, not this test's, and a runner that
+        # routes it would fail the suite for the wrong reason. `probe_direct` has its own
+        # real-socket tests. A caller asking for a live port wants the answering branch.
+        def unrouted(*_args: object, **_kwargs: object) -> str:
+            return DIRECT_NO_ROUTE
+
         return await asyncio.to_thread(
-            check,
-            self.environ if environ is None else environ,
-            direct=("127.0.0.1", direct_port),
-            timeout_s=2,
+            functools.partial(
+                check,
+                self.environ if environ is None else environ,
+                direct=direct_target,
+                direct_probe=direct_probe
+                or (probe_direct if direct is not None else unrouted),
+                on_link=["172.30.0.1"] if on_link is None else on_link,
+                on_link_ports=on_link_ports or [443],
+                on_link_probe=probe,
+                timeout_s=2,
+            )
         )
 
 
@@ -590,7 +1159,9 @@ async def test_the_check_passes_a_confined_container_behind_the_proxy() -> None:
     async with _CheckRig() as rig:
         results = await rig.run()
     assert all(ok for ok, _ in results), results
-    assert len(results) == 4
+    # The proxy's own filtering, one line per configured upstream, the on-link address and the
+    # public name: both directions off a container, neither standing in for the other.
+    assert len(results) == 5
 
 
 @asynctest
@@ -618,6 +1189,302 @@ async def test_the_check_fails_a_route_round_the_proxy() -> None:
             results = await rig.run(direct=listener.getsockname()[1])
     assert results[-1][0] is False
     assert "route round the proxy" in results[-1][1]
+
+
+@asynctest
+async def test_the_check_fails_an_on_link_address_that_answers(monkeypatch) -> None:
+    """The container this check runs in has just reached something that is not the proxy, with
+    no route involved. Before #37 the same container passed, because the only thing asked was
+    whether a public name routed -- which `internal: true` answers on its own.
+
+    The address dialled here has to be one a test can make answer, so it is loopback -- which is
+    also where this rig's proxy listens, and an address `peer_addresses` would account for. It
+    is emptied so that the address under test stands for the bridge's gateway and not for
+    `egress`.
+    """
+    monkeypatch.setattr(egress, "peer_addresses", lambda *a, **k: {})
+    async with _CheckRig() as rig:
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            results = await rig.run(
+                on_link=["127.0.0.1"],
+                on_link_ports=[listener.getsockname()[1]],
+                on_link_probe=probe_on_link,
+            )
+    failures = [line for ok, line in results if not ok]
+    assert len(failures) == 1
+    assert "accepted a direct connection" in failures[0]
+    # The public-name half still passed, which is exactly how the gap went unseen.
+    assert results[-1][0] is True
+
+
+@asynctest
+async def test_the_check_fails_an_on_link_address_that_refuses(monkeypatch) -> None:
+    """A refusal is a live host: the address is reachable, and what it happens to be listening
+    on is not a bound anybody chose. Loopback stands for the gateway here, as above."""
+    monkeypatch.setattr(egress, "peer_addresses", lambda *a, **k: {})
+    async with _CheckRig() as rig:
+        results = await rig.run(
+            on_link=["127.0.0.1"], on_link_ports=[_dead_port()], on_link_probe=probe_on_link
+        )
+    failures = [line for ok, line in results if not ok]
+    assert len(failures) == 1
+    assert "refused a direct connection" in failures[0]
+
+
+@asynctest
+async def test_the_check_passes_when_the_subnets_first_address_is_this_containers_own(
+    monkeypatch,
+) -> None:
+    """Where no gateway holds the first address of the subnet, the engine is free to give it to
+    a container -- this one. There is then nothing on-link to dial, which is the bound holding,
+    not the check failing to look: a container reaching itself proves nothing either way. The
+    routing table and this container's addresses are both injected, so the case is the same
+    everywhere the suite runs.
+    """
+
+    def unexpected(*args: object, **kwargs: object) -> str:
+        raise AssertionError(f"dialled its own address: {args} {kwargs}")
+
+    monkeypatch.setattr(egress, "read_route_table", lambda *a, **k: INTERNAL_ROUTE_TABLE)
+    monkeypatch.setattr(egress, "own_addresses", lambda: frozenset({"172.30.0.1"}))
+    async with _CheckRig() as rig:
+        results = await asyncio.to_thread(
+            functools.partial(
+                check,
+                rig.environ,
+                direct=("example.com", 443),
+                direct_probe=lambda *_a, **_k: DIRECT_NO_ROUTE,
+                on_link=None,
+                on_link_probe=unexpected,
+                timeout_s=2,
+            )
+        )
+    assert all(ok for ok, _ in results), results
+    assert any(
+        line.endswith(f"is on-link by design: {egress.PEER_SELF}") for _ok, line in results
+    )
+
+
+@asynctest
+async def test_the_check_accounts_for_the_proxys_address_rather_than_dialling_it(
+    monkeypatch,
+) -> None:
+    """The shape a working deployment actually has on Docker Engine 28.0 or newer.
+
+    `gateway_mode_ipv4: isolated` makes the engine skip allocating a gateway address
+    altogether, so the subnet's first address -- the one the host's end of the bridge would
+    have held -- is free, and the first container attached takes it. The compose file's
+    dependency chain (egress, then codervis, then ingress) makes that `egress`. Dialling it and
+    failing on the RST would report the bound broken in precisely the deployment where it is
+    whole, so the address is accounted for as the proxy and the line says so. That the proxy is
+    there *is* the evidence the option took effect: an engine that ignored it holds the address
+    on the bridge instead, the name resolves elsewhere, and the address is dialled.
+    """
+
+    def unexpected(*args: object, **kwargs: object) -> str:
+        raise AssertionError(f"dialled the proxy's own address: {args} {kwargs}")
+
+    monkeypatch.setattr(egress, "read_route_table", lambda *a, **k: INTERNAL_ROUTE_TABLE)
+    monkeypatch.setattr(egress, "own_addresses", lambda: frozenset({"172.30.0.2"}))
+    monkeypatch.setattr(egress, "resolved_addresses", lambda _host: frozenset({"172.30.0.1"}))
+    async with _CheckRig() as rig:
+        results = await asyncio.to_thread(
+            functools.partial(
+                check,
+                rig.environ,
+                direct=("example.com", 443),
+                direct_probe=lambda *_a, **_k: DIRECT_NO_ROUTE,
+                on_link=None,
+                on_link_probe=unexpected,
+                timeout_s=2,
+            )
+        )
+    assert all(ok for ok, _ in results), results
+    assert (
+        f"172.30.0.1 is on-link by design: {egress.PEER_PROXY.format(proxy=rig.url)}"
+        in [line for _ok, line in results]
+    )
+
+
+@asynctest
+async def test_the_check_dials_the_gateway_an_engine_that_ignored_the_option_left(
+    monkeypatch,
+) -> None:
+    """The other side of the same case, and the one the issue is about: where the proxy's name
+    resolves somewhere else, the subnet's first address is nobody's peer -- it is the host's end
+    of the bridge -- so it is dialled, and answering fails the check."""
+    monkeypatch.setattr(egress, "read_route_table", lambda *a, **k: INTERNAL_ROUTE_TABLE)
+    monkeypatch.setattr(egress, "own_addresses", lambda: frozenset({"172.30.0.2"}))
+    monkeypatch.setattr(egress, "resolved_addresses", lambda _host: frozenset({"172.30.0.3"}))
+    async with _CheckRig() as rig:
+        results = await asyncio.to_thread(
+            functools.partial(
+                check,
+                rig.environ,
+                direct=("example.com", 443),
+                direct_probe=lambda *_a, **_k: DIRECT_NO_ROUTE,
+                on_link=None,
+                on_link_probe=lambda *_a, **_k: ON_LINK_ACCEPTED,
+                timeout_s=2,
+            )
+        )
+    failures = [line for ok, line in results if not ok]
+    assert len(failures) == 1
+    assert "172.30.0.1:443 accepted a direct connection" in failures[0]
+
+
+@pytest.mark.parametrize("proxy", ["http://egress:3128", "egress:3128", "https://egress:3128"])
+def test_the_peers_are_this_container_and_the_proxy(monkeypatch, proxy: str) -> None:
+    """Two peers and no more: reaching either is the bound working, and anything else on-link
+    is dialled. A proxy name that will not resolve contributes nothing, so its address is
+    probed rather than assumed -- which fails the check rather than passing it.
+
+    Both spellings of the variable, because urllib accepts both and the scheme-less one used to
+    resolve nothing here while still naming the proxy to dial -- which failed a whole
+    deployment on the proxy's own address.
+    """
+    resolved: list[str] = []
+
+    def resolve(host: str) -> frozenset[str]:
+        resolved.append(host)
+        return frozenset({"172.30.0.1"})
+
+    monkeypatch.setattr(egress, "own_addresses", lambda: frozenset({"172.30.0.2"}))
+    monkeypatch.setattr(egress, "resolved_addresses", resolve)
+    assert egress.peer_addresses(proxy) == {
+        "172.30.0.2": egress.PEER_SELF,
+        "172.30.0.1": egress.PEER_PROXY.format(proxy=proxy),
+    }
+    assert resolved == ["egress"]
+
+    monkeypatch.setattr(egress, "resolved_addresses", lambda _host: frozenset())
+    assert egress.peer_addresses(proxy) == {"172.30.0.2": egress.PEER_SELF}
+
+
+@pytest.mark.parametrize("proxy", ["[::1", "://"])
+def test_a_proxy_variable_that_will_not_parse_is_reported_rather_than_raised(
+    proxy: str, monkeypatch
+) -> None:
+    """`[::1` makes urlsplit raise, which came out of `check` as a traceback once
+    `peer_addresses` began parsing the variable too. Both readers are driven, because a raise
+    from either is the defect. Nothing here opens a socket or resolves a name that is not this
+    host's own: neither value names a proxy host to dial."""
+    monkeypatch.setattr(egress, "own_addresses", lambda: frozenset({"172.30.0.2"}))
+    assert egress.peer_addresses(proxy) == {"172.30.0.2": egress.PEER_SELF}
+    answer = probe_proxy(proxy, "example.com", timeout_s=0.5)
+    assert isinstance(answer, str) and "proxy URL" in answer
+
+
+@asynctest
+async def test_the_check_reports_a_proxy_variable_that_will_not_parse(monkeypatch) -> None:
+    """End to end, which is where the traceback would have come out: every proxy line fails,
+    and the on-link half dials the address it could not account for rather than passing it."""
+    dialled: list[str] = []
+
+    def record(addr: str, port: int, **_kwargs: object) -> str:
+        dialled.append(addr)
+        return ON_LINK_NO_ANSWER
+
+    monkeypatch.setattr(egress, "read_route_table", lambda *a, **k: INTERNAL_ROUTE_TABLE)
+    monkeypatch.setattr(egress, "own_addresses", lambda: frozenset({"172.30.0.2"}))
+    async with _CheckRig() as rig:
+        results = await asyncio.to_thread(
+            functools.partial(
+                check,
+                {**rig.environ, "HTTPS_PROXY": "[::1"},
+                direct=("example.com", 443),
+                direct_probe=lambda *_a, **_k: DIRECT_NO_ROUTE,
+                on_link=None,
+                on_link_probe=record,
+                timeout_s=2,
+            )
+        )
+    failures = [line for ok, line in results if not ok]
+    assert failures and all("is not a proxy URL" in line for line in failures)
+    assert set(dialled) == {"172.30.0.1"}
+
+
+def test_the_on_link_half_fails_when_it_is_given_no_ports() -> None:
+    """A probe not made establishes nothing, ports included."""
+    results = check_on_link(["172.30.0.1"], ports=[], probe=_never_probed, timeout_s=1)
+    assert [ok for ok, _ in results] == [False]
+    assert "unverified" in results[0][1]
+
+
+def _never_probed(*args: object, **kwargs: object) -> str:
+    raise AssertionError(f"probed with no ports: {args} {kwargs}")
+
+
+def test_a_routing_table_that_hits_the_cap_loses_its_truncated_last_line(tmp_path) -> None:
+    """A half-read line still splits into eight fields, and the subnet derived from one is an
+    address dialled in place of one that was never read."""
+    route = _route("eth0", "172.30.0.0", "0.0.0.0", "255.255.0.0", "0001")
+    table = tmp_path / "route"
+    table.write_text(ROUTE_HEADER + route * (egress.ROUTE_TABLE_CAP // len(route) + 2))
+    read = read_route_table(str(table))
+    assert read is not None
+    assert len(read) <= egress.ROUTE_TABLE_CAP
+    assert read.endswith("\n")
+    assert on_link_addresses(read) == ["172.30.0.1"]
+
+
+@asynctest
+async def test_the_check_reads_the_containers_own_routing_table_when_given_none(
+    monkeypatch,
+) -> None:
+    """The default path: no caller-supplied addresses, so the candidates are whatever the
+    container's table yields -- here the gateway `internal: true` leaves on the bridge."""
+    dialled: list[str] = []
+
+    def record(addr: str, port: int, **_kwargs: object) -> str:
+        dialled.append(addr)
+        return ON_LINK_NO_ANSWER
+
+    monkeypatch.setattr(egress, "read_route_table", lambda *a, **k: INTERNAL_ROUTE_TABLE)
+    monkeypatch.setattr(egress, "own_addresses", lambda: frozenset({"172.30.0.2"}))
+    async with _CheckRig() as rig:
+        results = await asyncio.to_thread(
+            functools.partial(
+                check,
+                rig.environ,
+                direct=("example.com", 443),
+                direct_probe=lambda *_a, **_k: DIRECT_NO_ROUTE,
+                on_link=None,
+                on_link_probe=record,
+                timeout_s=2,
+            )
+        )
+    assert set(dialled) == {"172.30.0.1"}
+    assert all(ok for ok, _ in results), results
+
+
+@asynctest
+async def test_the_check_fails_when_the_routing_table_cannot_be_read(monkeypatch) -> None:
+    """Not a platform this can assert the bound on is not the same as a bound that holds."""
+    monkeypatch.setattr(egress, "read_route_table", lambda *a, **k: None)
+    async with _CheckRig() as rig:
+        results = await asyncio.to_thread(
+            functools.partial(
+                check, rig.environ, direct=("example.com", 443),
+                direct_probe=lambda *_a, **_k: DIRECT_NO_ROUTE, on_link=None, timeout_s=2
+            )
+        )
+    failures = [line for ok, line in results if not ok]
+    assert len(failures) == 1
+    assert "could not be read" in failures[0]
+    assert "unverified" in failures[0]
+
+
+@asynctest
+async def test_the_check_fails_when_it_cannot_tell_what_is_on_link() -> None:
+    """A half that probed nothing has established nothing, so it may not print OK."""
+    async with _CheckRig() as rig:
+        results = await rig.run(on_link=[])
+    failures = [line for ok, line in results if not ok]
+    assert len(failures) == 1
+    assert "unverified" in failures[0]
 
 
 @asynctest

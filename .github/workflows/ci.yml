@@ -63,8 +63,14 @@ jobs:
         run: python -m pip install -r requirements-dev.txt
 
       # No file list: pytest.ini's testpaths collects all of tests/, so a new
-      # test file runs here without anyone having to name it.
+      # test file runs here without anyone having to name it. REQUIRE_DOCKER
+      # turns tests/test_compose_topology.py's "no docker CLI" skip into a
+      # failure: a hosted runner has the CLI, and the compose shape it pins --
+      # internal networks with no host address on their bridge (#37) -- is not
+      # something to lose quietly to a change in the runner image.
       - name: Run Python tests
+        env:
+          REQUIRE_DOCKER: "1"
         run: python -m pytest -q
 
   test-js:
@@ -148,6 +154,37 @@ jobs:
           printf '{"claudeAiOauth":{"accessToken":"ci-not-a-token"}}' > "$CLAUDE_HOME/.credentials.json"
           printf '{"tokens":{"access_token":"ci-not-a-token"}}' > "$CODEX_HOME/auth.json"
           docker compose up --build --detach --wait
+
+      # The compose half of #37, asserted on the host rather than taken on trust: with
+      # `gateway_mode_ipv4: isolated` honoured, the engine allocates no gateway address and the
+      # `inside` bridge carries no IPv4 address, so there is nothing of the host's to dial. This
+      # is the claim README's engine table makes, and CI is the only place with a real daemon to
+      # settle it on -- so it fails here rather than being recorded and read later. The engine
+      # version is printed first so the run says which engine the result was true of.
+      #
+      # The network is taken from the dashboard's own container rather than by label, because
+      # that is the network under test and it joins exactly one. The stack has already started,
+      # so an engine that *refused* the option failed the step above instead.
+      - name: Assert the inside bridge carries no address of the host's
+        run: |
+          docker version --format 'engine {{.Server.Version}}'
+          network="$(docker inspect codervis \
+            --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{end}}')"
+          docker network inspect "$network" \
+            --format 'internal={{.Internal}} options={{json .Options}} ipam={{json .IPAM.Config}}'
+          bridge="br-$(docker network inspect "$network" --format '{{.Id}}' | cut -c1-12)"
+          # Captured once and asserted from the variable: `grep -q` on a missing device would
+          # exit 1 and read as "no address", turning a disarmed assertion into a silent pass.
+          addresses="$(ip -4 address show "$bridge")" || {
+            echo "::error::$bridge does not exist, so the bound could not be checked"
+            exit 1
+          }
+          echo "$addresses"
+          if printf '%s\n' "$addresses" | grep -q 'inet '; then
+            echo "::error::$bridge has an IPv4 address, so the host is on the dashboard's" \
+              "bridge and gateway_mode_ipv4=isolated did not take effect (#37)"
+            exit 1
+          fi
 
       - name: Check the bound from inside the dashboard container
         run: docker compose exec -T codervis python -m app.egress check

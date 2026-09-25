@@ -1,9 +1,12 @@
 """The compose topology that makes the egress proxy unavoidable rather than advisory.
 
 An allow-list bounds egress only while there is no route around it, so these assert the shape
-of the rendered compose file: the dashboard's container joins internal networks alone, the
-proxy is the one service with a leg on each kind, and only the ingress relay publishes a port.
-Rendering needs the Docker CLI but no daemon; the test is skipped where Docker is not installed.
+of the rendered compose file: the dashboard's container joins internal networks alone, those
+networks give the host no address on their bridge, the proxy is the one service with a leg on
+each kind, and only the ingress relay publishes a port.
+Rendering needs the Docker CLI but no daemon; the test is skipped where Docker is not installed,
+unless `REQUIRE_DOCKER` says it must not be -- CI sets that, because a pin that skips silently
+where the CLI has gone missing is a pin that disappears with a green build.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from app.egress import ALLOW_ENV, PROXY_ENV_NAMES
 from app.main import ALLOWED_HOSTS_ENV, parse_allowed_hosts
@@ -23,9 +27,19 @@ ROOT = Path(__file__).resolve().parents[1]
 PROXY_URL = "http://egress:3128"
 
 
+REQUIRE_DOCKER_ENV = "REQUIRE_DOCKER"
+
+
+def _no_docker(reason: str) -> None:
+    """Skip where the CLI is absent, unless this is somewhere it was promised."""
+    if os.environ.get(REQUIRE_DOCKER_ENV, "").strip().lower() in ("", "0", "false", "no"):
+        pytest.skip(reason)
+    raise AssertionError(f"{reason}, and {REQUIRE_DOCKER_ENV} says these must not be skipped")
+
+
 def _render(env_file: str, **extra: str) -> dict:
     if shutil.which("docker") is None:
-        pytest.skip("docker CLI not installed")
+        _no_docker("docker CLI not installed")
     # Only what the CLI needs to find its plugins, so nothing in the developer's shell
     # (DASHBOARD_PORT, CLAUDE_HOME, ...) leaks into the interpolation under test.
     keep = ("PATH", "HOME", "DOCKER_HOST", "DOCKER_CONFIG", "XDG_RUNTIME_DIR")
@@ -40,7 +54,7 @@ def _render(env_file: str, **extra: str) -> dict:
         timeout=60,
     )
     if result.returncode != 0 and "is not a docker command" in result.stderr:
-        pytest.skip("docker compose plugin not installed")
+        _no_docker("docker compose plugin not installed")
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
 
@@ -69,6 +83,33 @@ def test_the_dashboard_container_joins_internal_networks_alone(config: dict) -> 
     joined = _internal(config, "codervis")
     assert joined, "codervis must name its networks, not fall back to the default bridge"
     assert all(joined.values()), joined
+
+
+GATEWAY_MODE_IPV4 = "com.docker.network.bridge.gateway_mode_ipv4"
+GATEWAY_MODE_IPV6 = "com.docker.network.bridge.gateway_mode_ipv6"
+
+
+@pytest.mark.parametrize("rendered", ["config", "bare_config"])
+def test_the_dashboards_networks_give_the_host_no_address_on_their_bridge(
+    request, rendered: str
+) -> None:
+    """`internal: true` withholds the default route, not the host's own address on the bridge:
+    that address is on-link in the container's subnet, so a compromised dependency reaches it
+    with no route at all (#37). `isolated` is the gateway mode that leaves the bridge with no
+    address to dial, and it belongs next to `internal: true` on every network the dashboard
+    joins, or the bound is back to being one assumption."""
+    config = request.getfixturevalue(rendered)
+    joined = _internal(config, "codervis")
+    assert joined
+    for name in joined:
+        network = config["networks"][name]
+        assert network.get("driver") == "bridge", name
+        opts = network.get("driver_opts") or {}
+        assert opts.get(GATEWAY_MODE_IPV4) == "isolated", name
+        # IPv6 is a second family with a second gateway address, so it may only be turned on
+        # together with its own isolation: otherwise the host is back on the bridge over IPv6.
+        if network.get("enable_ipv6"):
+            assert opts.get(GATEWAY_MODE_IPV6) == "isolated", name
 
 
 def test_the_dashboard_container_publishes_nothing_itself(config: dict) -> None:
@@ -146,3 +187,60 @@ def test_the_gateway_services_run_with_nothing_to_spare(config: dict, service: s
     assert svc.get("cap_drop") == ["ALL"]
     assert "no-new-privileges:true" in (svc.get("security_opt") or [])
     assert "volumes" not in svc
+
+# The pins above need the Docker CLI to render the compose file, so they skip where it is
+# absent unless `REQUIRE_DOCKER` says they must not. That makes CI's own configuration part of
+# the pin: drop the variable and every assertion in this file goes back to skipping silently on
+# a runner whose image lost the CLI, with a green build to show for it. These two need nothing
+# but the workflow file, so they run everywhere.
+CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+
+
+def _workflow() -> dict:
+    return yaml.safe_load(CI_WORKFLOW.read_text())
+
+
+def test_ci_requires_docker_for_the_job_that_runs_this_file() -> None:
+    """`REQUIRE_DOCKER` is what turns "no docker CLI" from a skip into a failure."""
+    workflow = _workflow()
+    jobs = workflow["jobs"]
+    running = [
+        job
+        for job in jobs.values()
+        if any("pytest" in str(step.get("run", "")) for step in job.get("steps") or [])
+    ]
+    assert running, "no job runs pytest any more"
+    for job in running:
+        step = next(s for s in job["steps"] if "pytest" in str(s.get("run", "")))
+        # All three scopes, in the order GitHub resolves them: a variable set for the whole
+        # workflow is as good as one set on the step, and rejecting that would fail a
+        # configuration that works.
+        env = {
+            **(workflow.get("env") or {}),
+            **(job.get("env") or {}),
+            **(step.get("env") or {}),
+        }
+        assert str(env.get(REQUIRE_DOCKER_ENV, "")).strip().lower() not in (
+            "",
+            "0",
+            "false",
+            "no",
+        ), f"{step.get('name')} would let these pins skip"
+
+
+def test_ci_asserts_the_inside_bridge_holds_no_address() -> None:
+    """The host-side half of #37, which only a real daemon can settle.
+
+    `check` asserts the bound from inside the container; this asserts it from the host, on the
+    one engine this project ever gets to run against. A job that merely *recorded* the bridge's
+    addresses would leave the compose half verified nowhere.
+    """
+    jobs = _workflow()["jobs"]
+    script = "\n".join(
+        str(step.get("run", ""))
+        for job in jobs.values()
+        for step in job.get("steps") or []
+    )
+    assert "ip -4 address show" in script
+    assert "exit 1" in script
+    assert "python -m app.egress check" in script
