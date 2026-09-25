@@ -110,11 +110,29 @@ directories; it must not call upstream quota endpoints or read host tokens.
   port on `DASHBOARD_BIND`, which defaults to loopback.
 - `app/static/app.js` is the single source of truth for gauge color calculation
   on both initial paint and SSE updates.
+- `tests/conftest.py` owns what a pytest *session* may touch, once, for every
+  test in it: both data directories point at empty scratch trees and both
+  upstream hosts at a dead loopback port before `app.main` is imported and
+  builds its four sources from the environment, and a `sys.addaudithook`
+  observer fails whichever test opened a path under a host agent data root or
+  dialled a non-loopback address. It keys on the resource, never on the Python
+  name, so stubbing every source a test publishes is hygiene rather than the
+  bound. It binds `pytest` and nothing else: it is not agent settings, an agent
+  hook or a sandbox, and `tests/test_agent_tooling_context.py` still fails if a
+  `.claude/settings.json` reappears. `tests/test_session_audit.py` is its
+  control, and both must stay that way — a test that needs to reach something
+  new points a client at `tmp_path` and a loopback address rather than widening
+  the denied set.
 - `tests/` contains automated coverage for parser tolerance, unavailable
   states, disabled Codex state, and safe activity-reader boundaries.
   `tests/test_activity_readers.py` is the activity boundary: it asserts the set
   of paths each reader touched and the operations it performed, on the gate's
-  own record, plus the process's real filesystem calls during a scan. It does
+  own record, plus what the process really opened, listed and scanned during a
+  scan — the session audit hook in `tests/conftest.py`, keyed on the resource,
+  so an import-time binding, `posix.*` or `io.FileIO(path)` is in it too. A
+  *stat* is not: CPython raises no audit event for `os.stat` or `os.lstat`, so
+  `tests/test_reader_filesystem_surface.py` carries that half instead, by
+  pinning that neither reader module names a filesystem API at all. It does
   not assert the timestamp a reader returned, because that is what a reader
   reading credential files returns too — which is how a reader that opened
   `.credentials.json`, `auth.json`, `history.jsonl` and a session file once

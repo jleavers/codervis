@@ -7,18 +7,26 @@ went unenforced: the fixtures were "not json" placeholders and the assertions
 were on the answer. Here the fixtures are parseable -- a credential file whose
 contents would move the answer if it were read -- and the assertions are on
 `ActivityGate`'s record of what each reader touched and what it did there,
-plus, in `test_the_gate_is_the_only_way_...`, on every filesystem call the
-process actually made during the scan.
+plus, in `test_the_gate_is_the_only_way_...`, on the session audit hook's
+record of what the process actually opened, listed and scanned during the scan.
+
+Be exact about what that second record reaches, because #38 was the suite
+claiming more than it saw. It is `tests/conftest.py`'s `sys.addaudithook`
+observer, keyed on the resource: an `open`, an `os.listdir` and an `os.scandir`
+are in it whatever Python name reached them. A *stat* is not in it at all --
+CPython raises no audit event for `os.stat` or `os.lstat` -- so the half of
+TB-ACTIVITY about a reader reading the credential file's metadata is pinned
+structurally instead, in `tests/test_reader_filesystem_surface.py`.
 """
 
 from __future__ import annotations
 
-import builtins
 import io
 import json
 import os
-from contextlib import contextmanager
+import posix
 from datetime import datetime, timezone
+from os import lstat as imported_lstat
 from pathlib import Path, PurePath
 
 import pytest
@@ -332,47 +340,6 @@ def test_a_symlinked_projects_root_is_not_an_existence_oracle_either(
 # ---------------------------------------------- the gate is the only way out
 
 
-@contextmanager
-def _watch_filesystem(monkeypatch, scope: Path):
-    """Record every filesystem call the process makes under ``scope``.
-
-    The gate is only the enforcement point if a reader has no other way to the
-    filesystem. Nothing in Python stops one adding `open(...)`, so this watches
-    the calls themselves rather than trusting the gate's own record.
-    """
-    seen: list[tuple[str, Path]] = []
-
-    def record(kind: str, target: object) -> None:
-        try:
-            path = Path(os.fsdecode(target))
-        except TypeError:
-            return  # a file descriptor, not a path
-        if path == scope or scope in path.parents:
-            seen.append((kind, path))
-
-    def wrap(module: object, name: str, kind: str) -> None:
-        original = getattr(module, name)
-
-        def wrapper(*args, **kwargs):
-            if args:
-                record(kind, args[0])
-            return original(*args, **kwargs)
-
-        monkeypatch.setattr(module, name, wrapper)
-
-    wrap(os, "stat", "stat")
-    wrap(os, "lstat", "stat")
-    wrap(os, "scandir", "scandir")
-    wrap(os, "open", "open")
-    wrap(os, "listdir", "scandir")
-    wrap(io, "open", "open")
-    wrap(builtins, "open", "open")
-    try:
-        yield seen
-    finally:
-        monkeypatch.undo()
-
-
 def _assert_within(seen, root: Path, *, files=(), trees=()) -> None:
     for kind, path in seen:
         try:
@@ -381,24 +348,33 @@ def _assert_within(seen, root: Path, *, files=(), trees=()) -> None:
             pytest.fail(f"{kind} outside this reader's data root: {path}")
         parts = rel.parts
         if not parts:
-            # The data root itself, and only its metadata: a `scandir` of the
-            # root would hand back `DirEntry`s for the credential file, whose
-            # own `stat()` this watcher cannot see.
-            assert kind == "stat", f"{kind} of the data root itself"
-            continue
+            pytest.fail(f"{kind} of the data root itself")
         if len(parts) == 1 and parts[0] in files:
             continue
         assert parts[0] in trees, f"{kind} of {rel}, which TB-ACTIVITY does not admit"
 
 
 def test_the_gate_is_the_only_way_either_reader_reaches_the_filesystem(
-    roots, tmp_path, monkeypatch
+    roots, tmp_path, filesystem_audit
 ) -> None:
     """operator-tooling-1: the suite could not see a reader reading tokens.
 
     Reproduced before the gate existed by giving each reader an `open()` of
     `.credentials.json`, `auth.json`, `history.jsonl` and a session file: all
     641 tests still passed. This is the test that does not.
+
+    **What the record covers.** It is the session audit hook in
+    `tests/conftest.py`, keyed on the resource: an `open`, an `os.listdir` or
+    an `os.scandir` is in it whatever Python name reached it -- an import-time
+    binding, `posix.*` or `io.FileIO(path)` included. Until #38 this watcher
+    rebound seven module attributes instead and saw none of those three.
+
+    **What it does not cover** is `os.stat` and `os.lstat`, for which CPython
+    raises no audit event at all. No stat appears below, and the absence of one
+    is not evidence: a reader that reached the credential file's metadata by
+    any means would look exactly like this. The stat half of the claim is
+    `tests/test_reader_filesystem_surface.py`, which pins that neither reader
+    module names a filesystem API at all.
     """
     claude, codex = roots
     (codex / "sessions" / "x.jsonl").symlink_to("../../claude/.credentials.json")
@@ -406,7 +382,7 @@ def test_the_gate_is_the_only_way_either_reader_reaches_the_filesystem(
     claude_reader = ClaudeActivityReader(claude)
     codex_reader = CodexActivityReader(codex)
 
-    with _watch_filesystem(monkeypatch, tmp_path) as seen:
+    with filesystem_audit.watch(tmp_path) as seen:
         claude_reader.snapshot()
         claude_seen = list(seen)
         seen.clear()
@@ -414,10 +390,39 @@ def test_the_gate_is_the_only_way_either_reader_reaches_the_filesystem(
         codex_seen = list(seen)
 
     assert claude_seen and codex_seen, "the watcher saw nothing; it is not wired up"
+    assert {kind for kind, _ in claude_seen} <= {"open", "scandir"}
     _assert_within(claude_seen, claude, files=CLAUDE_FILES, trees=CLAUDE_TREES)
     _assert_within(codex_seen, codex, files=ACTIVITY_FILES, trees=ACTIVITY_DIRS)
     # Codex holds STAT alone: not one file was opened, by the gate or past it.
     assert [kind for kind, _ in codex_seen if kind == "open"] == []
+
+
+def test_the_watcher_sees_a_read_reaching_past_the_names_it_used_to_patch(
+    roots, tmp_path, filesystem_audit
+) -> None:
+    """fix-holds-1: the record is keyed on the resource, not on a name.
+
+    The three ways round the seven rebound attributes, made against the
+    fixture credential file that a reader must never reach. Each must appear
+    in the record, so that a reader adding one is caught by the test above
+    rather than by nobody.
+    """
+    claude, _ = roots
+    credentials = claude / ".credentials.json"
+
+    with filesystem_audit.watch(tmp_path) as seen:
+        imported_lstat(credentials)  # `from os import lstat`, bound at import
+        posix.listdir(str(claude))  # the module `os` itself forwards to
+        handle = io.FileIO(str(credentials))
+        handle.read()
+        handle.close()
+        observed = list(seen)
+
+    assert ("scandir", claude) in observed, "posix.listdir went unseen"
+    assert ("open", credentials) in observed, "io.FileIO(path) went unseen"
+    # And the one nothing here can see: CPython raises no audit event for a
+    # stat, so the `lstat` above is absent by design, not by innocence.
+    assert [path for kind, path in observed if kind == "stat"] == []
 
 
 def test_activity_readers_report_missing_roots(tmp_path) -> None:

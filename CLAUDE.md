@@ -214,9 +214,26 @@ The gate records what it admitted and what it refused, per scan.
 **That record is the test suite's only way to see a regression**: a reader
 that opens credential files returns the same timestamp as one that does not,
 so `tests/test_activity_readers.py` asserts the touched set and the
-operations, and watches the process's own filesystem calls to check nothing
-went round the gate. Assert on the record there, never on the timestamp alone,
-and keep new reader I/O going through the gate.
+operations, and checks nothing went round the gate. Assert on the record
+there, never on the timestamp alone, and keep new reader I/O going through
+the gate.
+
+**Be exact about what the "nothing went round the gate" half sees**, because
+until #38 it saw less than it said. It is the session audit hook in
+`tests/conftest.py`, and it is keyed on the *resource*: an `open`, an
+`os.listdir` and an `os.scandir` are in its record whatever Python name reached
+them — an import-time `from os import ...` binding, `posix.*` and
+`io.FileIO(path)` included, all three of which the seven patched module
+attributes it replaced were blind to. What it cannot see is a **stat**: CPython
+raises no audit event for `os.stat` or `os.lstat`, and reading a credential
+file's mtime is enough to publish it as `last_activity`. So that half is pinned
+structurally instead, by `tests/test_reader_filesystem_surface.py`: neither
+`app/claude_activity.py` nor `app/codex_activity.py` names a filesystem API at
+all — an allow-list of the `os` names they may use, pathlib's filesystem
+surface derived from `Path` minus `PurePath`, and no import of a module that
+reaches a resource. A reader that needs a new filesystem call adds it to the
+gate, not to itself; adding it to the reader has to go through that file, on
+purpose.
 
 ## Network boundary
 
@@ -371,6 +388,28 @@ docker compose exec codervis python -m app.egress check
 The pytest suite uses FastAPI's `TestClient`, direct parser imports, stubbed
 quota clients, and temporary directories. It must not read host credential
 files or call the live undocumented quota endpoints.
+
+**`tests/conftest.py` is what makes that one decision for the whole session,
+rather than one test at a time.** Before collection — before any test module
+imports `app.main`, which builds all four sources from the environment at
+import — it points `CLAUDE_DATA_DIR` and `CODEX_DATA_DIR` at empty scratch
+trees and `CLAUDE_AI_HOST` and `CHATGPT_HOST` at a loopback port nothing
+listens on. Then a `sys.addaudithook` observer records every `open`,
+`os.listdir`, `os.scandir` and `socket.connect` by the resource touched, and
+fails whichever test reached a host agent data root or dialled a non-loopback
+address. It refuses at the call *and* accounts for it afterwards, because
+`SourceRefresher.refresh_once()` catches `Exception` whole and a raise on its
+own would be swallowed. `tests/test_session_audit.py` is its own control: a
+sealed second pytest run whose probes reach for a *synthetic* tree by six
+different Python names, each of which must go red, beside one that touches only
+scratch and loopback and must stay green.
+
+This binds pytest runs of this suite and nothing else. It is **not** agent
+settings, an agent hook or a sandbox — #21's committed `.claude/settings.json`
+was reverted (#34, #35) because it bound the operator's own sessions, and
+`tests/test_agent_tooling_context.py` fails if one reappears. Per-test stubbing
+of every source a test publishes is still good hygiene, but it is not the
+bound: that per-name opt-in is the thing that produced the gap.
 
 Neither may you. Every command above runs on the host that holds the two live
 tokens this dashboard displays: never read a credential file to check
