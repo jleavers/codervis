@@ -1336,6 +1336,14 @@ def _on_link_results(
     the family that could not be read is named as unverified beside them (#42). A kernel with no
     IPv6 is not that case -- there is no table, and nothing is on-link over a family that is not
     there.
+
+    The mirror of that is deliberately *not* symmetric: where `/proc/net/route` is the file that
+    will not be read, this returns on the spot and does not go looking at the second table. The
+    verdict is the same either way -- a half that could not enumerate what is on-link is
+    unverified, and no address it went on to dial could turn that into a pass -- and the one
+    thing an operator does about it is the same too: find out why the kernel's own routing table
+    is unreadable in this container. Probing a second family underneath that answer would add
+    lines to a report whose first line already says the enumeration failed.
     """
     unreadable: list[tuple[bool, str]] = []
     if on_link is None:
