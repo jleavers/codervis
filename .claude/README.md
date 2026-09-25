@@ -13,11 +13,16 @@ them by name through `agentType`; nothing else in this repository refers to them
 description of them sits here rather than in `agents/` because the harness reads every Markdown
 file under that directory as a definition, and a README is not one.
 
-**They bind no session an operator starts in this checkout.** A subagent definition is a
-profile that has to be asked for by name — it is not a project settings file, which applies to
-every session in the directory whether it wants it or not. One of those was shipped for #21 and
-reverted in #34 because it did exactly that, and `tests/test_agent_tooling_context.py` still
-fails if one reappears.
+**They constrain no session, and they grant no session anything it does not already hold.**
+Be exact about what shipping them does, because the next person deciding whether another file
+under `agents/` is free will read this: each definition is registered in every session started
+in this checkout, and its description appears in that session's list of subagents, so anything
+in the checkout can delegate to one by name — which is why every description says it is not for
+general delegation. A subagent also cannot exceed the permissions of the session that launched
+it, so none of this adds reach. What it is *not* is a project settings file, which applies to
+every session in the directory whether that session wants it or not: one of those was shipped
+for #21 and reverted in #34 for doing exactly that, and
+`tests/test_agent_tooling_context.py` still fails if one reappears.
 
 What they do is narrow the sweep's own agents. Before #44 every stage launched with whatever
 the launching session held: `gh` already authenticated as the operator, WebFetch and `curl` to
@@ -43,3 +48,9 @@ which are why the post-run audit in `.claude/skills/security-sweep/SKILL.md` is 
 
 Which profile a lane gets is the `web` flag on the lane in the workflow, and the reason is a
 comment beside it.
+
+`Edit` is on the lane profiles and on no other, because a lane iterates on the probes and the
+mutated copies it builds in its scratch directory — the `assurance` lane's brief is to remove
+one rule at a time from a copy of `app/activity_gate.py` and re-run the gate tests. Recon and
+the three later stages each write whole files and never revise one, so they hold `Write` alone.
+Neither bounds where a file may be written: the prompts do that, and a shell could do either.

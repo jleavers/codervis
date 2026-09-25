@@ -174,10 +174,13 @@ What the repository does control is the text itself:
   profiles in `.claude/agents/sweep-*.md` are how: the workflow asks for one by
   name per stage, so the triage pass and the completeness critic hold no shell,
   and only a lane whose brief sends it to published documentation holds the
-  web. A subagent definition is not the settings file above — it is asked for
-  by name and binds no session anyone starts — but it bounds tools and not
-  hosts, which is why `.claude/skills/security-sweep/SKILL.md` still requires
-  the post-run audit of what the agents actually ran.
+  web. A subagent definition is not the settings file above: it constrains no
+  session anyone starts, and grants none of them anything they do not already
+  hold. It is registered in every session in this checkout and can be delegated
+  to by name, which is why each one says it is not for general delegation. And
+  it bounds tools, not hosts, which is why
+  `.claude/skills/security-sweep/SKILL.md` still requires the post-run audit of
+  what the agents actually ran.
 - **Never read a host secret store to check something** — the two credential
   files, a `.env`, `~/.ssh`, `~/.config/gh`, `~/.docker` and the like.
   Establish behaviour from the code and synthetic files, as the tests do.

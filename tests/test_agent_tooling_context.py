@@ -16,9 +16,11 @@ that material one stage relays to the next arrives fenced and labelled, and that
 launches through one path holding one named tool profile (#44).
 
 The profiles are subagent definitions under `.claude/agents/`, which is a different kind of
-file from the settings one above: a definition is a profile something has to ask for by name,
-and the sweep is the only thing in this repository that asks. It narrows the sweep's own
-agents and applies to nothing an operator launches.
+file from the settings one above: a definition constrains no session and grants none of them
+anything they do not already hold. It is registered in this checkout and can be delegated to by
+name -- the sweep is the only thing here that does -- so what these checks hold is that the
+sweep still asks for one per stage, and that each one still holds what that stage's output
+needs and no more.
 """
 
 from __future__ import annotations
@@ -271,10 +273,24 @@ def test_every_sweep_agent_launches_through_one_path() -> None:
 
     launcher = source.index("const launch = ({")
     assert launcher < source.index(calls[0][1]), "the one agent() call is not the launcher's"
+    body = source[launcher : source.index("\n}\n", launcher)]
     for argument in ("instructions", "relayed = []", "profile", "label", "phase", "schema"):
-        assert argument in source[launcher : launcher + 400], (
-            f"the launcher does not take {argument} as its own argument"
-        )
+        assert argument in body, f"the launcher does not take {argument} as its own argument"
+
+    # Taking the arguments is not using them. Both of these survived a text-only check: a
+    # launcher that built `\`${instructions}\`` would relay nothing to anybody with every
+    # fence constant still in the file, and one that dropped `agentType` from the options
+    # would leave five profiles shipped and asked for by nothing.
+    assert "renderRelay(relayed)" in body, (
+        "the launcher does not put its relayed material through the fence, so a stage that "
+        "passes some would send none"
+    )
+    options = body[body.index("agent(`") :]
+    assert "agentType" in options, (
+        "the launcher resolves a stage's profile and does not pass it to agent(), so nothing "
+        "is scoped: the five definitions under .claude/agents/ would ship and be asked for by "
+        "nothing"
+    )
 
     # Every launch names a profile. A call that forgot one would throw at run time -- the
     # launcher has no default -- but a sweep that fails in its fifth phase has already spent
@@ -317,8 +333,8 @@ def test_relayed_material_reaches_an_agent_fenced_and_labelled() -> None:
     # The survivor is the funnel's own arithmetic, which the script computes from its own
     # counters -- numbers, not anybody's text.
     assert any("${JSON.stringify(counts)}" in line for line in stringifies)
-    assert "carries a fence marker" in source, (
-        "nothing checks that relayed material cannot close its own fence"
+    assert "neutralised that line" in source, (
+        "nothing keeps relayed material from closing its own fence"
     )
 
     labelled = set(re.findall(r"relay\(\s*[`'\"]([^`'\"]+)", source))
@@ -372,8 +388,9 @@ def test_every_stage_holds_a_named_tool_profile_and_nothing_wider() -> None:
     """A stage that obeys injected text can reach only what that stage's output needs.
 
     The profiles are subagent definitions the workflow asks for by name. They are not the
-    settings file above: nothing applies them to a session an operator starts, and the test
-    beside this one still fails if such a file appears.
+    settings file above: they constrain no session an operator starts and grant none of them
+    anything they do not already hold, and the test beside this one still fails if such a file
+    appears.
     """
     source = WORKFLOW.read_text(encoding="utf-8")
 

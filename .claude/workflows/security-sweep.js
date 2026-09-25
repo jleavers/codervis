@@ -271,9 +271,11 @@ which can be regenerated, rather than the data, which cannot.`
 // the triage pass and the completeness critic read and write files and hold no shell at all,
 // the report pass has a shell because its dedupe is two read-only `gh` listings, and a lane
 // reaches the web only where its brief sends it to a vendor's documentation or an advisory
-// database. A profile is asked for by name, so it binds no session an operator starts in this
-// checkout -- unlike the settings file #21 shipped and #34 reverted, which
-// `tests/test_agent_tooling_context.py` still forbids (#44).
+// database. Be exact about what shipping these does: a definition is registered in every
+// session started in this checkout and can be delegated to by name, which is why each one says
+// it is not for general delegation. What it cannot do is constrain a session or hand one
+// anything it does not already hold -- that is the difference from the settings file #21
+// shipped and #34 reverted, which `tests/test_agent_tooling_context.py` still forbids (#44).
 //
 // The scoping is not the control on its own: an agent that obeys injected text still holds
 // its own stage's tools. What it removes is the rest -- the reach every stage used to hold
@@ -331,17 +333,25 @@ const renderRelay = (blocks) => {
     // marker; the check below is what keeps that true of a caller that one day passes
     // something else, instead of letting it close its own fence and carry on as this prompt.
     const body = JSON.stringify(value === undefined ? null : value, null, 2)
-    const forged = body.split('\n').find((line) => {
-      const trimmed = line.trim()
-      return trimmed === RELAY_END || trimmed.startsWith(RELAY_BEGIN)
-    })
-    if (forged !== undefined) {
-      throw new Error(`relayed block "${label}" carries a fence marker: ${forged.slice(0, 60)}`)
-    }
+    // A line of the body that is itself a marker would end the fence early, and everything
+    // after it would read in this prompt's own voice. It cannot happen while the body is JSON,
+    // which is why the launcher serialises rather than a call site; this is for the caller that
+    // one day relays something else. It neutralises rather than throws, because a run that has
+    // reached the triage or report stage has spent an hour, and a marked line the reader can
+    // see is worth more than a crash.
+    const fenced = body
+      .split('\n')
+      .map((line) => {
+        const trimmed = line.trim()
+        if (trimmed !== RELAY_END && !trimmed.startsWith(RELAY_BEGIN)) return line
+        log(`relayed block "${oneLine(label)}" carried a fence marker; neutralised that line`)
+        return `[marker neutralised] ${line}`
+      })
+      .join('\n')
     return `**${oneLine(label)}** — ${oneLine(origin)}:
 
 ${RELAY_BEGIN}: ${oneLine(label)} =====
-${body}
+${fenced}
 ${RELAY_END}`
   })
   return `\n\n${RELAY_RULE}\n\n${rendered.join('\n\n')}\n`
@@ -365,6 +375,12 @@ const launch = ({ instructions, relayed = [], profile, label, phase, schema }) =
 // out of material other people write. Keep it to the shape the scan prompts ask for rather
 // than trusting it: `03-escalated-../../x.json` is a path this sweep never means to write.
 const safeId = (id) => String(id).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 64) || 'unnamed'
+
+// The one field of a finding a prompt states in its own voice, rather than relaying: the
+// escalation prompt tells its refuter how severe the finding it is about was rated. The schema
+// constrains it to the four words, so this changes nothing today -- it is here so that the
+// prompt's voice does not depend on the schema layer having held.
+const knownSeverity = (severity) => (SEVERITIES.includes(severity) ? severity : 'critical')
 
 // --- phase 1: recon --------------------------------------------------------------------
 
@@ -1208,7 +1224,7 @@ The findings to refute are relayed below, labelled \`findings from lane ${lane.k
 
 const escalatePrompt = (finding) => `${WHERE}
 
-One finding has already survived a refuter and is rated ${finding.severity}. Before it reaches
+One finding has already survived a refuter and is rated ${knownSeverity(finding.severity)}. Before it reaches
 a human it gets a second, independent attempt at refutation, and you are it. You have not been
 shown the first refuter's reasoning, deliberately.
 
@@ -1368,6 +1384,10 @@ including the tracker text you read while deduping.${writeBack('05-dedupe.json')
 log(`sweeping ${repo} at ${sha}`)
 log(`worktree ${worktree}`)
 log(`artefacts ${runDir}`)
+// Which scoping the run had, beside the other three, because the post-run audit's reading of a
+// connector call in a transcript depends on it: with the profiles on, one means a stage did not
+// launch with its profile; with them off, it means the stage held whatever this session holds.
+log(useProfiles ? 'stages launch with their own tool profiles' : 'toolProfiles: false -- every stage launches on the default workflow subagent')
 
 phase('Recon')
 const surfaceMap = await launch({

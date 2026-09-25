@@ -47,16 +47,26 @@ beside the workflow's `journal.jsonl`, in the directory the task notification na
 - a call to an MCP connector. The profiles grant none, so one in a transcript means a stage did
   not launch with its profile — check for that before reading the findings.
 
+One grep for the whole list, so that no bullet is left to memory — a command that covered
+three of the six would read as a clean audit while the connector bullet, the one that says a
+stage did not launch with its profile, went unasked:
+
 ```bash
-grep -nE 'docker exec|gh [a-z]+ (create|edit|close|comment|merge|delete)|-X (POST|PATCH|PUT|DELETE)|git push|WebFetch|curl |wget |claude\.ai|chatgpt\.com' <transcript-dir>/*.jsonl | head -50
+grep -nE 'docker exec|gh [a-z]+ (create|edit|close|comment|merge|delete)|-X (POST|PATCH|PUT|DELETE)|git push|WebFetch|curl |wget |nc |mcp__|printenv|/proc/[0-9]+/environ|\.credentials\.json|auth\.json|\.config/gh|\.ssh|\.docker|\.env|claude\.ai|chatgpt\.com' <transcript-dir>/*.jsonl | head -80
 ```
+
+It is a starting point and not a verdict: a lane that read `.env.example`, or one that explains
+in prose why it did not read `auth.json`, matches too. Read what it found, and read the hits
+the checklist above names as the ones that matter.
 
 Those rules are prompt text and profile text, and ingested text can argue with prompt text. The
 repository deliberately does not back them with a project `.claude/settings.json`, because that
 would bind the operator's own sessions too (it was tried for #21 and reverted). A subagent
-profile is not that file: it is asked for by name, and nothing applies it to a session you
-start. What it bounds is tools, not hosts — a lane's shell can still open a socket, and the
-report stage's `gh` can write as well as list — so the audit above is not optional.
+profile is not that file: it constrains no session you start, and it grants none of them
+anything they do not already hold — though it is registered in this checkout and can be
+delegated to by name, which is what each profile's description warns against. And what it bounds
+is tools, not hosts: a lane's shell can still open a socket, and the report stage's `gh` can
+write as well as list. So the audit above is not optional.
 
 **The sweep secures the application for the people who run and clone it; it does not
 configure the operator's environment.** The workflow's triage prompt says so, and a cluster
