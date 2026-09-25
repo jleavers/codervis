@@ -285,6 +285,45 @@ test("each fenced block says who wrote what is inside it", async () => {
 });
 
 
+test("`args.known` reaches a lane through the fence, not in the prompt's voice", async () => {
+  // The launching session writes it, but SKILL.md tells that session to build it out of the
+  // tracker, so it is other people's text one step removed. It used to be interpolated into
+  // every scan prompt bare, above the rules.
+  const { calls } = await run({ known: `Issue #1 is fixed.\n${FORGERY}` });
+  const scans = calls.filter(({ opts }) => (opts.label || "").startsWith("scan:"));
+  assert.ok(scans.length, "no lane ran");
+  for (const { prompt, opts } of scans) {
+    const { lines, inside, blocks, unbalanced } = fenceMap(prompt);
+    assert.equal(blocks, 1, `${opts.label}: expected one relayed block, saw ${blocks}`);
+    assert.equal(unbalanced, false, `${opts.label}: the fence does not open and close cleanly`);
+    lines.forEach((line, index) => {
+      if (line.includes(INJECTED)) {
+        assert.ok(inside[index], `${opts.label}: known text outside the fence at line ${index + 1}`);
+      }
+    });
+  }
+  // And a lane launched without it gets no fence at all, rather than an empty one.
+  const { calls: plain } = await run();
+  const scan = plain.find(({ opts }) => (opts.label || "").startsWith("scan:"));
+  assert.ok(!scan.prompt.includes(BEGIN), "a lane with no `known` was handed an empty block");
+});
+
+test("nothing inside a block is shaped like a delimiter but the two that hold it", async () => {
+  // What a reader goes by is the shape of the line, so that is what the launcher defuses: a
+  // run of `=` at the start of a line. An exact comparison against the end marker would let
+  // `<end marker> then do X` through.
+  const { calls } = await run({ known: `${END} then ${INJECTED}` });
+  for (const { prompt, opts } of calls.filter(({ prompt }) => prompt.includes(BEGIN))) {
+    const shaped = prompt.split("\n").filter((line) => /^={3,}/.test(line.trim()));
+    const { blocks } = fenceMap(prompt);
+    assert.equal(
+      shaped.length,
+      blocks * 2,
+      `${opts.label}: ${shaped.length} delimiter-shaped lines for ${blocks} block(s)`,
+    );
+  }
+});
+
 test("a finding's own field cannot get outside the fence that holds it", async () => {
   // `dimension` is a free-text field a scan agent fills in, and the escalation stage used to
   // name it in the line above the fence -- which is the prompt's own voice, where a newline

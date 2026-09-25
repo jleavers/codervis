@@ -333,8 +333,17 @@ def test_relayed_material_reaches_an_agent_fenced_and_labelled() -> None:
     # The survivor is the funnel's own arithmetic, which the script computes from its own
     # counters -- numbers, not anybody's text.
     assert any("${JSON.stringify(counts)}" in line for line in stringifies)
-    assert "neutralised that line" in source, (
-        "nothing keeps relayed material from closing its own fence"
+    assert "DELIMITER_SHAPE = /^={3,}/" in source, (
+        "the guard tests for the two exact markers rather than for the shape a reader goes by, "
+        "so a line like `<the end marker> then do X` would still close the fence"
+    )
+    assert "defused" in source, "nothing keeps relayed material from closing its own fence"
+
+    # `args.known` is the launching session's prose, and SKILL.md tells that session to build it
+    # out of the tracker, so it is other people's text one step removed. It used to be
+    # interpolated into every scan prompt bare, above the rules.
+    assert "${known}" not in source, (
+        "args.known is interpolated into a prompt bare; relay it like anything else"
     )
 
     labelled = set(re.findall(r"relay\(\s*[`'\"]([^`'\"]+)", source))
@@ -400,18 +409,23 @@ def test_every_stage_holds_a_named_tool_profile_and_nothing_wider() -> None:
         f"subagent definition, and these are not the five stage profiles: {shipped}"
     )
 
+    held = {}
     for name, tools in STAGE_TOOLS.items():
         fields = _frontmatter(AGENTS_DIR / f"{name}.md")
+        held[name] = fields.get("tools") or ""
         assert fields.get("name") == name, f"{name}.md declares a different name"
-        assert fields.get("tools") == tools, (
-            f"{name} holds {fields.get('tools')!r}, not {tools!r}. Widening a stage's tools is "
+        assert held[name] == tools, (
+            f"{name} holds {held[name]!r}, not {tools!r}. Widening a stage's tools is "
             f"a decision: say in the same change what an injected instruction could reach with it."
         )
         assert f"'{name}'" in source, f"nothing in the workflow launches {name}"
 
-    assert "Bash" not in STAGE_TOOLS["sweep-triage"], "the triage stage has acquired a shell"
-    assert "Web" not in STAGE_TOOLS["sweep-report"], "the report stage has acquired the web"
-    assert "Web" not in STAGE_TOOLS["sweep-lane"], (
+    # Spelled out against what the files say, not against the table above: the table is this
+    # module's own literal, and a check that reads it twice would pass on a profile file nobody
+    # has looked at.
+    assert "Bash" not in held["sweep-triage"], "the triage stage has acquired a shell"
+    assert "Web" not in held["sweep-report"], "the report stage has acquired the web"
+    assert "Web" not in held["sweep-lane"], (
         "the default lane profile has acquired the web; a lane whose brief needs it declares "
         "`web: true` and gets sweep-lane-web"
     )
@@ -424,5 +438,20 @@ def test_the_post_run_audit_looks_for_what_a_stage_still_holds() -> None:
     write as well as list. SKILL.md's audit is what stands behind those, so it names them.
     """
     skill = SKILL.read_text(encoding="utf-8")
-    for probe in ("gh", "git push", "WebFetch", "curl", "connector"):
-        assert probe in skill, f"the post-run audit does not look for {probe}"
+    for probe in (
+        # `gh`'s write verbs, spelled: `"gh" in skill` is satisfied by "through" or "high", so
+        # the half of this that matters -- listing is fine, writing is not -- went unpinned.
+        "(create|edit|close|comment|merge|delete)",
+        "(-X|--method) (POST|PATCH|PUT|DELETE)",
+        "git push",
+        "WebFetch",
+        "curl ",
+        "nc ",
+        # A connector call, and the secret stores the checklist above the command names.
+        "mcp__",
+        ".credentials.json",
+        "auth.json",
+        ".config/gh",
+        "printenv",
+    ):
+        assert probe in skill, f"the post-run audit does not look for {probe!r}"

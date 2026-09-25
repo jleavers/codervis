@@ -9,7 +9,8 @@ This directory holds **no `settings.json`**, and that is deliberate; see below.
 ## Stage tool profiles for the security sweep
 
 Five subagent definitions, one per stage of `workflows/security-sweep.js`. The workflow asks for
-them by name through `agentType`; nothing else in this repository refers to them. This
+them by name through `agentType`, and it is the only thing in this repository that asks for one
+at all — `CLAUDE.md`, `AGENTS.md`, `SKILL.md` and two test modules describe and pin them. This
 description of them sits here rather than in `agents/` because the harness reads every Markdown
 file under that directory as a definition, and a README is not one.
 

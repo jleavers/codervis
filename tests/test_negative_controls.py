@@ -93,6 +93,13 @@ _STAGE_PROFILES = (
 _QUOTED_MATERIAL = (
     f"{CONTEXT_TESTS}::test_the_data_rule_covers_material_quoted_inside_a_finding"
 )
+_RELAYED_FENCED = (
+    f"{CONTEXT_TESTS}::test_relayed_material_reaches_an_agent_fenced_and_labelled"
+)
+_POST_RUN_AUDIT = (
+    f"{CONTEXT_TESTS}::test_the_post_run_audit_looks_for_what_a_stage_still_holds"
+)
+SWEEP_SKILL = ".claude/skills/security-sweep/SKILL.md"
 SWEEP_WORKFLOW = ".claude/workflows/security-sweep.js"
 
 #: Spelled in parts on purpose. The check this mutation trips reads every tracked text file,
@@ -397,6 +404,29 @@ MUTATIONS: tuple[Mutation, ...] = (
         before="tools: Read, Glob, Grep, Write",
         after="tools: Read, Glob, Grep, Write, Bash",
         caught_by=(_STAGE_PROFILES,),
+    ),
+    Mutation(
+        key="sweep-known-interpolated-bare",
+        area=SWEEP,
+        rule="`args.known`, which the launching session builds from the tracker, reaches a lane fenced",
+        path=SWEEP_WORKFLOW,
+        # The defect as it was: the prose interpolated into every scan prompt, in the
+        # prompt's own voice, above the rules that say what is data.
+        before=(
+            "'\\n\\nWhat is already known and filed in this tree, across every lane, is "
+            "relayed below as\\n`already filed`. Go past it rather than re-deriving it.'"
+        ),
+        after="`\\n\\nAlready known in this tree:\\n\\n${known}`",
+        caught_by=(_RELAYED_FENCED,),
+    ),
+    Mutation(
+        key="sweep-audit-narrowed",
+        area=SWEEP,
+        rule="the post-run audit looks for gh write verbs, not only for reads and the port",
+        path=SWEEP_SKILL,
+        before="|(-X|--method) (POST|PATCH|PUT|DELETE)",
+        after="",
+        caught_by=(_POST_RUN_AUDIT,),
     ),
     Mutation(
         key="sweep-quoted-material-not-data",
