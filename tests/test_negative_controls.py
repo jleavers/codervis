@@ -422,9 +422,21 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         key="sweep-audit-narrowed",
         area=SWEEP,
-        rule="the post-run audit looks for gh write verbs, not only for reads and the port",
+        rule="the post-run audit looks for `gh api` with a write method, not only the named verbs",
         path=SWEEP_SKILL,
         before="|(-X|--method) (POST|PATCH|PUT|DELETE)",
+        after="",
+        caught_by=(_POST_RUN_AUDIT,),
+    ),
+    Mutation(
+        key="sweep-audit-drops-the-credential-stores",
+        area=SWEEP,
+        rule="the post-run audit looks for reads of the host's secret stores by name",
+        path=SWEEP_SKILL,
+        # The narrowing this control exists for happened once already, in the change that added
+        # the audit: `\.ssh` and `\.docker` were tightened to `\.ssh/` and `\.docker/`, which
+        # stopped matching `ls -la ~/.ssh` while the checklist above still named it.
+        before=r"|\.ssh\b|\.docker\b",
         after="",
         caught_by=(_POST_RUN_AUDIT,),
     ),

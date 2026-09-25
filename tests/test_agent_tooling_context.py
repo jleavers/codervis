@@ -420,9 +420,9 @@ def test_every_stage_holds_a_named_tool_profile_and_nothing_wider() -> None:
         )
         assert f"'{name}'" in source, f"nothing in the workflow launches {name}"
 
-    # Spelled out against what the files say, not against the table above: the table is this
-    # module's own literal, and a check that reads it twice would pass on a profile file nobody
-    # has looked at.
+    # The three properties worth reading as sentences, off what the files say. The equality
+    # above already ties each file to the table, so these add no reach -- they say which parts of
+    # those tool lists are load-bearing, so that a change to one arrives with an explanation.
     assert "Bash" not in held["sweep-triage"], "the triage stage has acquired a shell"
     assert "Web" not in held["sweep-report"], "the report stage has acquired the web"
     assert "Web" not in held["sweep-lane"], (
@@ -438,20 +438,39 @@ def test_the_post_run_audit_looks_for_what_a_stage_still_holds() -> None:
     write as well as list. SKILL.md's audit is what stands behind those, so it names them.
     """
     skill = SKILL.read_text(encoding="utf-8")
+
+    # The prose checklist, which is the audit. Each of these words is what it tells the auditor
+    # to look for, and the bare word `gh` cannot stand for the half that matters -- listing is
+    # fine, writing is not -- because "through" and "high" contain it.
+    for bullet in ("write** verb", "git push", "WebFetch", "connector", "docker exec"):
+        assert bullet in skill, f"the post-run audit's checklist does not name {bullet!r}"
+
+    # And the command the skill offers for it, scoped to the command: a token in the prose above
+    # says the auditor was told to look, not that the one-liner looks. One probe per thing rather
+    # than the alternation's exact spelling, so that reordering the verbs or splitting the grep in
+    # two does not fail this -- what is pinned is the reach, not the regex.
+    commands = [line for line in skill.splitlines() if line.startswith("grep -nE")]
+    assert len(commands) == 1, f"expected one audit command in SKILL.md, found {len(commands)}"
+    # Without its ERE escapes, so a probe reads as the thing looked for rather than as the
+    # spelling: `\.credentials\.json` and `\bnc ` are what the command has to say.
+    command = commands[0].replace("\\", "")
     for probe in (
-        # `gh`'s write verbs, spelled: `"gh" in skill` is satisfied by "through" or "high", so
-        # the half of this that matters -- listing is fine, writing is not -- went unpinned.
-        "(create|edit|close|comment|merge|delete)",
-        "(-X|--method) (POST|PATCH|PUT|DELETE)",
+        "docker exec",
+        "create", "edit", "close", "comment", "merge", "delete",  # `gh`'s write verbs
+        "-X", "--method", "POST", "PATCH", "PUT", "DELETE",  # and `gh api`'s
         "git push",
         "WebFetch",
-        "curl ",
+        "curl",
         "nc ",
-        # A connector call, and the secret stores the checklist above the command names.
-        "mcp__",
+        "mcp__",  # a connector call
+        # The secret stores the checklist above the command names.
         ".credentials.json",
         "auth.json",
         ".config/gh",
+        ".ssh",
+        ".docker",
+        ".env",
         "printenv",
+        "environ",
     ):
-        assert probe in skill, f"the post-run audit does not look for {probe!r}"
+        assert probe in command, f"the audit command does not look for {probe!r}"

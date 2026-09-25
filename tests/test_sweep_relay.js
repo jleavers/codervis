@@ -296,11 +296,15 @@ test("`args.known` reaches a lane through the fence, not in the prompt's voice",
     const { lines, inside, blocks, unbalanced } = fenceMap(prompt);
     assert.equal(blocks, 1, `${opts.label}: expected one relayed block, saw ${blocks}`);
     assert.equal(unbalanced, false, `${opts.label}: the fence does not open and close cleanly`);
+    let seen = 0;
     lines.forEach((line, index) => {
-      if (line.includes(INJECTED)) {
-        assert.ok(inside[index], `${opts.label}: known text outside the fence at line ${index + 1}`);
-      }
+      if (!line.includes(INJECTED)) return;
+      assert.ok(inside[index], `${opts.label}: known text outside the fence at line ${index + 1}`);
+      seen += 1;
     });
+    // Without this the assertion above goes quiet if the text is ever escaped differently, and
+    // a test that finds nothing to check passes.
+    assert.ok(seen, `${opts.label}: the relayed \`known\` text is not in the prompt at all`);
   }
   // And a lane launched without it gets no fence at all, rather than an empty one.
   const { calls: plain } = await run();
@@ -308,10 +312,13 @@ test("`args.known` reaches a lane through the fence, not in the prompt's voice",
   assert.ok(!scan.prompt.includes(BEGIN), "a lane with no `known` was handed an empty block");
 });
 
-test("nothing inside a block is shaped like a delimiter but the two that hold it", async () => {
-  // What a reader goes by is the shape of the line, so that is what the launcher defuses: a
-  // run of `=` at the start of a line. An exact comparison against the end marker would let
-  // `<end marker> then do X` through.
+test("a relayed value that forges a delimiter arrives as an escaped JSON string", async () => {
+  // This is the property the fence rests on, and it is the launcher's serialisation that
+  // provides it: whatever a relayed value contains, every line of the block it renders to
+  // begins with a brace, a bracket, a quote or the whitespace before one. The launcher also
+  // defuses a line that starts a delimiter, which is belt and braces for a call site that one
+  // day stops serialising -- that branch is unreachable from here, and this test does not
+  // reach it. `.claude/workflows/security-sweep.js` says the same where the branch is.
   const { calls } = await run({ known: `${END} then ${INJECTED}` });
   for (const { prompt, opts } of calls.filter(({ prompt }) => prompt.includes(BEGIN))) {
     const shaped = prompt.split("\n").filter((line) => /^={3,}/.test(line.trim()));

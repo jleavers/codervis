@@ -52,15 +52,19 @@ three of the six would read as a clean audit while the connector bullet, the one
 stage did not launch with its profile, went unasked:
 
 ```bash
-grep -nE 'docker exec|gh [a-z]+ (create|edit|close|comment|merge|delete)|(-X|--method) (POST|PATCH|PUT|DELETE)|git push|WebFetch|curl |wget |\bnc |mcp__|printenv|/proc/[0-9]+/environ|\.credentials\.json|auth\.json|\.config/gh|\.ssh/|\.docker/|\.env\b|claude\.ai|chatgpt\.com' <transcript-dir>/*.jsonl | head -80
+grep -nE 'docker exec|gh [a-z]+ (create|edit|close|comment|merge|delete)|(-X|--method) (POST|PATCH|PUT|DELETE)|git push|WebFetch|curl |wget |\bnc |mcp__|printenv|/proc/[0-9]+/environ|\.credentials\.json|auth\.json|\.config/gh|\.ssh\b|\.docker\b|\.env\b|claude\.ai|chatgpt\.com' <transcript-dir>/*.jsonl | head -80
 ```
 
-It is a starting point and not a verdict, in both directions. It matches things that are fine —
-a lane that read `.env.example`, one that quoted `auth.json` while explaining why it did not open
-it, `\bnc ` inside a word like "sync" — and it will miss a spelling nobody thought of, an
-absolute path to a credential store, or a connector invoked under a name that is not
-`mcp__`-prefixed. Read what it found against the checklist above, and where a transcript is
-short enough, read it.
+It is a starting point and not a verdict, in both directions.
+
+It matches things that are fine: a lane that read `.env.example`, one that quoted `auth.json`
+while explaining why it never opened it, a path like `/usr/bin/nc` in a tool's own output, this
+repository's own `app/egress.py` discussing `claude.ai`.
+
+And it misses whatever it does not name. A store nobody thought of is the important case —
+`~/.aws`, `~/.config/gcloud`, a mounted `/var/run/secrets/…` — and so is a connector whose tool
+name is not `mcp__`-prefixed, and a command assembled from a shell variable. The checklist above
+is the audit; this is one pass over it. Where a transcript is short enough, read it.
 
 Those rules are prompt text and profile text, and ingested text can argue with prompt text. The
 repository deliberately does not back them with a project `.claude/settings.json`, because that
