@@ -1,9 +1,10 @@
 """The dashboard's network egress, bounded by an allow-listing ``CONNECT`` proxy.
 
 The dashboard holds two long-lived bearer tokens and needs exactly two hosts. This proxy is the
-only route off the host its container has, and it admits only the hosts on its allow-list, so a
-redirect, a host override or a compromised dependency cannot send a token to a host that is not
-on that list.
+only route off the host its container has -- which the network below is what makes true, and
+``check`` is what establishes -- and it admits only the hosts on its allow-list, so a redirect,
+a host override or a compromised dependency cannot send a token to a host that is not on that
+list.
 
 **That bounds the destination host, and nothing else.** ``CONNECT`` is relayed without being
 opened, so which account or tenant a request reaches at ``claude.ai`` or ``chatgpt.com``, and
@@ -521,8 +522,15 @@ def split_proxy_url(proxy_url: str) -> SplitResult:
     One spelling for every caller. Where the check parsed the variable twice with two rules,
     the scheme-less form named a proxy to dial and no host to account for on-link, which failed
     a deployment that was whole.
+
+    A variable urllib will not parse at all (``[::1``, an unclosed bracket) comes back empty
+    rather than raising, so it is reported as the proxy URL it is not, by the one caller whose
+    job that is.
     """
-    return urlsplit(proxy_url if "//" in proxy_url else f"//{proxy_url}")
+    try:
+        return urlsplit(proxy_url if "//" in proxy_url else f"//{proxy_url}")
+    except ValueError:
+        return SplitResult("", "", "", "", "")
 
 
 def probe_proxy(
@@ -719,7 +727,11 @@ def probe_on_link(addr: str, port: int, *, timeout_s: float) -> str:
 
 
 class OnLinkProbe(Protocol):
-    """A probe's shape, so the check can be given one and a stub has to be the same thing."""
+    """A probe's shape, so the check can be given one and a reader knows what to write.
+
+    Documented, not enforced: nothing in CI type-checks, so a stub whose parameters are spelled
+    differently still runs. Every call here is positional in the first two, keyword in the last.
+    """
 
     def __call__(self, addr: str, port: int, *, timeout_s: float) -> str: ...
 

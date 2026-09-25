@@ -666,7 +666,7 @@ def test_the_on_link_half_names_an_accept_over_a_refusal_on_another_port() -> No
     operator is told which one to go and look at."""
     answers = {443: ON_LINK_REFUSED, 80: ON_LINK_NO_ANSWER, 22: ON_LINK_ACCEPTED}
     results = check_on_link(
-        ["172.30.0.1"], probe=lambda _a, port, **k: answers[port], timeout_s=1
+        ["172.30.0.1"], probe=lambda addr, port, **k: answers[port], timeout_s=1
     )
     assert [ok for ok, _ in results] == [False]
     assert "172.30.0.1:22 accepted" in results[0][1]
@@ -676,7 +676,7 @@ def test_the_on_link_half_probes_no_more_than_its_cap() -> None:
     """A check, not a scan of whatever a surprising routing table held."""
     asked: list[str] = []
 
-    def record(addr: str, _port: int, **_kwargs: object) -> str:
+    def record(addr: str, port: int, **_kwargs: object) -> str:
         asked.append(addr)
         return ON_LINK_NO_ANSWER
 
@@ -692,7 +692,7 @@ def test_the_on_link_half_fails_rather_than_passing_over_what_the_cap_left() -> 
     establishes nothing, so the addresses past the cap are named and the verdict is a failure."""
     asked: list[str] = []
 
-    def record(addr: str, _port: int, **_kwargs: object) -> str:
+    def record(addr: str, port: int, **_kwargs: object) -> str:
         asked.append(addr)
         return ON_LINK_NO_ANSWER
 
@@ -914,9 +914,7 @@ async def test_the_check_accounts_for_the_proxys_address_rather_than_dialling_it
 
     monkeypatch.setattr(egress, "read_route_table", lambda *a, **k: INTERNAL_ROUTE_TABLE)
     monkeypatch.setattr(egress, "own_addresses", lambda: frozenset({"172.30.0.2"}))
-    monkeypatch.setattr(
-        egress, "resolved_addresses", lambda host: frozenset({"172.30.0.1"} if host else set())
-    )
+    monkeypatch.setattr(egress, "resolved_addresses", lambda _host: frozenset({"172.30.0.1"}))
     async with _CheckRig() as rig:
         results = await asyncio.to_thread(
             functools.partial(
@@ -986,6 +984,31 @@ def test_the_peers_are_this_container_and_the_proxy(monkeypatch, proxy: str) -> 
     assert egress.peer_addresses(proxy) == {"172.30.0.2": "this container's own address"}
 
 
+@pytest.mark.parametrize(
+    ("proxy", "host"),
+    [
+        ("http://egress:3128", "egress"),
+        ("egress:3128", "egress"),
+        ("https://egress:3128", "egress"),
+    ],
+)
+def test_both_readers_of_the_proxy_variable_see_the_same_host(proxy: str, host: str) -> None:
+    """The scheme-less spelling urllib accepts is the one `peer_addresses` used to read as no
+    host at all, which had the check dial the proxy's own address."""
+    assert egress.split_proxy_url(proxy).hostname == host
+
+
+@pytest.mark.parametrize("proxy", ["[::1", "", "://"])
+def test_a_proxy_variable_that_will_not_parse_is_reported_rather_than_raised(proxy: str) -> None:
+    """`[::1` makes urlsplit raise, which would have come out of `check` as a traceback once
+    `peer_addresses` began parsing the variable too. Nothing here opens a socket or resolves a
+    name that is not this host's own: each of these names no proxy host to dial."""
+    assert egress.split_proxy_url(proxy).hostname is None
+    assert egress.peer_addresses(proxy) == egress.peer_addresses("")
+    answer = probe_proxy(proxy, "example.com", timeout_s=0.5)
+    assert isinstance(answer, str) and "proxy URL" in answer
+
+
 def test_the_on_link_half_fails_when_it_is_given_no_ports() -> None:
     """A probe not made establishes nothing, ports included."""
     results = check_on_link(["172.30.0.1"], ports=[], probe=_never_probed, timeout_s=1)
@@ -1018,7 +1041,7 @@ async def test_the_check_reads_the_containers_own_routing_table_when_given_none(
     container's table yields -- here the gateway `internal: true` leaves on the bridge."""
     dialled: list[str] = []
 
-    def record(addr: str, _port: int, **_kwargs: object) -> str:
+    def record(addr: str, port: int, **_kwargs: object) -> str:
         dialled.append(addr)
         return ON_LINK_NO_ANSWER
 
