@@ -294,14 +294,14 @@ and then it is dialled like any other. Silence from a dialled address is the
 weak half of the assertion — a host dropping packets from that bridge looks the
 same — which is why the bound is three assertions and not this one. A half with
 nothing to probe fails as unverified rather than passing, since "it asked a
-question the network answers anyway" is the defect it exists
-to prevent, and so does a candidate list longer than the cap on how many it will
-dial, naming what went unprobed. What it may account for and still pass is a
-candidate that is one of the two peers above — this container, because reaching
-itself establishes nothing either way, or the proxy, which is the allow-listed
-way off the project rather than a way round it. A probe that never left this
-container (a local `EPERM`, a descriptor limit) is not silence either, and fails
-as unverified rather than reading as "nothing answered".
+question the network answers anyway" is the defect it exists to prevent, and so
+does a candidate list longer than the cap on how many it will dial, naming what
+went unprobed. What it may account for and still pass is a candidate that is
+one of the two peers above — this container, because reaching itself
+establishes nothing either way, or the proxy, which is the allow-listed way off
+the project rather than a way round it. A probe that never left this container
+(a local `EPERM`, a descriptor limit) is not silence either, and fails as
+unverified rather than reading as "nothing answered".
 `tests/test_compose_topology.py` pins the compose shape, gateway mode included,
 and CI sets `REQUIRE_DOCKER` so that file fails rather than skips where the
 Docker CLI has gone missing.

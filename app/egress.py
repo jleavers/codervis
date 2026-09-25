@@ -31,7 +31,8 @@ Two halves, and neither is sufficient alone:
 ``check`` asserts the whole bound from inside the dashboard's container, and asserts it by
 probing what is reachable rather than by restating the design: the proxy filters by name and
 admits the configured upstreams, the on-link addresses it derives are each either a peer in
-this compose project or answer nothing, and a public name does not resolve-and-connect. A
+this compose project or answer nothing, and a public name does not resolve-and-connect -- or,
+where it will not resolve at all, the routing table names no default route for it to have used. A
 refusal on an on-link address is a failure like an accept, because an RST comes from a live
 host. Silence is the weaker half of that: it means nothing answered the ports asked, which a
 host behind a default-drop rule also produces, so the on-link half is one of three assertions
@@ -725,13 +726,21 @@ def on_link_addresses(route_table: str) -> list[str]:
 
 
 def has_default_route(route_table: str) -> bool:
-    """Whether this container has any route off its own subnets.
+    """Whether the table names an IPv4 default route (`0.0.0.0/0`).
 
-    This is what `internal: true` withholds, and it is the evidence the direct half falls back
-    on when a public name will not resolve. A lookup that fails says nothing about routing --
-    an internal network's resolver declines public names, and so does a broken one on a
-    container with a default route and a way off the host. The routing table tells the two
-    apart without asking anything of the network.
+    That, and not "a route off this container's subnets" in general, is the question: it is
+    what `internal: true` withholds, and it is the evidence the direct half falls back on when
+    a public name will not resolve. A lookup that fails says nothing about routing -- an
+    internal network's resolver declines public names, and so does a broken resolver on a
+    container that has a way off the host. The table tells the two apart without asking
+    anything of the network.
+
+    What it therefore answers `False` to while a route off-subnet exists: a split default
+    (`0.0.0.0/1` plus `128.0.0.0/1`, the VPN idiom), a route to some other subnet via a named
+    gateway, and an IPv6-only default route, since this reads `/proc/net/route` alone (#42).
+    None of them is silent here: `on_link_addresses` returns every gateway a route names, so
+    the on-link half dials it. This is the narrower question, deliberately, because the pass it
+    guards should rest on the one condition the compose file sets.
     """
     for line in route_table.splitlines()[1:]:
         fields = line.split()
@@ -934,6 +943,15 @@ def _ports(ports: Sequence[int]) -> str:
     return ", ".join(str(port) for port in ports) or "no ports"
 
 
+def format_result(ok: bool, line: str) -> str:
+    """One line of `check`'s output, as an operator reads it.
+
+    Shared with the test that compares README's sample output against what `check` produces, so
+    the documented output and the real one cannot drift through the prefix either.
+    """
+    return f"[{' OK ' if ok else 'FAIL'}] {line}"
+
+
 def check(
     environ: Mapping[str, str],
     *,
@@ -957,7 +975,9 @@ def check(
     (`peer_addresses`); every other one is dialled, and answering at all fails the check. So
     does a probe that could not be made: an unreadable routing table, a list longer than the
     cap, a connection that never left this container. Both halves report that separately from
-    "nothing answered", because only one of the two is evidence.
+    "nothing answered", because only one of the two is evidence. The public name is the same
+    rule: a name that will not resolve is settled against the routing table, since a failed
+    lookup on its own says nothing about whether packets can leave.
 
     ``on_link`` defaults to whatever the container's routing table yields; a caller passes it
     to probe a set of its own.
@@ -1034,13 +1054,22 @@ def check(
                     "route: there is no route round the proxy to take",
                 )
             )
+        elif table is None:
+            results.append(
+                (
+                    False,
+                    f"{host} could not be looked up and {ROUTE_TABLE_PATH} could not be read, "
+                    "so neither way of telling whether this container has a route off it was "
+                    "available and the bound is unverified",
+                )
+            )
         else:
             results.append(
                 (
                     False,
-                    f"{host} could not be looked up, and this container has a default route "
-                    "(or its routing table could not be read), so whether a public name routes "
-                    "round the proxy is unverified",
+                    f"{host} could not be looked up, and this container has a default route: "
+                    "it has a way off its own subnets, and whether that reaches round the "
+                    "proxy was not established",
                 )
             )
     else:
@@ -1160,7 +1189,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "check":
         results = check(os.environ)
         for ok, line in results:
-            print(f"[{' OK ' if ok else 'FAIL'}] {line}")
+            print(format_result(ok, line))
         return 0 if all(ok for ok, _ in results) else 1
     if not 0 <= args.port <= 65535:
         print("egress: --port must be between 0 and 65535", file=sys.stderr)

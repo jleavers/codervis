@@ -669,14 +669,38 @@ def test_readme_shows_the_lines_the_check_actually_prints(monkeypatch) -> None:
         timeout_s=1,
     )
     assert all(ok for ok, _ in results), results
-    produced = [f"[ OK ] {line}" for _ok, line in results]
+    produced = [egress.format_result(ok, line) for ok, line in results]
 
-    fence = re.search(
-        r"```text\n(\[ OK \] http://egress:3128.*?)```", ROOT_README.read_text(), re.S
-    )
+    readme = ROOT_README.read_text()
+    fence = re.search(r"```text\n(\[ OK \] http://egress:3128.*?)```", readme, re.S)
     assert fence, "README no longer shows the expected `check` output"
     shown = [line for line in fence.group(1).splitlines() if line.strip()]
     assert shown == produced
+
+    # The fence is not the only place README quotes this output: the prose around it explains
+    # the direct half's other two lines, which no run shown above produces. Those are the ones
+    # that changed when a failed lookup stopped counting as a routing fact, so they are
+    # compared to the code too -- the pass verbatim, the failure by the phrase README uses.
+    def direct_line(table: str) -> str:
+        with mock.patch.object(egress, "read_route_table", lambda *a, **k: table):
+            results = check(
+                {"HTTPS_PROXY": proxy},
+                direct=("example.com", 443),
+                direct_probe=lambda *_a, **_k: DIRECT_NO_DNS,
+                on_link=[gateway],
+                on_link_probe=lambda *_a, **_k: ON_LINK_NO_ANSWER,
+                timeout_s=1,
+            )
+        return next(text for _ok, text in results if text.startswith("example.com"))
+
+    # README wraps and backticks what it quotes, so both sides are compared with whitespace
+    # collapsed, and on the clause before the colon -- which is the part README reproduces.
+    flowed = " ".join(readme.split())
+    passing = direct_line(INTERNAL_ROUTE_TABLE)
+    assert passing.startswith("example.com does not resolve here")
+    assert passing.split(":")[0] in flowed, passing
+    assert "could not be looked up" in direct_line(ROUTED_ROUTE_TABLE)
+    assert "could not be looked up" in flowed
 
 
 def test_the_public_name_probe_reads_a_refusal_as_reach_not_as_no_route() -> None:
@@ -697,11 +721,13 @@ def test_the_public_name_probe_reads_an_accept_as_reach() -> None:
 
 
 def test_the_public_name_probe_tells_no_route_from_no_resolver_from_no_probe() -> None:
-    """Three not-reached outcomes, and only two of them are evidence.
+    """Three not-reached outcomes, and only one of them is evidence on its own.
 
-    A name an internal network's resolver declines is a pass with its own wording, because
-    there is no route round the proxy to take. A connection that never left this container is
-    not, for the same reason the on-link half fails one.
+    A timeout or an unreachable network means the probe went out and nothing came back. A name
+    the resolver declines is neither verdict here -- `check` settles that one against the
+    routing table, because a failed lookup says nothing about whether packets can leave. A
+    connection that never left this container is a failure, for the same reason the on-link
+    half fails one.
     """
     for failure, expected in (
         (socket.gaierror(-2, "Name or service not known"), DIRECT_NO_DNS),
@@ -813,9 +839,13 @@ def test_probe_on_link_tells_an_accept_from_a_refusal_from_silence() -> None:
         port = listener.getsockname()[1]
         assert probe_on_link("127.0.0.1", port, timeout_s=2) == ON_LINK_ACCEPTED
     assert probe_on_link("127.0.0.1", _dead_port(), timeout_s=2) == ON_LINK_REFUSED
-    # An address with no route to it at all, without leaving the host: a link-local address on
-    # no interface here.
-    assert probe_on_link("169.254.0.1", 443, timeout_s=0.2) == ON_LINK_NO_ANSWER
+    # "Nothing came back" is asserted through a mocked ENETUNREACH rather than by dialling a
+    # link-local address for real: what a machine does with 169.254.0.1 is its own business,
+    # and a runner that routes it would fail this for the wrong reason.
+    with mock.patch.object(
+        egress.socket, "create_connection", side_effect=as_oserror(errno.ENETUNREACH)
+    ):
+        assert probe_on_link("169.254.0.1", 443, timeout_s=0.2) == ON_LINK_NO_ANSWER
 
 
 def test_the_on_link_half_passes_only_when_nothing_answers() -> None:
@@ -998,9 +1028,8 @@ class _CheckRig:
                 check,
                 self.environ if environ is None else environ,
                 direct=direct_target,
-                direct_probe=probe_direct if direct is not None else (
-                    direct_probe or unrouted
-                ),
+                direct_probe=direct_probe
+                or (probe_direct if direct is not None else unrouted),
                 on_link=["172.30.0.1"] if on_link is None else on_link,
                 on_link_ports=on_link_ports or [443],
                 on_link_probe=probe,
