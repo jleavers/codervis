@@ -50,6 +50,7 @@ from app.egress import (
     ON_LINK_UNVERIFIED,
     PROBE_DENIED_HOST,
     PROBE_ONLINK_PORTS,
+    ROUTE_TABLE_PATH,
     PROXY_ENV_NAMES,
     Proxy,
     Rule,
@@ -606,8 +607,8 @@ async def test_a_name_that_will_not_resolve_passes_only_with_no_default_route() 
     async with _CheckRig() as rig:
         for table, expected, fragment in (
             (INTERNAL_ROUTE_TABLE, True, "names no default route"),
-            (ROUTED_ROUTE_TABLE, False, "could not be looked up"),
-            (None, False, "could not be looked up"),
+            (ROUTED_ROUTE_TABLE, False, "this container has a default route"),
+            (None, False, f"{ROUTE_TABLE_PATH} could not be read"),
         ):
             with mock.patch.object(egress, "read_route_table", lambda *a, **k: table):
                 results = await rig.run(direct_probe=lambda *_a, **_k: DIRECT_NO_DNS)
@@ -615,6 +616,7 @@ async def test_a_name_that_will_not_resolve_passes_only_with_no_default_route() 
             assert len(line) == 1, results
             assert line[0][0] is expected, line
             assert fragment in line[0][1], line
+            assert expected or "unverified" in line[0][1], line
 
 
 @asynctest
@@ -677,11 +679,11 @@ def test_readme_shows_the_lines_the_check_actually_prints(monkeypatch) -> None:
     shown = [line for line in fence.group(1).splitlines() if line.strip()]
     assert shown == produced
 
-    # The fence is not the only place README quotes this output: the prose around it explains
-    # the direct half's other two lines, which no run shown above produces. Those are the ones
-    # that changed when a failed lookup stopped counting as a routing fact, so they are
-    # compared to the code too -- the pass verbatim, the failure by the phrase README uses.
-    def direct_line(table: str) -> str:
+    # The direct half's other three lines are shown in a fence of their own, because prose
+    # that merely contains the wording pins nothing: a README could quote both lines verbatim
+    # and still call them both passes. Comparing the formatted line -- verdict prefix included
+    # -- is what ties each one to the `OK` or `FAIL` README claims for it.
+    def direct_line(table: str | None) -> str:
         with mock.patch.object(egress, "read_route_table", lambda *a, **k: table):
             results = check(
                 {"HTTPS_PROXY": proxy},
@@ -691,29 +693,18 @@ def test_readme_shows_the_lines_the_check_actually_prints(monkeypatch) -> None:
                 on_link_probe=lambda *_a, **_k: ON_LINK_NO_ANSWER,
                 timeout_s=1,
             )
-        return next(text for _ok, text in results if text.startswith("example.com"))
+        ok, text = next((ok, t) for ok, t in results if t.startswith("example.com"))
+        return egress.format_result(ok, text)
 
-    # README wraps and backticks what it quotes, so both sides are compared with whitespace
-    # collapsed, and on the clause before the colon -- which is the part README reproduces.
-    flowed = " ".join(readme.split())
-
-    def quoted(line: str) -> str:
-        """The clause README reproduces: up to the colon that introduces the explanation.
-
-        Guarded against going vacuous -- a rewording that moves a colon earlier would shrink
-        this to something trivially present ("example.com"), and the assertion would pass while
-        checking nothing.
-        """
-        clause = line.split(":")[0]
-        assert len(clause) > 40, f"fragment too short to be a real check: {clause!r}"
-        return clause
-
-    # Both outcomes of the no-DNS branch, since they are the two README explains in prose and
-    # the two that changed when a failed lookup stopped counting as a routing fact.
-    assert quoted(direct_line(INTERNAL_ROUTE_TABLE)) in flowed
-    assert quoted(direct_line(ROUTED_ROUTE_TABLE)) in flowed
-    # The word the troubleshooting section tells an operator to look for.
-    assert "unverified" in direct_line(ROUTED_ROUTE_TABLE)
+    no_dns_fence = re.search(
+        r"```text\n(\[ OK \] example\.com does not resolve.*?)```", readme, re.S
+    )
+    assert no_dns_fence, "README no longer shows the no-DNS outcomes"
+    assert [line for line in no_dns_fence.group(1).splitlines() if line.strip()] == [
+        direct_line(INTERNAL_ROUTE_TABLE),
+        direct_line(ROUTED_ROUTE_TABLE),
+        direct_line(None),
+    ]
 
 
 def test_the_public_name_probe_reads_a_refusal_as_reach_not_as_no_route() -> None:

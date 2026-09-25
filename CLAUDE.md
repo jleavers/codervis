@@ -273,41 +273,40 @@ read-only root filesystem and all capabilities dropped, and hold no credential.
 All three services log to json-file capped at 3 × 10 MB (`x-logging` in the
 compose file), since a peer that reaches the port can make each of them log.
 `python -m app.egress check`, run in the `codervis` container, verifies the
-bound by dialling, never by restating the design — which is how the gateway went
-unnoticed: the proxy filters by name and admits the configured upstream hosts,
-the addresses it derives as **on-link** are each a peer or answer nothing, and a
-public name does not resolve-and-connect — or, where it will not resolve at all,
-the routing table names no default route it could have used, since a failed
-lookup on its own says nothing about whether packets can leave. The on-link
-half derives its candidates from the container's own routing table (every
-gateway a route names, and the first address of each on-link subnet, which is
-where Docker puts a bridge's gateway), and it fails on a refusal as well as on
-an accept, because an
-RST comes from a live host. Those candidates are not every address the container
-could dial: a second host address further into the subnet, or a gateway placed
-elsewhere by an explicit `ipam.config.gateway`, is not probed, and a compose
-change that puts one there has to extend `on_link_addresses`. What it does *not*
-dial is a candidate that is this container or the proxy (`peer_addresses`): both
-are on-link by design, and on an engine honouring `isolated` the proxy is where
-the gateway would be — no gateway address is allocated for such a network, so
-the subnet's first address falls to the first container attached, which the
-compose file's start order makes `egress`. Finding it there is the evidence the
-option took effect; an engine that ignored it holds that address on the bridge,
-and then it is dialled like any other. Silence from a dialled address is the
-weak half of the assertion — a host dropping packets from that bridge looks the
-same — which is why the bound is three assertions and not this one. A half with
-nothing to probe fails as unverified rather than passing, since "it asked a
-question the network answers anyway" is the defect it exists to prevent, and so
-does a candidate list longer than the cap on how many it will dial, naming what
-went unprobed. What it may account for and still pass is a candidate that is
-one of the two peers above — this container, because reaching itself
-establishes nothing either way, or the proxy, which is the allow-listed way off
-the project rather than a way round it. A probe that never left this container
-(a local `EPERM`, a descriptor limit) is not silence either, and fails as
-unverified rather than reading as "nothing answered".
-`tests/test_compose_topology.py` pins the compose shape, gateway mode included,
-and CI sets `REQUIRE_DOCKER` so that file fails rather than skips where the
-Docker CLI has gone missing.
+bound by dialling, never by restating the design — which is how the gateway
+went unnoticed: the proxy filters by name and admits the configured upstream
+hosts, the addresses it derives as **on-link** are each a peer or answer
+nothing, and a public name does not resolve-and-connect — or, where it will not
+resolve at all, the routing table names no default route it could have used,
+since a failed lookup on its own says nothing about whether packets can leave.
+The on-link half derives its candidates from the container's own routing table
+(every gateway a route names, and the first address of each on-link subnet,
+which is where Docker puts a bridge's gateway), and it fails on a refusal as
+well as on an accept, because an RST comes from a live host. Those candidates
+are not every address the container could dial: a second host address further
+into the subnet, or a gateway placed elsewhere by an explicit
+`ipam.config.gateway`, is not probed, and a compose change that puts one there
+has to extend `on_link_addresses`. What it does *not* dial is a candidate that
+is this container or the proxy (`peer_addresses`): both are on-link by design,
+and on an engine honouring `isolated` the proxy is where the gateway would be —
+no gateway address is allocated for such a network, so the subnet's first
+address falls to the first container attached, which the compose file's start
+order makes `egress`. Finding it there is the evidence the option took effect;
+an engine that ignored it holds that address on the bridge, and then it is
+dialled like any other. Silence from a dialled address is the weak half of the
+assertion — a host dropping packets from that bridge looks the same — which is
+why the bound is three assertions and not this one. A half with nothing to
+probe fails as unverified rather than passing, since "it asked a question the
+network answers anyway" is the defect it exists to prevent, and so does a
+candidate list longer than the cap on how many it will dial, naming what went
+unprobed. What it may account for and still pass is a candidate that is one of
+the two peers above — this container, because reaching itself establishes
+nothing either way, or the proxy, which is the allow-listed way off the project
+rather than a way round it. A probe that never left this container (a local
+`EPERM`, a descriptor limit) is not silence either, and fails as unverified
+rather than reading as "nothing answered". `tests/test_compose_topology.py`
+pins the compose shape, gateway mode included, and CI sets `REQUIRE_DOCKER` so
+that file fails rather than skips where the Docker CLI has gone missing.
 
 **Keep the bound whole.** Do not give `codervis` a non-internal network or
 `ports:`, and do not drop a network's gateway-mode option: an internal network

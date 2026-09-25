@@ -177,7 +177,10 @@ What the repository does control is the text itself:
   only, those networks keep the bridge driver's `gateway_mode_ipv4: isolated`
   so the host holds no address on them (`internal: true` alone leaves one, and
   it is on-link in the container's subnet — #37), and `DEFAULT_ALLOW` in
-  `app/egress.py` names only hosts the live clients call.
+  `app/egress.py` names only hosts the live clients call. The option needs
+  Docker Engine 28.0+; README's network section has what an operator on an
+  older one does instead, and `python -m app.egress check` is what says which
+  they have.
 - Do not add token refresh or OAuth flow logic here; the host CLIs own that.
 - Do not multiply live utilization values by 100. The live APIs are expected
   to already be on a 0-100 scale.

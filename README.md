@@ -228,20 +228,22 @@ docker compose exec codervis python -m app.egress check
 [ OK ] example.com:443 unreachable directly: no route to a public address round the proxy
 ```
 
-The last line has a second passing form. A container whose resolver declines
+The last line has three more forms, and the difference between them is what a
+failed name lookup is allowed to prove. A container whose resolver declines
 public names — which is what an internal network's usually does — cannot look
-`example.com` up at all, and prints `example.com does not resolve here, and the
-routing table names no default route` instead of `unreachable directly`. The
-second half of that is the part that makes it a pass: a failed lookup says
-nothing about whether packets can leave, so the check reads the routing table,
-which is where `internal: true` shows up as the absence of a default route. A
-container that has one and merely cannot resolve gets a `FAIL` reading
-`example.com could not be looked up, and this container has a default route` —
-it has a way off its own subnets, and whether that reaches round the proxy is
-`unverified`. The other two `FAIL`s on this line are a name that resolved and
-something that answered it, and a probe that never left the container; and if
-the routing table cannot be read either, the line says so and is `unverified`
-too, because then neither way of telling was available.
+`example.com` up at all, and a lookup that failed says nothing on its own about
+whether packets can leave. So the check reads the routing table, which is where
+`internal: true` shows up as the absence of a default route:
+
+```text
+[ OK ] example.com does not resolve here, and the routing table names no default route: there is no route round the proxy to take
+[FAIL] example.com could not be looked up, and this container has a default route: it has a way off its own subnets, and whether that reaches round the proxy is unverified
+[FAIL] example.com could not be looked up and /proc/net/route could not be read, so neither way of telling whether this container has a route off it was available and the bound is unverified
+```
+
+Only the first is a pass, and the routing table is what makes it one. The
+remaining form is a `FAIL` saying the name resolved and something answered it,
+which is a route round the proxy.
 
 The address on the on-link line is whatever the container's own routing table
 yields — the first address of its subnet — so it differs between deployments,
@@ -299,13 +301,16 @@ How to read the on-link line, in the order the cases are worth knowing:
   network inspect` (on the host) shows the address belongs to `ingress` rather
   than to `egress`, the bound is intact; `docker compose up -d --force-recreate`
   puts the start order back.
-- A `FAIL` that says **unverified** is not a reachable host: it means the check
-  could not ask. The container's routing table was unreadable, or it yielded no
-  address to dial, or it yielded more than the check will dial and the rest are
-  named on that line, or a connection never left the container at all (a local
-  reject rule, a descriptor limit). An unasked question is reported as a failure
-  here rather than passed over, because that is the defect this line exists to
-  prevent.
+- A `FAIL` that says **unverified** — on this line or on the public-name one —
+  is not a reachable host: it means the check could not ask. The causes, all of
+  them: the container's routing table was unreadable; it yielded no address to
+  dial; it yielded more than the check will dial, and the rest are named on that
+  line; a connection never left the container (a local reject rule, a descriptor
+  limit); or the public name could not be looked up, and the container either
+  has a default route or has a routing table that could not be read, so neither
+  way of telling whether it can reach off its own subnets was available. An
+  unasked question is reported as a failure rather than passed over, because
+  that is the defect these lines exist to prevent.
 
 **If you cannot upgrade to 28.0+**, add a host firewall rule that drops new
 inbound connections arriving on that bridge's interface; nothing in the stack
