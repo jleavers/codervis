@@ -296,6 +296,22 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
     return report
 
 
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """And anything reached outside a test phase at all.
+
+    A session-scoped fixture's finalizer runs after the last test's teardown
+    report, so a violation there belongs to no phase and would otherwise be
+    recorded and never mentioned. The run fails; a green exit status is the one
+    thing this file exists to stop being available cheaply.
+    """
+    unaccounted = AUDIT.violations[_phase_watermark:]
+    if unaccounted:
+        session.exitstatus = 1
+        reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+        if reporter is not None:
+            reporter.write_line(_report(unaccounted), red=True)
+
+
 def pytest_collection_finish(session: pytest.Session) -> None:
     """Import time is not inside any test, so account for it separately."""
     if AUDIT.violations:
