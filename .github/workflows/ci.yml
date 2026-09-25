@@ -173,8 +173,14 @@ jobs:
           docker network inspect "$network" \
             --format 'internal={{.Internal}} options={{json .Options}} ipam={{json .IPAM.Config}}'
           bridge="br-$(docker network inspect "$network" --format '{{.Id}}' | cut -c1-12)"
-          ip -4 address show "$bridge"
-          if ip -4 address show "$bridge" | grep -q 'inet '; then
+          # Captured once and asserted from the variable: `grep -q` on a missing device would
+          # exit 1 and read as "no address", turning a disarmed assertion into a silent pass.
+          addresses="$(ip -4 address show "$bridge")" || {
+            echo "::error::$bridge does not exist, so the bound could not be checked"
+            exit 1
+          }
+          echo "$addresses"
+          if printf '%s\n' "$addresses" | grep -q 'inet '; then
             echo "::error::$bridge has an IPv4 address, so the host is on the dashboard's" \
               "bridge and gateway_mode_ipv4=isolated did not take effect (#37)"
             exit 1

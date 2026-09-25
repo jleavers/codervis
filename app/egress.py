@@ -579,20 +579,56 @@ def probe_proxy(
     return int(fields[1]), fields[2] if len(fields) > 2 else ""
 
 
-def reachable_directly(host: str, port: int = DEFAULT_TARGET_PORT, *, timeout_s: float) -> bool:
-    """Whether a TCP connection to a name off this container's own subnets leaves it.
+# The errnos that mean a probe was made and nothing came back, shared by both halves below.
+# Everything else an OSError can carry -- EPERM and EACCES from a local rule, EMFILE and
+# ENOBUFS from this container running out of something, EAFNOSUPPORT -- means no packet was
+# sent, which is not evidence about the address and must not read as some. `ENETDOWN` is
+# deliberately absent for the same reason: an interface that is down is this container's
+# condition, not the address's. `TimeoutError` carries no errno and is handled on its own, and
+# `socket.gaierror` is an OSError whose errno is a negative `EAI_*`, so a name that will not
+# resolve never lands here by accident.
+NO_ANSWER_ERRNOS = frozenset(
+    getattr(errno, name)
+    for name in ("ETIMEDOUT", "ENETUNREACH", "EHOSTUNREACH", "EHOSTDOWN")
+    if hasattr(errno, name)
+)
 
-    Opened and closed at once; nothing is sent. A name that will not resolve, a refusal and a
-    timeout all read as "no route", which is what an internal-only container looks like. This is
-    the off-link half only: it is a public name, so it needs a default route, and a False here
-    says nothing about the addresses the container can dial without one. ``probe_on_link`` is
-    that half.
+
+# How the public name answered. Two of these are what an internal-only container looks like;
+# the other two are failures, and they are failures for different reasons.
+DIRECT_ANSWERED = "answered"
+DIRECT_NO_ROUTE = "no route"
+DIRECT_NO_DNS = "does not resolve"
+DIRECT_UNVERIFIED = "not probed"
+
+
+def probe_direct(host: str, port: int = DEFAULT_TARGET_PORT, *, timeout_s: float) -> str:
+    """How a name off this container's own subnets answers a TCP connection.
+
+    Opened and closed at once; nothing is sent. This is the off-link half only: it is a public
+    name, so reaching it needs a default route, and nothing here says anything about the
+    addresses the container can dial without one -- ``probe_on_link`` is that half.
+
+    The partition is the same rule that half applies, because this one used to break it: a
+    refusal, a name that would not resolve and a timeout all read as "no route", and a refusal
+    is not that. An RST comes from a live host, so packets left the container and something
+    answered -- a route round the proxy, reported as one. Anything that stopped the connection
+    leaving this container is `DIRECT_UNVERIFIED`, because a probe not made establishes nothing.
+
+    A name that does not resolve is its own answer rather than a failure: an internal network's
+    resolver may decline public names, and then there is no route round the proxy to take.
     """
     try:
         with socket.create_connection((host, port), timeout_s):
-            return True
-    except OSError:
-        return False
+            return DIRECT_ANSWERED
+    except socket.gaierror:
+        return DIRECT_NO_DNS
+    except (ConnectionRefusedError, ConnectionResetError):
+        return DIRECT_ANSWERED
+    except TimeoutError:
+        return DIRECT_NO_ROUTE
+    except OSError as exc:
+        return DIRECT_NO_ROUTE if exc.errno in NO_ANSWER_ERRNOS else DIRECT_UNVERIFIED
 
 
 # What an on-link probe found. Two of these mean the address is live, and the wording says
@@ -613,17 +649,6 @@ PEER_PROXY = (
     "the proxy {proxy}, which is the allow-listed way off this project rather than a way "
     "round it"
 )
-
-# The errnos that mean the probe was made and nothing came back. Everything else an OSError can
-# carry -- EPERM and EACCES from a local rule, EMFILE and ENOBUFS from this container running
-# out of something, EAFNOSUPPORT -- means no packet was sent, which is not evidence about the
-# address and must not read as one. `TimeoutError` carries no errno and is handled on its own.
-NO_ANSWER_ERRNOS = frozenset(
-    getattr(errno, name)
-    for name in ("ETIMEDOUT", "ENETUNREACH", "EHOSTUNREACH", "ENETDOWN", "EHOSTDOWN")
-    if hasattr(errno, name)
-)
-
 
 def _address(column: str) -> str:
     """One of /proc/net/route's address columns.
@@ -822,10 +847,13 @@ def check_on_link(
         # where a rule covers some ports. Of what came back, an accept is the most useful thing
         # to report and a refusal next -- both establish the address is live -- and "could not
         # be dialled" last, since it establishes nothing and would hide a port that answered.
-        priority = (ON_LINK_ACCEPTED, ON_LINK_REFUSED, ON_LINK_UNVERIFIED)
-        answered = min(
-            answers, key=lambda answer: priority.index(answer[1]), default=None
-        )
+        priority = (ON_LINK_ACCEPTED, ON_LINK_REFUSED)
+        # An outcome this does not know sorts last and is reported as unverified, rather than
+        # raising out of a check whose other assertions have already run.
+        def rank(answer: tuple[int, str]) -> int:
+            return priority.index(answer[1]) if answer[1] in priority else len(priority)
+
+        answered = min(answers, key=rank, default=None)
         if answered is None:
             results.append(
                 (
@@ -843,22 +871,22 @@ def check_on_link(
                     "the proxy -- so egress is not the only way off this container",
                 )
             )
-        elif answered[1] == ON_LINK_UNVERIFIED:
-            results.append(
-                (
-                    False,
-                    f"{addr} could not be dialled on {_ports(ports)}: the connection never left "
-                    "this container, so nothing was established about that address and the "
-                    "bound is unverified for it",
-                )
-            )
-        else:
+        elif answered[1] == ON_LINK_REFUSED:
             results.append(
                 (
                     False,
                     f"{addr} refused a direct connection on port {answered[0]}: a refusal comes "
                     "from a live host, so the address is reachable with no route and only what "
                     "it happens to be listening on bounds where a token can go",
+                )
+            )
+        else:
+            results.append(
+                (
+                    False,
+                    f"{addr} could not be dialled on {_ports(ports)}: the connection never left "
+                    "this container, so nothing was established about that address and the "
+                    "bound is unverified for it",
                 )
             )
     return results
@@ -887,7 +915,10 @@ def check(
     on-link half is the one `internal: true` does not settle.
 
     An on-link address that is this container or the proxy is accounted for rather than dialled
-    (`peer_addresses`); every other one is dialled, and answering at all fails the check.
+    (`peer_addresses`); every other one is dialled, and answering at all fails the check. So
+    does a probe that could not be made: an unreadable routing table, a list longer than the
+    cap, a connection that never left this container. Both halves report that separately from
+    "nothing answered", because only one of the two is evidence.
 
     ``on_link`` defaults to whatever the container's routing table yields; a caller passes it
     to probe a set of its own.
@@ -934,7 +965,8 @@ def check(
         )
     )
     host, port = direct
-    if reachable_directly(host, port, timeout_s=min(timeout_s, 3.0)):
+    answered = probe_direct(host, port, timeout_s=min(timeout_s, 3.0))
+    if answered == DIRECT_ANSWERED:
         results.append(
             (
                 False,
@@ -942,12 +974,28 @@ def check(
                 "so the allow-list bounds only what asks it",
             )
         )
-    else:
+    elif answered == DIRECT_NO_ROUTE:
         results.append(
             (
                 True,
                 f"{host}:{port} unreachable directly: no route to a public address round the "
                 "proxy",
+            )
+        )
+    elif answered == DIRECT_NO_DNS:
+        results.append(
+            (
+                True,
+                f"{host} does not resolve here: a public name this container cannot even look "
+                "up is no route round the proxy",
+            )
+        )
+    else:
+        results.append(
+            (
+                False,
+                f"{host}:{port} could not be dialled: the connection never left this container, "
+                "so whether a public name routes round the proxy is unverified",
             )
         )
     return results

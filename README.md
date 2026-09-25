@@ -228,6 +228,14 @@ docker compose exec codervis python -m app.egress check
 [ OK ] example.com:443 unreachable directly: no route to a public address round the proxy
 ```
 
+The last line has a second passing form: a container whose resolver declines
+public names prints `example.com does not resolve here` instead of
+`unreachable directly`. Both are passes — a name that cannot be looked up is no
+route round the proxy either — and which one you see depends on whether your
+engine's embedded DNS forwards for an internal network. A `FAIL` on that line
+means the name resolved *and* something answered it, or that the probe never
+left the container.
+
 The address on the on-link line is whatever the container's own routing table
 yields — the first address of its subnet — so it differs between deployments,
 and a container on two networks gets one line per network. The admission probes

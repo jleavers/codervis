@@ -130,7 +130,9 @@ networks:
     # address, so there is nothing on it to dial. Docker Engine 28.0 or newer honours it; 27.x
     # knows the option but not this value and refuses to create the network; 26.x and older
     # have no case for the label and ignore it, so the stack starts and the host keeps its
-    # address. README's network section has all three. `python -m app.egress check` is what
+    # address. README's network section has all three, and the remedy where you cannot run
+    # 28.0+: a host firewall rule dropping new inbound connections on this bridge's interface,
+    # which nothing in the stack ever needs. `python -m app.egress check` is what
     # proves which you got: with the option honoured no gateway address is allocated at all, so
     # the subnet's first address falls to the first container attached, and finding `egress`
     # there is the evidence.
