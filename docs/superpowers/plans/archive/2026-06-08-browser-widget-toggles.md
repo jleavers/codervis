@@ -1,6 +1,13 @@
 # Browser Widget Toggles Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Archived — this work shipped.** Kept as a record of how the widget toggles were
+> built (#2), not as work to do. Nothing here is a task list: the checkbox syntax was
+> removed so no agent picks it up, and so were the package-cache prefixes its commands
+> carried, which named a fixed directory in world-writable `/tmp` — a name another
+> local principal can create and fill first. What environment a command runs in
+> is set once, in `.claude/settings.json`; see "The execution context you run in" in
+> `AGENTS.md`. The five-provider shape below is also out of date: Gemini, Cursor and
+> Copilot were removed in #13.
 
 **Goal:** Add persistent, browser-local header toggles for all five provider widgets while changing `*_ENABLED` environment variables into first-visit defaults only.
 
@@ -28,7 +35,7 @@
 - Modify: `tests/test_main_payload.py`
 - Modify: `app/main.py`
 
-- [ ] **Step 1: Extend the quota stub to record calls and support health checks**
+- **Step 1: Extend the quota stub to record calls and support health checks**
 
 Replace `QuotaClientStub` in `tests/test_main_payload.py` with:
 
@@ -51,7 +58,7 @@ class QuotaClientStub:
         return self.credentials_path.exists()
 ```
 
-- [ ] **Step 2: Write the failing default-only provider test**
+- **Step 2: Write the failing default-only provider test**
 
 Delete the four tests that set `_codex`, `_cursor`, `_copilot`, or `_gemini` to
 `None` and expect `source == "disabled"`. Add:
@@ -134,7 +141,7 @@ def test_provider_defaults_do_not_suppress_live_clients(monkeypatch) -> None:
     ]
 ```
 
-- [ ] **Step 3: Write the failing health-default test**
+- **Step 3: Write the failing health-default test**
 
 Add:
 
@@ -173,12 +180,12 @@ def test_health_reports_configured_widget_defaults(monkeypatch, tmp_path) -> Non
     assert data["gemini_enabled"] is False
 ```
 
-- [ ] **Step 4: Run the focused tests and verify RED**
+- **Step 4: Run the focused tests and verify RED**
 
 Run:
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --with-requirements requirements-dev.txt \
+uv run --with-requirements requirements-dev.txt \
   python -m pytest \
   tests/test_main_payload.py::test_provider_defaults_do_not_suppress_live_clients \
   tests/test_main_payload.py::test_health_reports_configured_widget_defaults -v
@@ -187,7 +194,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run --with-requirements requirements-dev.txt \
 Expected: failures because Claude has no `enabled` field, false defaults still
 short-circuit clients, and `/healthz` reports client existence.
 
-- [ ] **Step 5: Make client construction unconditional**
+- **Step 5: Make client construction unconditional**
 
 In `app/main.py`, define all defaults and construct every client:
 
@@ -217,7 +224,7 @@ _gemini_activity: GeminiActivityReader = gemini_activity_reader_from_env()
 Remove the `_codex is None`, `_cursor is None`, `_copilot is None`, and
 `_gemini is None` branches from their section builders.
 
-- [ ] **Step 6: Add the configured default to every section result**
+- **Step 6: Add the configured default to every section result**
 
 Add `"enabled": <PROVIDER>_ENABLED` to both the live and unavailable return
 dictionaries in `_claude_section()`, `_codex_section()`, `_cursor_section()`,
@@ -252,7 +259,7 @@ Use `CODEX_ENABLED`, `CURSOR_ENABLED`, `COPILOT_ENABLED`, and `GEMINI_ENABLED`
 in the corresponding builders without changing their existing error
 boundaries.
 
-- [ ] **Step 7: Make health fields report defaults**
+- **Step 7: Make health fields report defaults**
 
 Replace the provider enablement and conditional credential expressions in
 `healthz()` with:
@@ -272,7 +279,7 @@ Replace the provider enablement and conditional credential expressions in
 
 Keep all existing data-root fields.
 
-- [ ] **Step 8: Update existing payload assertions**
+- **Step 8: Update existing payload assertions**
 
 In `test_api_usage_returns_live_payload_without_scaling`, add:
 
@@ -282,18 +289,18 @@ assert data["claude"]["enabled"] is True
 
 Retain the existing `enabled is True` assertions for the other providers.
 
-- [ ] **Step 9: Run server tests and verify GREEN**
+- **Step 9: Run server tests and verify GREEN**
 
 Run:
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --with-requirements requirements-dev.txt \
+uv run --with-requirements requirements-dev.txt \
   python -m pytest tests/test_main_payload.py -v
 ```
 
 Expected: all payload and health tests pass.
 
-- [ ] **Step 10: Commit server semantics**
+- **Step 10: Commit server semantics**
 
 ```bash
 git add app/main.py tests/test_main_payload.py
@@ -306,7 +313,7 @@ git commit -m "feat: make widget flags browser defaults"
 - Create: `tests/test_widget_state.js`
 - Create: `app/static/widget-state.js`
 
-- [ ] **Step 1: Write failing persistence and presentation tests**
+- **Step 1: Write failing persistence and presentation tests**
 
 Create `tests/test_widget_state.js`:
 
@@ -468,7 +475,7 @@ test("status reports all widgets off", () => {
 });
 ```
 
-- [ ] **Step 2: Run the Node tests and verify RED**
+- **Step 2: Run the Node tests and verify RED**
 
 Run:
 
@@ -478,7 +485,7 @@ node --test tests/test_widget_state.js
 
 Expected: FAIL with `MODULE_NOT_FOUND` for `app/static/widget-state.js`.
 
-- [ ] **Step 3: Implement the pure state module**
+- **Step 3: Implement the pure state module**
 
 Create `app/static/widget-state.js`:
 
@@ -607,7 +614,7 @@ Create `app/static/widget-state.js`:
 });
 ```
 
-- [ ] **Step 4: Run the Node tests and verify GREEN**
+- **Step 4: Run the Node tests and verify GREEN**
 
 Run:
 
@@ -617,7 +624,7 @@ node --test tests/test_widget_state.js
 
 Expected: 7 tests pass.
 
-- [ ] **Step 5: Commit the state module**
+- **Step 5: Commit the state module**
 
 ```bash
 git add app/static/widget-state.js tests/test_widget_state.js
@@ -631,7 +638,7 @@ git commit -m "test: define browser widget state behavior"
 - Modify: `app/templates/index.html`
 - Modify: `app/static/style.css`
 
-- [ ] **Step 1: Write the failing template test**
+- **Step 1: Write the failing template test**
 
 Add to `tests/test_main_payload.py`:
 
@@ -682,12 +689,12 @@ def test_index_renders_accessible_widget_toggles(monkeypatch) -> None:
     assert "window.__INITIAL_PAYLOAD__" in html
 ```
 
-- [ ] **Step 2: Run the template test and verify RED**
+- **Step 2: Run the template test and verify RED**
 
 Run:
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --with-requirements requirements-dev.txt \
+uv run --with-requirements requirements-dev.txt \
   python -m pytest \
   tests/test_main_payload.py::test_index_renders_accessible_widget_toggles -v
 ```
@@ -695,7 +702,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run --with-requirements requirements-dev.txt \
 Expected: FAIL because no toggle markup, initial payload, or state-module script
 exists.
 
-- [ ] **Step 3: Render first-visit presentation and toggle markup**
+- **Step 3: Render first-visit presentation and toggle markup**
 
 In `app/templates/index.html`, derive the first-visit display source and extend
 the provider header:
@@ -741,7 +748,7 @@ Replace the script block at the bottom with:
 <script src="/static/app.js"></script>
 ```
 
-- [ ] **Step 4: Style the compact slider**
+- **Step 4: Style the compact slider**
 
 In `app/static/style.css`, change `.provider-head` alignment to `center`, add
 spacing to `.provider-source`, and add:
@@ -819,18 +826,18 @@ the card is dimmed. Remove `.provider[data-source="disabled"] .gauge` from the
 existing unavailable selector because local dimming now uses
 `data-widget-enabled`.
 
-- [ ] **Step 5: Run template and server tests**
+- **Step 5: Run template and server tests**
 
 Run:
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --with-requirements requirements-dev.txt \
+uv run --with-requirements requirements-dev.txt \
   python -m pytest tests/test_main_payload.py -v
 ```
 
 Expected: all tests pass.
 
-- [ ] **Step 6: Commit toggle markup and styling**
+- **Step 6: Commit toggle markup and styling**
 
 ```bash
 git add app/templates/index.html app/static/style.css tests/test_main_payload.py
@@ -843,7 +850,7 @@ git commit -m "feat: render provider widget toggles"
 - Modify: `app/static/app.js`
 - Test: `tests/test_widget_state.js`
 
-- [ ] **Step 1: Add a regression test for unavailable status restoration**
+- **Step 1: Add a regression test for unavailable status restoration**
 
 Append to `tests/test_widget_state.js`:
 
@@ -862,7 +869,7 @@ test("status restores an unavailable provider when it is re-enabled", () => {
 });
 ```
 
-- [ ] **Step 2: Run the Node tests and verify the regression passes**
+- **Step 2: Run the Node tests and verify the regression passes**
 
 Run:
 
@@ -872,7 +879,7 @@ node --test tests/test_widget_state.js
 
 Expected: 8 tests pass. This locks the pure behavior before DOM integration.
 
-- [ ] **Step 3: Initialize browser-local state from the initial payload**
+- **Step 3: Initialize browser-local state from the initial payload**
 
 At the top of `app/static/app.js`, after obtaining the status elements, add:
 
@@ -894,7 +901,7 @@ At the top of `app/static/app.js`, after obtaining the status elements, add:
 
 Remove the later hard-coded `PROVIDERS` declaration.
 
-- [ ] **Step 4: Apply the effective local presentation**
+- **Step 4: Apply the effective local presentation**
 
 Replace `applyProvider()` with:
 
@@ -936,7 +943,7 @@ Replace `applyProvider()` with:
   }
 ```
 
-- [ ] **Step 5: Replace status calculation with the pure summary**
+- **Step 5: Replace status calculation with the pure summary**
 
 Replace `summariseStatus()` with:
 
@@ -947,7 +954,7 @@ Replace `summariseStatus()` with:
   }
 ```
 
-- [ ] **Step 6: Merge defaults on every payload and persist toggle changes**
+- **Step 6: Merge defaults on every payload and persist toggle changes**
 
 Replace `apply()` and the initial gauge-only paint block with:
 
@@ -979,7 +986,7 @@ Keep the existing `connect()` and one-second relative-time interval. SSE
 messages continue to call `apply(JSON.parse(ev.data))`; toggling does not
 reconnect or call the server.
 
-- [ ] **Step 7: Check JavaScript syntax and run behavior tests**
+- **Step 7: Check JavaScript syntax and run behavior tests**
 
 Run:
 
@@ -991,7 +998,7 @@ node --test tests/test_widget_state.js
 
 Expected: both syntax checks succeed and 8 tests pass.
 
-- [ ] **Step 8: Commit browser integration**
+- **Step 8: Commit browser integration**
 
 ```bash
 git add app/static/app.js tests/test_widget_state.js
@@ -1007,7 +1014,7 @@ git commit -m "feat: persist browser widget choices"
 - Modify: `CLAUDE.md`
 - Modify: `.gitignore`
 
-- [ ] **Step 1: Add the Claude default to Docker Compose**
+- **Step 1: Add the Claude default to Docker Compose**
 
 In `docker-compose.yml`, add before `CODEX_ENABLED`:
 
@@ -1017,7 +1024,7 @@ In `docker-compose.yml`, add before `CODEX_ENABLED`:
 
 Retain all read-only provider mounts.
 
-- [ ] **Step 2: Rewrite environment examples as first-visit defaults**
+- **Step 2: Rewrite environment examples as first-visit defaults**
 
 In `.env.example`, add:
 
@@ -1041,7 +1048,7 @@ Replace comments claiming a false value stops or safely bypasses a provider
 with text stating that it only controls the first browser visit and does not
 prevent credential reads or upstream calls.
 
-- [ ] **Step 3: Update the README behavior and configuration table**
+- **Step 3: Update the README behavior and configuration table**
 
 Add a paragraph after the SSE description:
 
@@ -1066,7 +1073,7 @@ variables as “First-visit browser widget default” with default `true`.
 Update the dashboard behavior section so `disabled` is described as a local
 presentation state rather than a server source.
 
-- [ ] **Step 4: Update agent implementation guidance**
+- **Step 4: Update agent implementation guidance**
 
 In `CLAUDE.md`, replace each provider-specific “falsy means client is `None`”
 note with one shared invariant:
@@ -1082,7 +1089,7 @@ error handling.
 Document `app/static/widget-state.js` as the pure state/presentation module and
 retain `app/static/app.js` as the single gauge-color and DOM-update path.
 
-- [ ] **Step 5: Verify stale semantics are gone**
+- **Step 5: Verify stale semantics are gone**
 
 Run:
 
@@ -1097,7 +1104,7 @@ Expected: no stale server-disable documentation or implementation matches.
 CSS, JavaScript, and JavaScript-test references to the browser presentation
 string `disabled` are allowed and should be reviewed separately.
 
-- [ ] **Step 6: Commit configuration and documentation**
+- **Step 6: Commit configuration and documentation**
 
 ```bash
 git add .gitignore .env.example docker-compose.yml README.md CLAUDE.md
@@ -1109,7 +1116,7 @@ git commit -m "docs: explain browser widget defaults"
 **Files:**
 - Verify all modified files.
 
-- [ ] **Step 1: Run the JavaScript checks**
+- **Step 1: Run the JavaScript checks**
 
 ```bash
 node --check app/static/widget-state.js
@@ -1119,20 +1126,20 @@ node --test tests/test_widget_state.js
 
 Expected: syntax checks succeed and all 8 Node tests pass.
 
-- [ ] **Step 2: Run the full Python suite**
+- **Step 2: Run the full Python suite**
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --with-requirements requirements-dev.txt \
+uv run --with-requirements requirements-dev.txt \
   python -m pytest
 ```
 
 Expected: all pytest tests pass without reading host credentials or calling
 upstream quota endpoints.
 
-- [ ] **Step 3: Run Python compilation checks**
+- **Step 3: Run Python compilation checks**
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run python -m py_compile \
+uv run python -m py_compile \
   app/main.py app/quota.py app/claude_activity.py \
   app/codex_quota.py app/codex_activity.py \
   app/cursor_quota.py app/cursor_activity.py \
@@ -1142,7 +1149,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run python -m py_compile \
 
 Expected: command exits successfully with no output.
 
-- [ ] **Step 4: Validate Compose and whitespace**
+- **Step 4: Validate Compose and whitespace**
 
 ```bash
 docker compose config --quiet
@@ -1153,7 +1160,7 @@ git status --short
 Expected: Compose validation and whitespace checks succeed. Status contains
 only intentional implementation-plan or feature changes not already committed.
 
-- [ ] **Step 5: Perform a manual dashboard smoke test**
+- **Step 5: Perform a manual dashboard smoke test**
 
 Run:
 
@@ -1177,7 +1184,7 @@ Then stop the stack:
 docker compose down
 ```
 
-- [ ] **Step 6: Commit any verification-only fixes**
+- **Step 6: Commit any verification-only fixes**
 
 If verification required source changes, stage only those files and commit:
 

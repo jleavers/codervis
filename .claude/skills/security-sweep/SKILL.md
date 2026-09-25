@@ -28,6 +28,12 @@ After a run, audit what the agents actually ran before presenting: the per-agent
 sit beside the workflow's `journal.jsonl`. Look for `docker exec`, traffic to the published
 port, and reads of any secret store.
 
+Those rules are prompt text, and ingested text can argue with prompt text. What does not argue
+is `.claude/settings.json`: the sandbox, the block on reads outside the working directories,
+and the deny entries for the host's secret stores apply to every agent this workflow starts.
+Keep the prompts saying it anyway — a sweep agent should know why it is refused, and the
+settings file does not reach a tool that never loads it.
+
 ## Phase 0: preflight
 
 On Windows chain with `;` and use PowerShell equivalents; the commands below are the Bash form.
