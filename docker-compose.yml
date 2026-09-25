@@ -127,9 +127,12 @@ networks:
     # own it still leaves the host an address on this bridge, which is on-link in the container's
     # own subnet and so reachable with no route at all -- a second way off codervis, to whatever
     # the host listens on (#37). `isolated` is the gateway mode that assigns the bridge no
-    # address, so there is nothing on it to dial. Docker Engine 28.1 or newer honours it; an
-    # older engine refuses to create the network, and README's network section says what to do
-    # about that. `python -m app.egress check` is what proves it took effect on your engine.
+    # address, so there is nothing on it to dial. Docker Engine 28.1 or newer honours it. An
+    # older engine does not refuse it -- the bridge driver ignores a driver option it has no
+    # case for -- so the stack starts and the host keeps its address; README's network section
+    # says what to do then. `python -m app.egress check` is what proves which you got: with the
+    # option honoured no gateway address is allocated at all, so the subnet's first address
+    # falls to the first container attached, and finding `egress` there is the evidence.
     driver_opts:
       com.docker.network.bridge.gateway_mode_ipv4: isolated
     # No `enable_ipv6` here, so IPv6 never reaches this bridge. Turning it on would need

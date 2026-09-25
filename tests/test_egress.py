@@ -20,6 +20,7 @@ import asyncio
 import functools
 import logging
 import socket
+import sys
 from urllib.parse import urlsplit
 
 import pytest
@@ -548,40 +549,53 @@ def test_reachable_directly_is_true_for_one_that_answers() -> None:
         assert reachable_directly("127.0.0.1", listener.getsockname()[1], timeout_s=2) is True
 
 
+ROUTE_HEADER = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
+
+
+def _column(address: str) -> str:
+    """An address as /proc/net/route renders it: the `__be32` printed as one host-order word.
+
+    Built rather than written out, because that is exactly what `_address` reverses. A literal
+    would be the little-endian rendering, and these fixtures would then be the one thing that
+    fails on the big-endian machine the native-order unpacking exists for.
+    """
+    return f"{int.from_bytes(socket.inet_aton(address), sys.byteorder):08X}"
+
+
+def _route(iface: str, destination: str, gateway: str, netmask: str, flags: str) -> str:
+    columns = (_column(destination), _column(gateway), flags, "0", "0", "0", _column(netmask))
+    return iface + "\t" + "\t".join(columns) + "\t0\t0\t0\n"
+
+
 # A routing table shaped like the dashboard container's: one on-link subnet, no default route,
-# which is what `internal: true` produces. The columns are little-endian hex, as the kernel
-# renders them: 172.30.0.0/16 on eth0, holding this container at 172.30.0.2.
-INTERNAL_ROUTE_TABLE = """\
-Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT
-eth0\t00001EAC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0
-"""
+# which is what `internal: true` produces -- 172.30.0.0/16 on eth0, holding this container at
+# 172.30.0.2.
+INTERNAL_ROUTE_TABLE = ROUTE_HEADER + _route(
+    "eth0", "172.30.0.0", "0.0.0.0", "255.255.0.0", "0001"
+)
 # The same container given a default route as well, which is what joining a non-internal network
 # does: 172.17.0.1 is the gateway it names.
-ROUTED_ROUTE_TABLE = """\
-Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT
-eth0\t00000000\t010011AC\t0003\t0\t0\t0\t00000000\t0\t0\t0
-eth0\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0
-"""
+ROUTED_ROUTE_TABLE = (
+    ROUTE_HEADER
+    + _route("eth0", "0.0.0.0", "172.17.0.1", "0.0.0.0", "0003")
+    + _route("eth0", "172.17.0.0", "0.0.0.0", "255.255.0.0", "0001")
+)
 
 
 def test_the_on_link_addresses_are_the_bridge_gateway_internal_true_leaves_behind() -> None:
     """The address `internal: true` does not remove: the first of the container's own subnet,
     which is where Docker puts the bridge's gateway, reachable with no route at all (#37)."""
     assert on_link_addresses(INTERNAL_ROUTE_TABLE) == ["172.30.0.1"]
-    assert on_link_addresses(INTERNAL_ROUTE_TABLE, own={"172.30.0.2"}) == ["172.30.0.1"]
 
 
 def test_a_gateway_a_route_names_comes_first_and_is_not_repeated() -> None:
     assert on_link_addresses(ROUTED_ROUTE_TABLE) == ["172.17.0.1"]
 
 
-def test_the_on_link_addresses_leave_out_this_container_and_loopback() -> None:
-    """Reaching itself proves nothing, and a container whose own address is the first of the
-    subnet would otherwise fail its own check."""
-    assert on_link_addresses(INTERNAL_ROUTE_TABLE, own={"172.30.0.1"}) == []
-    loopback = INTERNAL_ROUTE_TABLE.replace(
-        "eth0\t00001EAC", "lo\t0000007F"
-    )
+def test_the_on_link_addresses_leave_out_loopback() -> None:
+    """Which candidates are this project rather than the host is `peer_addresses`' job, so the
+    derivation drops only what is nobody's: loopback, and the unspecified address."""
+    loopback = ROUTE_HEADER + _route("lo", "127.0.0.0", "0.0.0.0", "255.0.0.0", "0001")
     assert on_link_addresses(loopback) == []
 
 
@@ -592,7 +606,7 @@ def test_the_on_link_addresses_leave_out_this_container_and_loopback() -> None:
         "Iface\tDestination\tGateway \n",
         "header\neth0\tnonsense\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n",
         # /31 and /32 hold no gateway address of their own to derive.
-        "header\neth0\t00001EAC\t00000000\t0001\t0\t0\t0\tFEFFFFFF\t0\t0\t0\n",
+        ROUTE_HEADER + _route("eth0", "172.30.0.0", "0.0.0.0", "255.255.255.254", "0001"),
     ],
 )
 def test_an_unreadable_routing_table_yields_no_addresses_rather_than_raising(table: str) -> None:
@@ -642,7 +656,7 @@ def test_the_on_link_half_passes_only_when_nothing_answers() -> None:
 
     results = check_on_link(["172.30.0.1"], probe=silent, timeout_s=1)
     assert [ok for ok, _ in results] == [True]
-    assert "no host on-link" in results[0][1]
+    assert "answered nothing on" in results[0][1]
 
 
 def test_the_on_link_half_names_an_accept_over_a_refusal_on_another_port() -> None:
@@ -805,10 +819,17 @@ async def test_the_check_fails_a_route_round_the_proxy() -> None:
 
 
 @asynctest
-async def test_the_check_fails_an_on_link_address_that_answers() -> None:
+async def test_the_check_fails_an_on_link_address_that_answers(monkeypatch) -> None:
     """The container this check runs in has just reached something that is not the proxy, with
     no route involved. Before #37 the same container passed, because the only thing asked was
-    whether a public name routed -- which `internal: true` answers on its own."""
+    whether a public name routed -- which `internal: true` answers on its own.
+
+    The address dialled here has to be one a test can make answer, so it is loopback -- which is
+    also where this rig's proxy listens, and an address `peer_addresses` would account for. It
+    is emptied so that the address under test stands for the bridge's gateway and not for
+    `egress`.
+    """
+    monkeypatch.setattr(egress, "peer_addresses", lambda *a, **k: {})
     async with _CheckRig() as rig:
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
@@ -826,9 +847,10 @@ async def test_the_check_fails_an_on_link_address_that_answers() -> None:
 
 
 @asynctest
-async def test_the_check_fails_an_on_link_address_that_refuses() -> None:
+async def test_the_check_fails_an_on_link_address_that_refuses(monkeypatch) -> None:
     """A refusal is a live host: the address is reachable, and what it happens to be listening
-    on is not a bound anybody chose."""
+    on is not a bound anybody chose. Loopback stands for the gateway here, as above."""
+    monkeypatch.setattr(egress, "peer_addresses", lambda *a, **k: {})
     async with _CheckRig() as rig:
         results = await rig.run(
             on_link=["127.0.0.1"], on_link_ports=[_dead_port()], on_link_probe=probe_on_link
@@ -849,6 +871,7 @@ async def test_the_check_passes_when_the_subnets_first_address_is_this_container
     everywhere the suite runs.
     """
 
+
     def unexpected(*args: object, **kwargs: object) -> str:
         raise AssertionError(f"dialled its own address: {args} {kwargs}")
 
@@ -866,7 +889,112 @@ async def test_the_check_passes_when_the_subnets_first_address_is_this_container
             )
         )
     assert all(ok for ok, _ in results), results
-    assert any("belongs to this container" in line for _ok, line in results)
+    assert any("is this container's own address" in line for _ok, line in results)
+
+
+@asynctest
+async def test_the_check_accounts_for_the_proxys_address_rather_than_dialling_it(
+    monkeypatch,
+) -> None:
+    """The shape a working deployment actually has on Docker Engine 28.1 or newer.
+
+    `gateway_mode_ipv4: isolated` makes the engine skip allocating a gateway address
+    altogether, so the subnet's first address -- the one the host's end of the bridge would
+    have held -- is free, and the first container attached takes it. The compose file's
+    dependency chain (egress, then codervis, then ingress) makes that `egress`. Dialling it and
+    failing on the RST would report the bound broken in precisely the deployment where it is
+    whole, so the address is accounted for as the proxy and the line says so. That the proxy is
+    there *is* the evidence the option took effect: an engine that ignored it holds the address
+    on the bridge instead, the name resolves elsewhere, and the address is dialled.
+    """
+
+    def unexpected(*args: object, **kwargs: object) -> str:
+        raise AssertionError(f"dialled the proxy's own address: {args} {kwargs}")
+
+    monkeypatch.setattr(egress, "read_route_table", lambda *a, **k: INTERNAL_ROUTE_TABLE)
+    monkeypatch.setattr(egress, "own_addresses", lambda: frozenset({"172.30.0.2"}))
+    monkeypatch.setattr(egress, "resolved_addresses", lambda _host: frozenset({"172.30.0.1"}))
+    async with _CheckRig() as rig:
+        results = await asyncio.to_thread(
+            functools.partial(
+                check,
+                rig.environ,
+                direct=("127.0.0.1", _dead_port()),
+                on_link=None,
+                on_link_probe=unexpected,
+                timeout_s=2,
+            )
+        )
+    assert all(ok for ok, _ in results), results
+    assert any("172.30.0.1 is the proxy" in line for _ok, line in results)
+
+
+@asynctest
+async def test_the_check_dials_the_gateway_an_engine_that_ignored_the_option_left(
+    monkeypatch,
+) -> None:
+    """The other side of the same case, and the one the issue is about: where the proxy's name
+    resolves somewhere else, the subnet's first address is nobody's peer -- it is the host's end
+    of the bridge -- so it is dialled, and answering fails the check."""
+    monkeypatch.setattr(egress, "read_route_table", lambda *a, **k: INTERNAL_ROUTE_TABLE)
+    monkeypatch.setattr(egress, "own_addresses", lambda: frozenset({"172.30.0.2"}))
+    monkeypatch.setattr(egress, "resolved_addresses", lambda _host: frozenset({"172.30.0.3"}))
+    async with _CheckRig() as rig:
+        results = await asyncio.to_thread(
+            functools.partial(
+                check,
+                rig.environ,
+                direct=("127.0.0.1", _dead_port()),
+                on_link=None,
+                on_link_probe=lambda *_a, **_k: ON_LINK_ACCEPTED,
+                timeout_s=2,
+            )
+        )
+    failures = [line for ok, line in results if not ok]
+    assert len(failures) == 1
+    assert "172.30.0.1:443 accepted a direct connection" in failures[0]
+
+
+def test_the_peers_are_this_container_and_the_proxy(monkeypatch) -> None:
+    """Two peers and no more: reaching either is the bound working, and anything else on-link
+    is dialled. A proxy name that will not resolve contributes nothing, so its address is
+    probed rather than assumed -- which fails the check rather than passing it."""
+    monkeypatch.setattr(egress, "own_addresses", lambda: frozenset({"172.30.0.2"}))
+    monkeypatch.setattr(egress, "resolved_addresses", lambda _host: frozenset({"172.30.0.1"}))
+    peers = egress.peer_addresses({}, "http://egress:3128")
+    assert peers == {
+        "172.30.0.2": "this container's own address",
+        "172.30.0.1": "the proxy http://egress:3128",
+    }
+
+    monkeypatch.setattr(egress, "resolved_addresses", lambda _host: frozenset())
+    assert egress.peer_addresses({}, "http://egress:3128") == {
+        "172.30.0.2": "this container's own address"
+    }
+
+
+def test_the_on_link_half_fails_when_it_is_given_no_ports() -> None:
+    """A probe not made establishes nothing, ports included."""
+    results = check_on_link(["172.30.0.1"], ports=[], probe=_never_probed, timeout_s=1)
+    assert [ok for ok, _ in results] == [False]
+    assert "unverified" in results[0][1]
+
+
+def _never_probed(*args: object, **kwargs: object) -> str:
+    raise AssertionError(f"probed with no ports: {args} {kwargs}")
+
+
+def test_a_routing_table_that_hits_the_cap_loses_its_truncated_last_line(tmp_path) -> None:
+    """A half-read line still splits into eight fields, and the subnet derived from one is an
+    address dialled in place of one that was never read."""
+    route = _route("eth0", "172.30.0.0", "0.0.0.0", "255.255.0.0", "0001")
+    table = tmp_path / "route"
+    table.write_text(ROUTE_HEADER + route * (egress.ROUTE_TABLE_CAP // len(route) + 2))
+    read = read_route_table(str(table))
+    assert read is not None
+    assert len(read) <= egress.ROUTE_TABLE_CAP
+    assert read.endswith("\n")
+    assert on_link_addresses(read) == ["172.30.0.1"]
 
 
 @asynctest

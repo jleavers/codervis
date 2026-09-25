@@ -10,16 +10,21 @@ Two halves, and neither is sufficient alone:
   ``isolated``, so the host holds no address on its bridge either. Both are needed, and the
   second is the one that is easy to miss: ``internal: true`` withholds the default route, while
   the bridge's own gateway address sits in the container's subnet and is reachable with no route
-  at all (#37). An engine that ignores the gateway-mode option leaves that address in place, and
-  ``check`` below is what tells an operator which they have.
+  at all (#37). An engine that does not know the gateway-mode option ignores it -- the bridge
+  driver's option parser has no case for an unknown label -- and leaves that address in place,
+  so ``check`` below, not a successful ``docker compose up``, is what tells an operator which
+  of the two they have.
 * **The allow-list** makes the route narrow: ``claude.ai`` and ``chatgpt.com``, extended by
   the operator's ``EGRESS_ALLOW``.
 
 ``check`` asserts the whole bound from inside the dashboard's container, and asserts it by
 probing what is reachable rather than by restating the design: the proxy filters by name and
-admits the configured upstreams, no address the container can dial on-link answers, and a public
-name does not resolve-and-connect. A refusal on an on-link address is a failure like an accept,
-because an RST comes from a live host.
+admits the configured upstreams, every address the container can dial on-link is either a peer
+in this compose project or answers nothing, and a public name does not resolve-and-connect. A
+refusal on an on-link address is a failure like an accept, because an RST comes from a live
+host. Silence is the weaker half of that: it means nothing answered the ports asked, which a
+host behind a default-drop rule also produces, so the on-link half is one of three assertions
+rather than the only one.
 
 ``CONNECT`` is deliberately all of it. The proxy reads the host name from the request line and
 never sees a byte of the TLS session it relays, so it holds no certificate authority and never
@@ -40,9 +45,10 @@ import signal
 import socket
 import struct
 import sys
-from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from ipaddress import IPv4Network, ip_address
+from types import MappingProxyType
 from urllib.parse import urlsplit
 
 from .codex_quota import CHATGPT_HOST
@@ -570,7 +576,7 @@ def _address(column: str) -> str:
     return socket.inet_ntoa(struct.pack("=L", int(column, 16)))
 
 
-def on_link_addresses(route_table: str, *, own: Collection[str] = ()) -> list[str]:
+def on_link_addresses(route_table: str) -> list[str]:
     """The addresses this container can dial with no route at all, from its own routing table.
 
     Two kinds, and neither is a constant this module could carry:
@@ -580,8 +586,11 @@ def on_link_addresses(route_table: str, *, own: Collection[str] = ()) -> list[st
     * **The first address of each on-link subnet.** This is the one ``internal: true`` does not
       remove: Docker gives a bridge network's gateway the first address of its subnet and puts
       it on the host's end of the bridge, so it sits in the container's own subnet and needs no
-      route to be reached. A container's own addresses are excluded (``own``), since reaching
-      itself proves nothing.
+      route to be reached.
+
+    Every candidate is returned, this container's own address included: which of them are the
+    project rather than the host is `peer_addresses`' job, and it says so in a line of its own
+    rather than by dropping one.
 
     Ordered gateways first, deduplicated, and loopback and the unspecified address dropped.
 
@@ -622,32 +631,49 @@ def on_link_addresses(route_table: str, *, own: Collection[str] = ()) -> list[st
     addresses: list[str] = []
     for addr in named + derived:
         parsed = ip_address(addr)
-        if parsed.is_loopback or parsed.is_unspecified or addr in own or addr in addresses:
+        if parsed.is_loopback or parsed.is_unspecified or addr in addresses:
             continue
         addresses.append(addr)
     return addresses
 
 
+ROUTE_TABLE_CAP = 64 * 1024
+
+
 def read_route_table(path: str = ROUTE_TABLE_PATH) -> str | None:
-    """The routing table as the kernel renders it, or None where there is none to read."""
-    try:
-        with open(path, encoding="ascii", errors="replace") as handle:
-            return handle.read(64 * 1024)
-    except OSError:
-        return None
+    """The routing table as the kernel renders it, or None where there is none to read.
 
-
-def own_addresses() -> frozenset[str]:
-    """This container's own addresses, as far as its name resolves to them.
-
-    Best effort: a name that does not resolve costs only a candidate that would have probed
-    this container itself, which reports reach that leads nowhere off the project.
+    Capped like every other read of something this process does not write. A table that hits the
+    cap loses its last line rather than keeping a truncated one: a half-written line can still
+    split into eight fields with a short mask, and a subnet derived from that is a candidate
+    dialled in place of one that was never read.
     """
     try:
-        info = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+        with open(path, encoding="ascii", errors="replace") as handle:
+            table = handle.read(ROUTE_TABLE_CAP + 1)
+    except OSError:
+        return None
+    if len(table) > ROUTE_TABLE_CAP:
+        return table[: table.rfind("\n", 0, ROUTE_TABLE_CAP) + 1]
+    return table
+
+
+def resolved_addresses(host: str) -> frozenset[str]:
+    """Every IPv4 address a name resolves to, or nothing where it does not resolve.
+
+    Best effort by design: a name that does not resolve costs a candidate its label, so it is
+    probed rather than accounted for -- which fails the check rather than passing it.
+    """
+    try:
+        info = socket.getaddrinfo(host, None, socket.AF_INET)
     except (OSError, UnicodeError):
         return frozenset()
     return frozenset(str(entry[4][0]) for entry in info)
+
+
+def own_addresses() -> frozenset[str]:
+    """This container's own addresses, as far as its name resolves to them."""
+    return resolved_addresses(socket.gethostname())
 
 
 def probe_on_link(addr: str, port: int, *, timeout_s: float) -> str:
@@ -687,11 +713,20 @@ def check_on_link(
 ) -> list[tuple[bool, str]]:
     """One result per address: reachable at all is a failure, whoever answered.
 
-    More candidates than the cap is itself a failure. The cap keeps a check from becoming a scan
-    of whatever a surprising routing table held, and the rule everywhere here is that a probe not
-    made establishes nothing -- so the addresses left undialled are named rather than dropped.
+    More candidates than the cap is itself a failure, and so is being given no ports to dial
+    them on. The cap keeps a check from becoming a scan of whatever a surprising routing table
+    held, and the rule everywhere here is that a probe not made establishes nothing -- so the
+    addresses left undialled are named rather than dropped.
     """
     results: list[tuple[bool, str]] = []
+    if not ports:
+        return [
+            (
+                False,
+                f"{len(addresses)} on-link address(es) to probe and no ports to probe them on, "
+                "so nothing was dialled and the bound is unverified",
+            )
+        ]
     if len(addresses) > MAX_ONLINK_PROBES:
         skipped = ", ".join(addresses[MAX_ONLINK_PROBES:])
         results.append(
@@ -719,8 +754,8 @@ def check_on_link(
             results.append(
                 (
                     True,
-                    f"{addr} answers nothing on {_ports(ports)}: no host on-link, so the proxy "
-                    "is the only peer that leads anywhere",
+                    f"{addr} answered nothing on {_ports(ports)}: nothing holds that address, "
+                    "or nothing on it answers the ports probed",
                 )
             )
         elif answered[1] == ON_LINK_ACCEPTED:
@@ -766,6 +801,9 @@ def check(
     been given a default route can resolve and reach. Neither implies the other, and the
     on-link half is the one `internal: true` does not settle.
 
+    An on-link address that is this container or the proxy is accounted for rather than dialled
+    (`peer_addresses`); every other one is dialled, and answering at all fails the check.
+
     ``on_link`` defaults to whatever the container's routing table yields; a caller passes it
     to probe a set of its own.
     """
@@ -803,7 +841,11 @@ def check(
             results.append((True, f"{name}: {host}:{port} admitted"))
     results.extend(
         _on_link_results(
-            on_link, ports=on_link_ports, probe=on_link_probe, timeout_s=min(timeout_s, 2.0)
+            on_link,
+            ports=on_link_ports,
+            probe=on_link_probe,
+            timeout_s=min(timeout_s, 2.0),
+            peers=peer_addresses(environ, proxy),
         )
     )
     host, port = direct
@@ -826,19 +868,48 @@ def check(
     return results
 
 
+def peer_addresses(environ: Mapping[str, str], proxy: str) -> dict[str, str]:
+    """On-link addresses that are this compose project, and what each one is.
+
+    An address here is not dialled, because reaching it is the bound working rather than a way
+    round it, and the line it prints says which peer it was.
+
+    * **This container's own.** Reaching itself establishes nothing either way.
+    * **The proxy's.** `egress` is the one peer the dashboard is meant to reach, and on an
+      engine that honours ``gateway_mode_ipv4: isolated`` it is *where the gateway would be*:
+      no gateway address is allocated for such a network, so the subnet's first address -- the
+      one Docker would have given the host's end of the bridge -- falls to the first container
+      attached instead, which the compose file's dependency order makes `egress`. Finding the
+      proxy there is therefore the evidence the option took effect. An engine that ignores the
+      option holds that address on the bridge, the name resolves elsewhere, and the address is
+      dialled like any other.
+    """
+    peers = {addr: "this container's own address" for addr in own_addresses()}
+    host = urlsplit(proxy).hostname
+    if host:
+        for addr in resolved_addresses(host):
+            peers.setdefault(addr, f"the proxy {proxy}")
+    return peers
+
+
 def _on_link_results(
     on_link: Sequence[str] | None,
     *,
     ports: Sequence[int],
     probe: OnLinkProbe,
     timeout_s: float,
+    peers: Mapping[str, str] = MappingProxyType({}),
 ) -> list[tuple[bool, str]]:
-    """The on-link half, including the case where there is nothing to probe.
+    """The on-link half, including the cases where there is nothing left to probe.
 
-    An empty candidate list is reported as a failure rather than passed over: the invariant is
-    that no on-link address answers, and a check that probed none of them has not established
-    it. Saying so is the whole point of this half -- the bound used to read as kept because the
-    one thing it asked was a question `internal: true` answers on its own.
+    A candidate list that is empty from the start is reported as a failure rather than passed
+    over: the invariant is that no on-link address answers, and a check that probed none of them
+    has not established it. Saying so is the whole point of this half -- the bound used to read
+    as kept because the one thing it asked was a question `internal: true` answers on its own.
+
+    A list emptied by ``peers`` is the other case, and it passes: every address on-link was
+    accounted for as this container or the proxy, which is what the bound looks like when it
+    holds. What each one was is printed, so a pass is never silent about what it did not dial.
     """
     if on_link is None:
         table = read_route_table()
@@ -850,20 +921,10 @@ def _on_link_results(
                     "reach on-link are unknown and the bound is unverified",
                 )
             ]
-        derived = on_link_addresses(table)
-        on_link = on_link_addresses(table, own=own_addresses())
-        if derived and not on_link:
-            # Every candidate was one of this container's own addresses, which happens where the
-            # engine assigned the subnet's first address to a container because no gateway holds
-            # it. Nothing to dial is the answer here, not a gap in the check.
-            return [
-                (
-                    True,
-                    f"{', '.join(derived)} belongs to this container, so no gateway address is "
-                    "on-link to dial",
-                )
-            ]
-    if not on_link:
+        candidates = on_link_addresses(table)
+    else:
+        candidates = list(on_link)
+    if not candidates:
         return [
             (
                 False,
@@ -871,7 +932,16 @@ def _on_link_results(
                 "unverified: a container joined to a network has a subnet to derive one from",
             )
         ]
-    return check_on_link(on_link, ports=ports, probe=probe, timeout_s=timeout_s)
+    accounted = [
+        (True, f"{addr} is {peers[addr]}, which is on-link by design and leads nowhere off this "
+         "compose project")
+        for addr in candidates
+        if addr in peers
+    ]
+    to_probe = [addr for addr in candidates if addr not in peers]
+    if not to_probe:
+        return accounted
+    return accounted + check_on_link(to_probe, ports=ports, probe=probe, timeout_s=timeout_s)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
