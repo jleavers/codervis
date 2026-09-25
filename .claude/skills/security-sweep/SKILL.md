@@ -141,6 +141,18 @@ rather than rediscover the original findings:
 | `publication` | the second run's publication lane again, with a coverage record that makes an empty result mean clean |
 | `ambient` | proxy and CA variables now that a proxy is set on purpose, uvicorn's environment, the `${USERPROFILE}` mount defaults, the suite in a developer's shell, and image drift |
 
+The `unowned` lanes (`args.lanes: "unowned"`) take up the third run's critic
+(`20260925T102222Z`): fifteen surfaces no lane had owned, three of them named by every critic
+so far. Each surface a critic named three times gets a recorded read or an explicit
+out-of-scope, never silence:
+
+| Lane | Threat model |
+| --- | --- |
+| `front-door` | every route into `codervis:8000` that skips `ingress`'s bounds, `/healthz` under a hung mount, the FastAPI default routes and HEAD/Range on `/static`, and the browser side; may start a throwaway stack |
+| `inside-codervis` | code already running in the dashboard: the allowed hosts as exfiltration sinks (reasoned and stub-tested, never sent to the real services), what the whole-tree mounts hold, and what root with `NET_RAW` adds; may start a throwaway stack |
+| `supply-chain` | CI and Dependabot, advisories across the pip closure and the base image, variable names shared with issuebot, and history GitHub serves by SHA |
+| `assurance` | the gate-level tests (by mutation, on a copy), the unarchived design specs, container logs as agent input, and the sweep's own tooling |
+
 Every lane in every set returns `coverage`, a concrete record of what it examined, and the
 completeness critic is given all of them. A lane with no findings and a thin record has not
 cleared its surface.
