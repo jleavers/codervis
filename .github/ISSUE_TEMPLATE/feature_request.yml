@@ -1,0 +1,59 @@
+name: Feature or change
+description: Something codervis should do, or should do differently.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Issues here are written as a brief for whoever picks the work up. The clearer the
+        acceptance criteria, the better the result.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        What is hard, surprising or impossible today. Describe the situation rather than the
+        fix, so the fix stays open to argument.
+      placeholder: |
+        I use the dashboard on a second monitor and the reset countdowns are too small to
+        read from across the desk.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like instead
+      description: If you have a shape in mind, describe it. If not, leave this and say so.
+
+  - type: textarea
+    id: criteria
+    attributes:
+      label: Acceptance criteria
+      description: >
+        How someone would know this is done. Behaviour rather than implementation: what is
+        true afterwards that is not true now.
+      placeholder: |
+        - A window whose reset is under an hour away shows minutes, not a rounded hour.
+        - The initial page and the SSE update render it the same way.
+    validations:
+      required: true
+
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation
+      description: The commands that must pass. Concrete commands are worth more than prose.
+      placeholder: |
+        python -m pytest
+        node --test 'tests/test_*.js'
+      render: shell
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: >
+        Anything you tried, or rejected, and why. This is often the most useful field: it
+        stops the same option being re-proposed and re-rejected.

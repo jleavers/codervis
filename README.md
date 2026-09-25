@@ -1,8 +1,21 @@
 # codervis
 
+[![CI](https://github.com/jleavers/codervis/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jleavers/codervis/actions/workflows/ci.yml?query=branch%3Amain)
+[![Licence: Apache 2.0](https://img.shields.io/badge/licence-Apache%202.0-blue.svg)](LICENSE)
+
 A local web dashboard that shows your **Claude Code** and **Codex CLI** quota
 usage live, displayed as geiger-style meters that shift from **lime → amber →
 coral** as you approach the limit.
+
+![The codervis dashboard: a Claude Code card with 5-hour, weekly and Fable weekly meters, and a Codex card with 5-hour and weekly meters. As the percentages climb from single digits to the high nineties, the meters and their readouts shift from lime through amber to coral. The data shown is fabricated.](docs/images/usage-ramp.gif)
+
+## Contents
+
+- [How it works](#how-it-works) — what is read, what is called, and the two bounds around it
+- [Prerequisites](#prerequisites) · [Setup](#setup) · [Run](#run) · [Test](#test)
+- [What you see](#what-you-see) · [Troubleshooting](#troubleshooting)
+- [Security notes](#security-notes) — who can reach it, and where a token can go
+- [Contributing](CONTRIBUTING.md) · [Security policy](SECURITY.md) · [Licence](#licence)
 
 ## How it works
 
@@ -284,8 +297,13 @@ browser-disabled cards are dimmed.
 ├── requirements-dev.txt
 ├── pytest.ini
 ├── tests/
+├── tools/screenshots/   # Regenerates the README's image from fabricated data
+├── docs/images/         # That image
 ├── .env.example
-└── .gitignore
+├── .gitignore
+├── CONTRIBUTING.md
+├── SECURITY.md
+└── LICENSE
 ```
 
 ## Troubleshooting
@@ -347,5 +365,20 @@ flags that are useful for quick diagnosis.
 - Whoever can reach the port is bounded in what they can cost: `ingress` holds
   at most 256 connections, and it drops a client that has not sent a complete
   request within 10 seconds. Every service's log is capped at 3 × 10 MB.
-- The dashboard never logs the tokens. If you regenerated `usage-debug.log`
-  during setup, delete it.
+- The dashboard never logs the tokens, and never serves an exception's own
+  text: a failure is reported with one of the fixed messages in
+  `app/degrade.py`. A debug capture of an upstream call made with the CLI's own
+  `--debug` flags *does* carry the token, so treat any such log file as one.
+
+## Contributing
+
+Issues and small pull requests are welcome; a large change is worth an issue
+first. [`CONTRIBUTING.md`](CONTRIBUTING.md) has the setup, the conventions and
+the one rule above the others: never read a credential file to check
+something. Security reports go through
+[private vulnerability reporting](https://github.com/jleavers/codervis/security/advisories/new),
+not the issue tracker — [`SECURITY.md`](SECURITY.md) says what is in scope.
+
+## Licence
+
+[Apache License 2.0](LICENSE).
