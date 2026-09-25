@@ -615,8 +615,10 @@ def probe_direct(host: str, port: int = DEFAULT_TARGET_PORT, *, timeout_s: float
     answered -- a route round the proxy, reported as one. Anything that stopped the connection
     leaving this container is `DIRECT_UNVERIFIED`, because a probe not made establishes nothing.
 
-    A name that does not resolve is its own answer rather than a failure: an internal network's
-    resolver may decline public names, and then there is no route round the proxy to take.
+    A name that does not resolve is its own outcome rather than either verdict. An internal
+    network's resolver declines public names, so it is what a confined container looks like --
+    but DNS failing establishes nothing about IP routing on its own, and `check` settles it
+    against the routing table rather than inferring a route from a lookup.
     """
     try:
         with socket.create_connection((host, port), timeout_s):
@@ -649,6 +651,7 @@ PEER_PROXY = (
     "the proxy {proxy}, which is the allow-listed way off this project rather than a way "
     "round it"
 )
+
 
 def _address(column: str) -> str:
     """One of /proc/net/route's address columns.
@@ -719,6 +722,29 @@ def on_link_addresses(route_table: str) -> list[str]:
             continue
         addresses.append(addr)
     return addresses
+
+
+def has_default_route(route_table: str) -> bool:
+    """Whether this container has any route off its own subnets.
+
+    This is what `internal: true` withholds, and it is the evidence the direct half falls back
+    on when a public name will not resolve. A lookup that fails says nothing about routing --
+    an internal network's resolver declines public names, and so does a broken one on a
+    container with a default route and a way off the host. The routing table tells the two
+    apart without asking anything of the network.
+    """
+    for line in route_table.splitlines()[1:]:
+        fields = line.split()
+        if len(fields) < 8 or fields[0] == "lo":
+            continue
+        try:
+            destination = int(fields[1], 16)
+            netmask = int(fields[7], 16)
+        except ValueError:
+            continue
+        if destination == 0 and netmask == 0:
+            return True
+    return False
 
 
 ROUTE_TABLE_CAP = 64 * 1024
@@ -803,6 +829,17 @@ class OnLinkProbe(Protocol):
     def __call__(self, addr: str, port: int, *, timeout_s: float) -> str: ...
 
 
+class DirectProbe(Protocol):
+    """The public-name probe's shape, so `check` can be handed one that dials nothing.
+
+    The tests need it: a real connect to a supposedly unroutable address is whatever the
+    machine running the suite does with it, which is not reproducible between a developer's
+    laptop and a runner. `probe_direct` keeps its own real-socket tests.
+    """
+
+    def __call__(self, host: str, port: int, *, timeout_s: float) -> str: ...
+
+
 def check_on_link(
     addresses: Sequence[str],
     *,
@@ -848,6 +885,7 @@ def check_on_link(
         # to report and a refusal next -- both establish the address is live -- and "could not
         # be dialled" last, since it establishes nothing and would hide a port that answered.
         priority = (ON_LINK_ACCEPTED, ON_LINK_REFUSED)
+
         # An outcome this does not know sorts last and is reported as unverified, rather than
         # raising out of a check whose other assertions have already run.
         def rank(answer: tuple[int, str]) -> int:
@@ -884,9 +922,9 @@ def check_on_link(
             results.append(
                 (
                     False,
-                    f"{addr} could not be dialled on {_ports(ports)}: the connection never left "
-                    "this container, so nothing was established about that address and the "
-                    "bound is unverified for it",
+                    f"{addr} could not be dialled on {_ports(ports)}: no answer came back "
+                    "and no probe was established as having been made, so nothing is known "
+                    "about that address and the bound is unverified for it",
                 )
             )
     return results
@@ -903,6 +941,7 @@ def check(
     on_link: Sequence[str] | None = None,
     on_link_ports: Sequence[int] = PROBE_ONLINK_PORTS,
     on_link_probe: OnLinkProbe = probe_on_link,
+    direct_probe: DirectProbe = probe_direct,
     timeout_s: float = 10.0,
 ) -> list[tuple[bool, str]]:
     """Every assertion the bound rests on, as seen from inside the dashboard's container.
@@ -965,7 +1004,7 @@ def check(
         )
     )
     host, port = direct
-    answered = probe_direct(host, port, timeout_s=min(timeout_s, 3.0))
+    answered = direct_probe(host, port, timeout_s=min(timeout_s, 3.0))
     if answered == DIRECT_ANSWERED:
         results.append(
             (
@@ -983,13 +1022,27 @@ def check(
             )
         )
     elif answered == DIRECT_NO_DNS:
-        results.append(
-            (
-                True,
-                f"{host} does not resolve here: a public name this container cannot even look "
-                "up is no route round the proxy",
+        # A lookup that failed is not a routing fact. What settles it is the table: a container
+        # with no default route cannot reach an off-link address whether it resolved one or
+        # not, and a container that has one was not established either way by a failed lookup.
+        table = read_route_table()
+        if table is not None and not has_default_route(table):
+            results.append(
+                (
+                    True,
+                    f"{host} does not resolve here, and the routing table names no default "
+                    "route: there is no route round the proxy to take",
+                )
             )
-        )
+        else:
+            results.append(
+                (
+                    False,
+                    f"{host} could not be looked up, and this container has a default route "
+                    "(or its routing table could not be read), so whether a public name routes "
+                    "round the proxy is unverified",
+                )
+            )
     else:
         results.append(
             (

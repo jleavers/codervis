@@ -287,14 +287,14 @@ change that puts one there has to extend `on_link_addresses`. What it does *not*
 dial is a candidate that is this container or the proxy (`peer_addresses`): both
 are on-link by design, and on an engine honouring `isolated` the proxy is where
 the gateway would be — no gateway address is allocated for such a network, so
-the subnet's first address falls to the first
-container attached, which the compose file's start order makes `egress`. Finding
-it there is the evidence the option took effect; an engine that ignored it holds
-that address on the bridge, and then it is dialled like any other. Silence from a
-dialled address is the weak half of the assertion — a host dropping packets from
-that bridge looks the same — which is why the bound is three assertions and not
-this one. A half with nothing to probe fails as unverified rather than passing,
-since "it asked a question the network answers anyway" is the defect it exists
+the subnet's first address falls to the first container attached, which the
+compose file's start order makes `egress`. Finding it there is the evidence the
+option took effect; an engine that ignored it holds that address on the bridge,
+and then it is dialled like any other. Silence from a dialled address is the
+weak half of the assertion — a host dropping packets from that bridge looks the
+same — which is why the bound is three assertions and not this one. A half with
+nothing to probe fails as unverified rather than passing, since "it asked a
+question the network answers anyway" is the defect it exists
 to prevent, and so does a candidate list longer than the cap on how many it will
 dial, naming what went unprobed. What it may account for and still pass is a
 candidate that is one of the two peers above — this container, because reaching
