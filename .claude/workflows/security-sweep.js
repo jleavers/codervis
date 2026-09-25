@@ -226,8 +226,14 @@ named for your task: venvs, clones and mirrors, synthetic data, stub servers, co
 worktree, throwaway client configuration. Wherever a brief says "a temporary directory", it
 means there. Never use \`/tmp\` or any other path outside the repository: shared \`/tmp\` is
 where another local principal can create a name before you do (#21), and one directory is what
-the launching session cleans up. Remove nothing from the scratch directory that another agent
-made; the launching session deletes it after the run.
+the launching session cleans up.
+
+**Delete nothing, your own files included.** The launching session removes the whole scratch
+directory after the run, so there is nothing for you to clean up. When you need a fresh copy of
+something, give it a new name rather than removing the old one. An \`rm\` is the command most
+likely to stop and ask the operator, and one built from a shell variable (\`rm $DIR/…\`) is
+refused outright, because an empty variable turns it into a path outside your scratch
+directory.
 
 **Keep each command's output small** -- pipe through \`head\`, \`grep\`, \`wc\` or \`sort | uniq -c\`,
 or write a large result to a file in your scratch directory and read slices of it. A large dump
