@@ -1,5 +1,14 @@
 # Browser Widget Toggles Design
 
+> **Archived — this work shipped.** Kept as a record of how the widget toggles were
+> designed (#2), not as work to do; its plan is archived beside it at
+> `docs/superpowers/plans/archive/2026-06-08-browser-widget-toggles.md`. The five-provider
+> shape below is out of date: Gemini, Cursor and Copilot were removed in #13 (a6d91b6).
+> Its stated invariants are the design's, not this tree's — "OAuth tokens are never logged
+> or returned" under "Error Handling" is contradicted by the CR/LF tail filed as #14 — so
+> check any claim here against the code before relying on it. See "What repo-shipped agent
+> text may say" in `AGENTS.md`.
+
 ## Goal
 
 Add a small slider toggle to every provider card so a user can disable or

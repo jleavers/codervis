@@ -1,7 +1,7 @@
 """What repo-shipped agent tooling says, as distinct from where it runs.
 
-This repository ships text that agents execute -- the archived plans under
-`docs/superpowers/plans/`, the security-sweep skill and its workflow. That text used to make
+This repository ships text that agents execute -- the archived documents under
+`docs/superpowers/`, the security-sweep skill and its workflow. That text used to make
 its own local choices about the environment it ran in, which is how one plan came to name a
 fixed directory in world-writable `/tmp` as a package cache six times (#21).
 
@@ -23,8 +23,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_SETTINGS = ROOT / ".claude" / "settings.json"
 
-PLANS_DIR = ROOT / "docs" / "superpowers" / "plans"
+DOCS_DIR = ROOT / "docs" / "superpowers"
+PLANS_DIR = DOCS_DIR / "plans"
 WORKFLOW = ROOT / ".claude" / "workflows" / "security-sweep.js"
+
+# What an archived document opens with. The plans carry this sentence; the two design specs
+# beside them did not, which is how they outlived the archiving of their own plans and went on
+# reading as designs someone had yet to implement (#46).
+ARCHIVED_MARKER = "> **Archived —"
 
 TEXT_SUFFIXES = {".md", ".js", ".json", ".yml", ".yaml", ".py", ".sh", ".toml", ".ini"}
 
@@ -109,24 +115,36 @@ def test_no_shipped_document_names_a_fixed_path_in_shared_tmp() -> None:
     assert not offenders, f"fixed path in shared /tmp in shipped text: {offenders}"
 
 
-def test_no_plan_reads_as_work_still_to_do() -> None:
-    """A plan whose boxes are unticked is a plan an agent picks up and works through.
+def test_no_shipped_document_reads_as_work_still_to_do() -> None:
+    """A document whose work reads as outstanding is one an agent picks up and works through.
 
-    Both of this repository's plans describe work that is over -- one shipped, one for
-    providers that were deleted -- so neither has any business carrying an unticked box or
-    telling a reader to execute it task by task.
+    Every document under `docs/superpowers/` describes work that is over -- some shipped, some
+    for providers that were deleted -- so none has any business carrying an unticked box,
+    telling a reader to execute it task by task, or omitting the header that says which it is.
+
+    The reach is the whole subtree, not `plans/` alone. It was `plans/` alone until #46, while
+    this module's own docstring promised that no shipped document reads as pending: the two
+    design specs under `specs/` were never archived when their plans were (#21), so they went
+    on reading as live designs -- one of them asserting, falsely against this tree, that
+    implementing it changes no mount, secret or Compose behaviour.
     """
-    plans = list(PLANS_DIR.rglob("*.md"))
+    docs = list(DOCS_DIR.rglob("*.md"))
+    assert docs, f"no documents under {DOCS_DIR}; has this check outlived its subject?"
+    plans = [p for p in docs if PLANS_DIR in p.parents]
     assert plans, f"no plans under {PLANS_DIR}; has this check outlived its subject?"
 
     live = [p for p in plans if "archive" not in p.relative_to(PLANS_DIR).parts]
     assert not live, f"a plan outside the archive reads as pending: {live}"
 
-    for path in plans:
+    for path in docs:
         text = path.read_text(encoding="utf-8")
         name = path.relative_to(ROOT)
         assert "- [ ]" not in text, f"{name} still carries an unticked box"
         assert "REQUIRED SUB-SKILL" not in text, f"{name} still tells an agent to execute it"
+        # Near the top, where a reader sees it before the body: a marker at the foot of a
+        # document an agent has already started working through is no marker at all.
+        head = "\n".join(text.splitlines()[:8])
+        assert ARCHIVED_MARKER in head, f"{name} does not say, up front, that it is archived"
 
 
 def test_every_sweep_agent_is_told_its_input_is_data() -> None:
