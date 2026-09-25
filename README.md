@@ -236,9 +236,12 @@ second half of that is the part that makes it a pass: a failed lookup says
 nothing about whether packets can leave, so the check reads the routing table,
 which is where `internal: true` shows up as the absence of a default route. A
 container that has one and merely cannot resolve gets a `FAIL` reading
-`could not be looked up … unverified`, because nothing was established either
-way. The line also `FAIL`s if the name resolved and something answered it, or
-if the probe never left the container.
+`example.com could not be looked up, and this container has a default route` —
+it has a way off its own subnets, and whether that reaches round the proxy is
+`unverified`. The other two `FAIL`s on this line are a name that resolved and
+something that answered it, and a probe that never left the container; and if
+the routing table cannot be read either, the line says so and is `unverified`
+too, because then neither way of telling was available.
 
 The address on the on-link line is whatever the container's own routing table
 yields — the first address of its subnet — so it differs between deployments,

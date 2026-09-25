@@ -276,10 +276,13 @@ compose file), since a peer that reaches the port can make each of them log.
 bound by dialling, never by restating the design — which is how the gateway went
 unnoticed: the proxy filters by name and admits the configured upstream hosts,
 the addresses it derives as **on-link** are each a peer or answer nothing, and a
-public name does not resolve-and-connect. The on-link half derives its
-candidates from the container's own routing table (every gateway a route names,
-and the first address of each on-link subnet, which is where Docker puts a
-bridge's gateway), and it fails on a refusal as well as on an accept, because an
+public name does not resolve-and-connect — or, where it will not resolve at all,
+the routing table names no default route it could have used, since a failed
+lookup on its own says nothing about whether packets can leave. The on-link
+half derives its candidates from the container's own routing table (every
+gateway a route names, and the first address of each on-link subnet, which is
+where Docker puts a bridge's gateway), and it fails on a refusal as well as on
+an accept, because an
 RST comes from a live host. Those candidates are not every address the container
 could dial: a second host address further into the subnet, or a gateway placed
 elsewhere by an explicit `ipam.config.gateway`, is not probed, and a compose

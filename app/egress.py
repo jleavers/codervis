@@ -741,6 +741,11 @@ def has_default_route(route_table: str) -> bool:
     None of them is silent here: `on_link_addresses` returns every gateway a route names, so
     the on-link half dials it. This is the narrower question, deliberately, because the pass it
     guards should rest on the one condition the compose file sets.
+
+    The table it is given is `read_route_table`'s, which stops at `ROUTE_TABLE_CAP`. A table
+    long enough to lose its default route to that cap would answer `False` on evidence that was
+    never read -- 64 KiB is some five hundred routes, and a container attached to one or two
+    networks has a handful, so this is out of reach rather than guarded against.
     """
     for line in route_table.splitlines()[1:]:
         fields = line.split()
@@ -1069,7 +1074,7 @@ def check(
                     False,
                     f"{host} could not be looked up, and this container has a default route: "
                     "it has a way off its own subnets, and whether that reaches round the "
-                    "proxy was not established",
+                    "proxy is unverified",
                 )
             )
     else:

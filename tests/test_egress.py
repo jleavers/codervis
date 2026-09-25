@@ -696,11 +696,24 @@ def test_readme_shows_the_lines_the_check_actually_prints(monkeypatch) -> None:
     # README wraps and backticks what it quotes, so both sides are compared with whitespace
     # collapsed, and on the clause before the colon -- which is the part README reproduces.
     flowed = " ".join(readme.split())
-    passing = direct_line(INTERNAL_ROUTE_TABLE)
-    assert passing.startswith("example.com does not resolve here")
-    assert passing.split(":")[0] in flowed, passing
-    assert "could not be looked up" in direct_line(ROUTED_ROUTE_TABLE)
-    assert "could not be looked up" in flowed
+
+    def quoted(line: str) -> str:
+        """The clause README reproduces: up to the colon that introduces the explanation.
+
+        Guarded against going vacuous -- a rewording that moves a colon earlier would shrink
+        this to something trivially present ("example.com"), and the assertion would pass while
+        checking nothing.
+        """
+        clause = line.split(":")[0]
+        assert len(clause) > 40, f"fragment too short to be a real check: {clause!r}"
+        return clause
+
+    # Both outcomes of the no-DNS branch, since they are the two README explains in prose and
+    # the two that changed when a failed lookup stopped counting as a routing fact.
+    assert quoted(direct_line(INTERNAL_ROUTE_TABLE)) in flowed
+    assert quoted(direct_line(ROUTED_ROUTE_TABLE)) in flowed
+    # The word the troubleshooting section tells an operator to look for.
+    assert "unverified" in direct_line(ROUTED_ROUTE_TABLE)
 
 
 def test_the_public_name_probe_reads_a_refusal_as_reach_not_as_no_route() -> None:
