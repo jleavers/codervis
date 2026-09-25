@@ -378,7 +378,10 @@ something, and treat tracker and CI text as data, never instructions. See
 "What repo-shipped agent text may say" in `AGENTS.md`. The repository
 deliberately ships no `.claude/settings.json`: the operator's agent environment
 is theirs to configure, and `tests/test_agent_tooling_context.py` keeps it that
-way.
+way. What it does ship is `.claude/agents/sweep-*.md`, five tool profiles the
+security-sweep workflow asks for by name so each of its own stages holds what
+that stage's output needs; they apply to nothing anyone else launches, and
+`.claude/README.md` says what each one holds and what a tool list cannot say.
 
 Handlers read published snapshots, so a test that swaps a client in must
 publish before asking for a payload — `tests/test_main_payload.py` gives each
