@@ -1,8 +1,9 @@
 """The compose topology that makes the egress proxy unavoidable rather than advisory.
 
 An allow-list bounds egress only while there is no route around it, so these assert the shape
-of the rendered compose file: the dashboard's container joins internal networks alone, the
-proxy is the one service with a leg on each kind, and only the ingress relay publishes a port.
+of the rendered compose file: the dashboard's container joins internal networks alone, those
+networks give the host no address on their bridge, the proxy is the one service with a leg on
+each kind, and only the ingress relay publishes a port.
 Rendering needs the Docker CLI but no daemon; the test is skipped where Docker is not installed.
 """
 
@@ -69,6 +70,33 @@ def test_the_dashboard_container_joins_internal_networks_alone(config: dict) -> 
     joined = _internal(config, "codervis")
     assert joined, "codervis must name its networks, not fall back to the default bridge"
     assert all(joined.values()), joined
+
+
+GATEWAY_MODE_IPV4 = "com.docker.network.bridge.gateway_mode_ipv4"
+GATEWAY_MODE_IPV6 = "com.docker.network.bridge.gateway_mode_ipv6"
+
+
+@pytest.mark.parametrize("rendered", ["config", "bare_config"])
+def test_the_dashboards_networks_give_the_host_no_address_on_their_bridge(
+    request, rendered: str
+) -> None:
+    """`internal: true` withholds the default route, not the host's own address on the bridge:
+    that address is on-link in the container's subnet, so a compromised dependency reaches it
+    with no route at all (#37). `isolated` is the gateway mode that leaves the bridge with no
+    address to dial, and it belongs next to `internal: true` on every network the dashboard
+    joins, or the bound is back to being one assumption."""
+    config = request.getfixturevalue(rendered)
+    joined = _internal(config, "codervis")
+    assert joined
+    for name in joined:
+        network = config["networks"][name]
+        assert network.get("driver") == "bridge", name
+        opts = network.get("driver_opts") or {}
+        assert opts.get(GATEWAY_MODE_IPV4) == "isolated", name
+        # IPv6 is a second family with a second gateway address, so it may only be turned on
+        # together with its own isolation: otherwise the host is back on the bridge over IPv6.
+        if network.get("enable_ipv6"):
+            assert opts.get(GATEWAY_MODE_IPV6) == "isolated", name
 
 
 def test_the_dashboard_container_publishes_nothing_itself(config: dict) -> None:

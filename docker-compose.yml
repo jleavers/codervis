@@ -11,9 +11,11 @@ services:
   codervis:
     build: .
     container_name: codervis
-    # Internal network only, so the dashboard has no default route: its one way off the host
-    # is the `egress` proxy below, and only to the hosts on its allow-list. No `ports:` here --
-    # Docker ignores a published port on an internal-only container, so `ingress` publishes it.
+    # One internal network, with no default route and no address of the host's own on its
+    # bridge (see `inside` below): every peer the dashboard can dial is a container in this
+    # project, so its one way off the host is the `egress` proxy, and only to the hosts on its
+    # allow-list. No `ports:` here -- Docker ignores a published port on an internal-only
+    # container, so `ingress` publishes it.
     networks: [inside]
     environment:
       CLAUDE_DATA_DIR: /data/claude
@@ -116,8 +118,23 @@ services:
     logging: *logging
 
 networks:
-  # No default route: joining it adds a path to `egress` and `ingress` and nothing else.
+  # No default route and no address for the host: joining it adds a path to `egress` and
+  # `ingress` and nothing else.
   inside:
     internal: true
+    driver: bridge
+    # `internal: true` withholds the default route and the forwarding to other networks. On its
+    # own it still leaves the host an address on this bridge, which is on-link in the container's
+    # own subnet and so reachable with no route at all -- a second way off codervis, to whatever
+    # the host listens on (#37). `isolated` is the gateway mode that assigns the bridge no
+    # address, so there is nothing on it to dial. Docker Engine 28.1 or newer honours it; an
+    # older engine refuses to create the network, and README's network section says what to do
+    # about that. `python -m app.egress check` is what proves it took effect on your engine.
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+    # No `enable_ipv6` here, so IPv6 never reaches this bridge. Turning it on would need
+    # `gateway_mode_ipv6: isolated` beside the line above, or the host would have an IPv6
+    # address on the bridge and the bound would be back to one family only; the topology test
+    # fails if `enable_ipv6` ever appears without it.
   # The only network with a route off the host, joined by the two gateway services alone.
   outside: {}
