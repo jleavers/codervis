@@ -57,19 +57,25 @@ GATE = "the gate"
 FRONT_DOOR = "the front door"
 EGRESS = "the egress bound"
 COMPOSE = "the compose shape"
+HOST_ALLOWLIST = "the host allow-list"
+DEGRADE = "the degrade vocabulary"
 DOCUMENTS = "the document checks"
-AREAS = frozenset({GATE, FRONT_DOOR, EGRESS, COMPOSE, DOCUMENTS})
+AREAS = frozenset({GATE, FRONT_DOOR, EGRESS, COMPOSE, HOST_ALLOWLIST, DEGRADE, DOCUMENTS})
 
 GATE_TESTS = "tests/test_activity_gate.py"
 INGRESS_TESTS = "tests/test_ingress.py"
 COMPOSE_TESTS = "tests/test_compose_topology.py"
 CONTEXT_TESTS = "tests/test_agent_tooling_context.py"
 EGRESS_TESTS = "tests/test_egress.py"
+HOST_TESTS = "tests/test_host_allowlist.py"
+CONTRACT_TESTS = "tests/test_payload_contract.py"
 
 _OPEN_PAST_ADMISSION = (
     f"{GATE_TESTS}::test_the_open_refuses_promptly_what_admission_would_never_have_reached"
 )
-_PENDING_WORK = f"{CONTEXT_TESTS}::test_no_shipped_document_reads_as_work_still_to_do"
+_PENDING_WORK = (
+    f"{CONTEXT_TESTS}::test_no_document_under_superpowers_reads_as_work_still_to_do"
+)
 
 #: Spelled in parts on purpose. The check this mutation trips reads every tracked text file,
 #: this one included, so a literal fixed name under shared `/tmp` here would fail that check
@@ -203,7 +209,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         path="app/ingress.py",
         before="    relay = Relay(target_host, target_port)",
         after="    relay = Relay(target_host, target_port, max_connections=10**6)",
-        caught_by=(f"{INGRESS_TESTS}::test_serve_leaves_the_relay_on_those_defaults",),
+        caught_by=(f"{INGRESS_TESTS}::test_serve_leaves_the_relay_on_those_bounds",),
     ),
     Mutation(
         key="ingress-head-cap-widened",
@@ -232,6 +238,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         after="MAX_CONNECTIONS = 1_000_000",
         caught_by=(f"{INGRESS_TESTS}::test_the_front_doors_bounds_are_the_ones_it_documents",),
     ),
+    # ------------------------------------------------------------------- the egress bound
     Mutation(
         key="egress-default-allow-widened",
         area=EGRESS,
@@ -278,6 +285,30 @@ MUTATIONS: tuple[Mutation, ...] = (
             f"{COMPOSE_TESTS}::test_only_the_relay_publishes_a_port_and_it_targets_the_dashboard",
         ),
     ),
+    # ----------------------------------------------------------------- the host allow-list
+    Mutation(
+        key="host-allowlist-not-armed",
+        area=HOST_ALLOWLIST,
+        rule="the Host allow-list is wrapped around the whole app, once, at construction",
+        path="app/main.py",
+        before="app.add_middleware(HostAllowlist, allowed=ALLOWED_HOSTS)",
+        after="",
+        caught_by=(
+            f"{HOST_TESTS}::test_a_host_the_operator_did_not_name_is_refused_everywhere",
+        ),
+    ),
+    # --------------------------------------------------------------- the degrade vocabulary
+    Mutation(
+        key="degrade-vocabulary-bypassed",
+        area=DEGRADE,
+        rule="source_error comes from the fixed vocabulary, never from an exception's own text",
+        path="app/main.py",
+        before='            "source_error": degrade.message(code),',
+        after='            "source_error": str(exc),',
+        caught_by=(
+            f"{CONTRACT_TESTS}::test_a_credential_in_a_header_never_reaches_the_payload",
+        ),
+    ),
     # ------------------------------------------------------------------ the document checks
     Mutation(
         key="doc-project-settings-file",
@@ -302,7 +333,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         key="doc-unticked-box",
         area=DOCUMENTS,
-        rule="no shipped document reads as work still to do",
+        rule="no document under docs/superpowers/ reads as work still to do",
         path="docs/superpowers/plans/archive/2026-06-08-browser-widget-toggles.md",
         before="**Goal:**",
         after="- [ ] Finish the remaining toggle work.\n\n**Goal:**",
@@ -311,7 +342,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         key="doc-archived-header-dropped",
         area=DOCUMENTS,
-        rule="every shipped document says up front that it is archived",
+        rule="every document under docs/superpowers/ says up front that it is archived",
         path="docs/superpowers/specs/2026-06-08-agy-1.0.6-compatibility-design.md",
         before="> **Archived — this work was abandoned.**",
         after="This design is ready to implement.",
@@ -320,11 +351,14 @@ MUTATIONS: tuple[Mutation, ...] = (
 )
 
 
-def test_the_list_covers_every_security_rule_area() -> None:
-    """The list shrinking to nothing is the failure this module would not otherwise show.
+def test_every_area_of_the_list_still_has_a_control() -> None:
+    """An area losing its last control is the failure this module would not otherwise show.
 
-    Naming the areas here means a control cannot be dropped along with the rule it was
-    the only witness to: the area goes missing and this fails.
+    Per area, not per rule: dropping one of several controls for the gate leaves `GATE`
+    populated and this green, and what catches that is the diff -- a control cannot be deleted
+    without deleting a named entry from the list below, in the same change as the rule it
+    witnesses. What is asserted here is the coarser thing no diff makes obvious: that a whole
+    boundary has stopped being witnessed at all.
     """
     assert {mutation.area for mutation in MUTATIONS} == AREAS
     keys = [mutation.key for mutation in MUTATIONS]
@@ -339,6 +373,10 @@ def pristine(tmp_path_factory) -> Path:
     mutations are applied from this module, so what has to be undone is known exactly.
     `git init` because one of the document checks lists the tracked files to decide what a
     clone would read; nothing is committed, since an index answers `git ls-files`.
+
+    One copy, mutated in place and repaired, means the controls in this module have to run one
+    at a time: they do, since nothing here runs tests in parallel, but a `pytest-xdist` added
+    later would need them pinned to one worker (`xdist_group`) or given a copy each.
     """
     listed = subprocess.run(
         ["git", "ls-files", "-z"],
@@ -421,7 +459,12 @@ def _pytest(
         capture_output=True,
         text=True,
         timeout=MUTANT_TIMEOUT_S,
-        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        # `_GIT_ENV` for the same reason it exists, and no `PYTEST_ADDOPTS`: a `-x` or `-p`
+        # a CI wrapper exported would silently apply to all of these runs.
+        env={
+            **{name: value for name, value in _GIT_ENV.items() if name != "PYTEST_ADDOPTS"},
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
     )
 
 
@@ -431,8 +474,13 @@ def _node_id(case: ElementTree.Element) -> str:
     `tests.test_ingress` + `test_x[case]` -> `tests/test_ingress.py::test_x[case]`, so a
     report can be matched against the `caught_by` entries it came from.
     """
-    module = (case.get("classname") or "").replace(".", "/")
-    return f"{module}.py::{case.get('name') or ''}"
+    parts = (case.get("classname") or "").split(".")
+    file_parts, class_parts = parts, []
+    for index, part in enumerate(parts):
+        if part.startswith("test_"):  # the module; anything after it is a class
+            file_parts, class_parts = parts[: index + 1], parts[index + 1 :]
+            break
+    return "::".join(["/".join(file_parts) + ".py", *class_parts, case.get("name") or ""])
 
 
 def _statuses(report: Path) -> dict[str, tuple[str, str]]:
@@ -494,7 +542,11 @@ def baseline(pristine, tmp_path_factory) -> dict[str, tuple[str, str]]:
     selection = sorted({node for mutation in MUTATIONS for node in mutation.caught_by})
     result = _pytest(selection, pristine, report)
     statuses = _statuses(report)
-    assert statuses, f"the named tests collected nothing\n{result.stdout[-2000:]}"
+    assert statuses, (
+        "the named tests collected nothing, so pytest could not even select them: a test named "
+        "in `MUTATIONS` has been renamed or removed, or lives in a file that is not tracked yet."
+        f"\n{result.stdout[-2000:]}{result.stderr[-2000:]}"
+    )
     red = {node: message for node, (outcome, message) in statuses.items() if outcome != "passed"
            and outcome != "skipped"}
     assert not red, (
@@ -559,10 +611,11 @@ def test_breaking_the_rule_turns_its_tests_red(
         "they live in a file that is new, not yet tracked: the copy is the tracked tree, "
         "which is what a clone gets.\n" + context
     )
-    if counts["skipped"] == counts["total"]:
-        # The baseline above catches this for the whole selection; here for a test that skips
-        # only once mutated, which is still a control that showed nothing.
-        pytest.skip(f"every test that pins {mutation.key} skipped once it was applied")
+    assert counts["skipped"] != counts["total"], (
+        "every test that pins this rule skipped once the mutation was applied, having run "
+        "without it: a rule broken and nothing left to notice is a survived mutation, not an "
+        "environment this control cannot run in\n" + context
+    )
     assert not counts["errored"] or counts["failed"], (
         "the mutant run errored rather than failing its tests, so the rule was never "
         "exercised: the mutation left the file uncollectable, not the rule broken\n" + context

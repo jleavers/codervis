@@ -9,9 +9,9 @@ The environment an operator's agents run in is the operator's own to configure. 
 repository does not ship a `.claude/settings.json` that confines it: one did (#31), and it
 turned every shell command the operator ran in this checkout into a permission prompt and
 blocked the harness's own auto-memory, which secured nothing for anyone who clones the
-repository. What these tests hold instead is the shipped text: that no document carries its
-own environment prefix, that none reads as work still to do, and that every sweep prompt
-tells its agent that what it reads is data.
+repository. What these tests hold instead is the shipped text: that no document carries its own
+environment prefix, that nothing under `docs/superpowers/` reads as work still to do, and that
+every sweep prompt tells its agent that what it reads is data.
 """
 
 from __future__ import annotations
@@ -128,12 +128,15 @@ def test_no_shipped_document_names_a_fixed_path_in_shared_tmp() -> None:
     assert not offenders, f"fixed path in shared /tmp in shipped text: {offenders}"
 
 
-def test_no_shipped_document_reads_as_work_still_to_do() -> None:
+def test_no_document_under_superpowers_reads_as_work_still_to_do() -> None:
     """A document whose work reads as outstanding is one an agent picks up and works through.
 
-    Every document under `docs/superpowers/` describes work that is over -- some shipped, some
-    for providers that were deleted -- so none has any business carrying an unticked box,
-    telling a reader to execute it task by task, or omitting the header that says which it is.
+    Named for the subtree it reads, not for every shipped document: the check beside it really
+    does read them all, and one name for two reaches is how the last one came to promise more
+    than it looked at. Every document under `docs/superpowers/` describes work that is over --
+    some shipped, some for providers that were deleted -- so none has any business carrying an
+    unticked box, telling a reader to execute it task by task, or omitting the header that says
+    which it is.
 
     The reach is the whole subtree, not `plans/` alone. It was `plans/` alone until #46, while
     this module's own docstring promised that no shipped document reads as pending: the two
