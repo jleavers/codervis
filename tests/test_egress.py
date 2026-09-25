@@ -2,10 +2,16 @@
 
 Hermetic: every connection here is to a loopback socket the test started, so nothing reaches a
 name the proxy would have to resolve. The check's on-link half is driven the same way -- a
-loopback address standing in for the bridge gateway, and a stub probe where the case under test
-is "nothing answers", which must not become a packet to a real subnet. The compose topology
-around the proxy is covered by tests/test_compose_topology.py and, end to end, by the CI
-`egress` job.
+loopback address standing in for the bridge gateway, a synthetic routing table where the case is
+about what gets derived, and a stub probe where the case under test is "nothing answers", which
+must not become a packet to whatever subnet the suite happens to be running on.
+
+Two probes here do touch the machine, and both stay on it: `probe_on_link`'s silence case dials
+169.254.0.1, a link-local address no route reaches, and `own_addresses` resolves this host's own
+name. Neither leaves the host, and neither is the thing being asserted anywhere else.
+
+The compose topology around the proxy is covered by tests/test_compose_topology.py and, end to
+end, by the CI `egress` job.
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
+from app import egress
 from app.codex_quota import CHATGPT_HOST
 from app.egress import (
     ALLOW_ENV,
@@ -592,6 +599,16 @@ def test_an_unreadable_routing_table_yields_no_addresses_rather_than_raising(tab
     assert on_link_addresses(table) == []
 
 
+def test_an_on_link_default_route_derives_nothing() -> None:
+    """`ip route add default dev eth0`: a /0 is not a subnet this container is on, and deriving
+    its first address would report 0.0.0.1 as checked. The public-name probe covers that case."""
+    on_link_default = (
+        "header\n"
+        "eth0\t00000000\t00000000\t0001\t0\t0\t0\t00000000\t0\t0\t0\n"
+    )
+    assert on_link_addresses(on_link_default) == []
+
+
 def test_read_route_table_says_when_there_is_none() -> None:
     assert read_route_table("/nonexistent/proc/net/route") is None
 
@@ -647,11 +664,30 @@ def test_the_on_link_half_probes_no_more_than_its_cap() -> None:
         asked.append(addr)
         return ON_LINK_NO_ANSWER
 
-    addresses = [f"10.0.0.{n}" for n in range(1, MAX_ONLINK_PROBES + 4)]
+    addresses = [f"10.0.0.{n}" for n in range(1, MAX_ONLINK_PROBES + 1)]
     results = check_on_link(addresses, probe=record, timeout_s=1)
-    assert len(results) == MAX_ONLINK_PROBES
-    assert set(asked) == set(addresses[:MAX_ONLINK_PROBES])
+    assert [ok for ok, _ in results] == [True] * MAX_ONLINK_PROBES
+    assert set(asked) == set(addresses)
     assert len(asked) == MAX_ONLINK_PROBES * len(PROBE_ONLINK_PORTS)
+
+
+def test_the_on_link_half_fails_rather_than_passing_over_what_the_cap_left() -> None:
+    """The cap bounds the dialling; it may not bound what the check claims. A probe not made
+    establishes nothing, so the addresses past the cap are named and the verdict is a failure."""
+    asked: list[str] = []
+
+    def record(addr: str, _port: int, **_kwargs: object) -> str:
+        asked.append(addr)
+        return ON_LINK_NO_ANSWER
+
+    addresses = [f"10.0.0.{n}" for n in range(1, MAX_ONLINK_PROBES + 3)]
+    results = check_on_link(addresses, probe=record, timeout_s=1)
+    failures = [line for ok, line in results if not ok]
+    assert len(failures) == 1
+    assert "unverified" in failures[0]
+    for addr in addresses[MAX_ONLINK_PROBES:]:
+        assert addr in failures[0]
+        assert addr not in asked
 
 
 def test_the_proxy_variables_are_both_cases_of_all_three() -> None:
@@ -800,6 +836,82 @@ async def test_the_check_fails_an_on_link_address_that_refuses() -> None:
     failures = [line for ok, line in results if not ok]
     assert len(failures) == 1
     assert "refused a direct connection" in failures[0]
+
+
+@asynctest
+async def test_the_check_passes_when_the_subnets_first_address_is_this_containers_own(
+    monkeypatch,
+) -> None:
+    """Where no gateway holds the first address of the subnet, the engine is free to give it to
+    a container -- this one. There is then nothing on-link to dial, which is the bound holding,
+    not the check failing to look: a container reaching itself proves nothing either way. The
+    routing table and this container's addresses are both injected, so the case is the same
+    everywhere the suite runs.
+    """
+
+    def unexpected(*args: object, **kwargs: object) -> str:
+        raise AssertionError(f"dialled its own address: {args} {kwargs}")
+
+    monkeypatch.setattr(egress, "read_route_table", lambda *a, **k: INTERNAL_ROUTE_TABLE)
+    monkeypatch.setattr(egress, "own_addresses", lambda: frozenset({"172.30.0.1"}))
+    async with _CheckRig() as rig:
+        results = await asyncio.to_thread(
+            functools.partial(
+                check,
+                rig.environ,
+                direct=("127.0.0.1", _dead_port()),
+                on_link=None,
+                on_link_probe=unexpected,
+                timeout_s=2,
+            )
+        )
+    assert all(ok for ok, _ in results), results
+    assert any("belongs to this container" in line for _ok, line in results)
+
+
+@asynctest
+async def test_the_check_reads_the_containers_own_routing_table_when_given_none(
+    monkeypatch,
+) -> None:
+    """The default path: no caller-supplied addresses, so the candidates are whatever the
+    container's table yields -- here the gateway `internal: true` leaves on the bridge."""
+    dialled: list[str] = []
+
+    def record(addr: str, _port: int, **_kwargs: object) -> str:
+        dialled.append(addr)
+        return ON_LINK_NO_ANSWER
+
+    monkeypatch.setattr(egress, "read_route_table", lambda *a, **k: INTERNAL_ROUTE_TABLE)
+    monkeypatch.setattr(egress, "own_addresses", lambda: frozenset({"172.30.0.2"}))
+    async with _CheckRig() as rig:
+        results = await asyncio.to_thread(
+            functools.partial(
+                check,
+                rig.environ,
+                direct=("127.0.0.1", _dead_port()),
+                on_link=None,
+                on_link_probe=record,
+                timeout_s=2,
+            )
+        )
+    assert set(dialled) == {"172.30.0.1"}
+    assert all(ok for ok, _ in results), results
+
+
+@asynctest
+async def test_the_check_fails_when_the_routing_table_cannot_be_read(monkeypatch) -> None:
+    """Not a platform this can assert the bound on is not the same as a bound that holds."""
+    monkeypatch.setattr(egress, "read_route_table", lambda *a, **k: None)
+    async with _CheckRig() as rig:
+        results = await asyncio.to_thread(
+            functools.partial(
+                check, rig.environ, direct=("127.0.0.1", _dead_port()), on_link=None, timeout_s=2
+            )
+        )
+    failures = [line for ok, line in results if not ok]
+    assert len(failures) == 1
+    assert "could not be read" in failures[0]
+    assert "unverified" in failures[0]
 
 
 @asynctest

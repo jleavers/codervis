@@ -560,9 +560,14 @@ ON_LINK_REFUSED = "refused"
 ON_LINK_NO_ANSWER = "no answer"
 
 
-def _address(little_endian_hex: str) -> str:
-    """One of /proc/net/route's address columns, which are little-endian hex."""
-    return socket.inet_ntoa(struct.pack("<L", int(little_endian_hex, 16)))
+def _address(column: str) -> str:
+    """One of /proc/net/route's address columns.
+
+    The kernel prints each address, which it holds in network order, as one host-order word:
+    ``%08X`` of the raw ``__be32``. So the bytes come back by unpacking in *native* order --
+    ``"<L"`` would be right only on a little-endian machine, which is most of them and not all.
+    """
+    return socket.inet_ntoa(struct.pack("=L", int(column, 16)))
 
 
 def on_link_addresses(route_table: str, *, own: Collection[str] = ()) -> list[str]:
@@ -580,12 +585,17 @@ def on_link_addresses(route_table: str, *, own: Collection[str] = ()) -> list[st
 
     Ordered gateways first, deduplicated, and loopback and the unspecified address dropped.
 
+    The derived kind rests on Docker's own convention, and says so because the convention is
+    not a guarantee: a network given an explicit ``ipam.config.gateway`` elsewhere in its subnet
+    would not be probed. A compose change that does that has to extend this.
+
     IPv4 only, which is the whole of what reaches this bridge: the compose network sets no
     ``enable_ipv6``, and the topology test refuses one that does without the matching IPv6
     gateway isolation. A network that grows a second family needs ``/proc/net/ipv6_route`` read
-    here as well.
+    here as well, which is #42.
     """
-    found: list[str] = []
+    named: list[str] = []
+    derived: list[str] = []
     for line in route_table.splitlines()[1:]:
         fields = line.split()
         if len(fields) < 8 or fields[0] == "lo":
@@ -601,14 +611,16 @@ def on_link_addresses(route_table: str, *, own: Collection[str] = ()) -> list[st
                 subnet = IPv4Network(f"{destination}/{netmask}", strict=False)
             except ValueError:
                 continue
-            # /31 and /32 hold no separate gateway address to derive.
-            if subnet.prefixlen > 30:
+            # /31 and /32 hold no separate gateway address to derive, and a /0 is not a subnet
+            # this container is on -- an on-link default route (`ip route add default dev eth0`)
+            # would otherwise derive 0.0.0.1 and report it as checked.
+            if subnet.prefixlen > 30 or subnet.prefixlen == 0:
                 continue
-            found.append(str(subnet.network_address + 1))
+            derived.append(str(subnet.network_address + 1))
         else:
-            found.insert(0, gateway)
+            named.append(gateway)
     addresses: list[str] = []
-    for addr in found:
+    for addr in named + derived:
         parsed = ip_address(addr)
         if parsed.is_loopback or parsed.is_unspecified or addr in own or addr in addresses:
             continue
@@ -645,6 +657,11 @@ def probe_on_link(addr: str, port: int, *, timeout_s: float) -> str:
     port, so it proves the address is reachable just as an accept does, and both are failures
     of the bound. Only silence -- a timeout, or the kernel saying there is no way to the
     address -- means the container cannot reach it.
+
+    Silence is the one answer that is not conclusive: a host holding the address while dropping
+    every port asked looks the same from here. That is why this is one of three things `check`
+    asserts and not the only one, and why README's fallback is a firewall rule rather than a
+    green line.
     """
     try:
         with socket.create_connection((addr, port), timeout_s):
@@ -668,8 +685,22 @@ def check_on_link(
     probe: OnLinkProbe = probe_on_link,
     timeout_s: float,
 ) -> list[tuple[bool, str]]:
-    """One result per address: reachable at all is a failure, whoever answered."""
+    """One result per address: reachable at all is a failure, whoever answered.
+
+    More candidates than the cap is itself a failure. The cap keeps a check from becoming a scan
+    of whatever a surprising routing table held, and the rule everywhere here is that a probe not
+    made establishes nothing -- so the addresses left undialled are named rather than dropped.
+    """
     results: list[tuple[bool, str]] = []
+    if len(addresses) > MAX_ONLINK_PROBES:
+        skipped = ", ".join(addresses[MAX_ONLINK_PROBES:])
+        results.append(
+            (
+                False,
+                f"{len(addresses)} on-link addresses, more than the {MAX_ONLINK_PROBES} this "
+                f"check will dial: {skipped} went unprobed, so the bound is unverified for them",
+            )
+        )
     for addr in addresses[:MAX_ONLINK_PROBES]:
         answers = [
             (port, outcome)
@@ -678,9 +709,11 @@ def check_on_link(
         ]
         # An accept is the more useful thing to report, so every port is tried rather than
         # stopping at the first answer: a refusal on 443 would otherwise hide a service on 22.
-        # They cost nothing extra, since an address that answers at all answers at once.
+        # An address that answers does so at once, and one that answers nowhere is dialled on
+        # every port either way, so this costs a timeout only where a rule covers some ports.
         answered = next(
-            (answer for answer in answers if answer[1] == ON_LINK_ACCEPTED), answers[0] if answers else None
+            (answer for answer in answers if answer[1] == ON_LINK_ACCEPTED),
+            answers[0] if answers else None,
         )
         if answered is None:
             results.append(
@@ -817,7 +850,19 @@ def _on_link_results(
                     "reach on-link are unknown and the bound is unverified",
                 )
             ]
+        derived = on_link_addresses(table)
         on_link = on_link_addresses(table, own=own_addresses())
+        if derived and not on_link:
+            # Every candidate was one of this container's own addresses, which happens where the
+            # engine assigned the subnet's first address to a container because no gateway holds
+            # it. Nothing to dial is the answer here, not a gap in the check.
+            return [
+                (
+                    True,
+                    f"{', '.join(derived)} belongs to this container, so no gateway address is "
+                    "on-link to dial",
+                )
+            ]
     if not on_link:
         return [
             (
