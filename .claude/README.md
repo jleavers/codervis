@@ -9,9 +9,9 @@ This directory holds **no `settings.json`**, and that is deliberate; see below.
 ## Stage tool profiles for the security sweep
 
 Five subagent definitions, one per stage of `workflows/security-sweep.js`. The workflow asks for
-them by name through `agentType`; nothing else in this repository refers to them. They live
-beside the workflow rather than in this file's directory root because the harness reads every
-Markdown file under `agents/` as a definition.
+them by name through `agentType`; nothing else in this repository refers to them. This
+description of them sits here rather than in `agents/` because the harness reads every Markdown
+file under that directory as a definition, and a README is not one.
 
 **They bind no session an operator starts in this checkout.** A subagent definition is a
 profile that has to be asked for by name — it is not a project settings file, which applies to
