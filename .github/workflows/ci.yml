@@ -63,8 +63,14 @@ jobs:
         run: python -m pip install -r requirements-dev.txt
 
       # No file list: pytest.ini's testpaths collects all of tests/, so a new
-      # test file runs here without anyone having to name it.
+      # test file runs here without anyone having to name it. REQUIRE_DOCKER
+      # turns tests/test_compose_topology.py's "no docker CLI" skip into a
+      # failure: a hosted runner has the CLI, and the compose shape it pins --
+      # internal networks with no host address on their bridge (#37) -- is not
+      # something to lose quietly to a change in the runner image.
       - name: Run Python tests
+        env:
+          REQUIRE_DOCKER: "1"
         run: python -m pytest -q
 
   test-js:

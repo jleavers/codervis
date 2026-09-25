@@ -4,7 +4,9 @@ An allow-list bounds egress only while there is no route around it, so these ass
 of the rendered compose file: the dashboard's container joins internal networks alone, those
 networks give the host no address on their bridge, the proxy is the one service with a leg on
 each kind, and only the ingress relay publishes a port.
-Rendering needs the Docker CLI but no daemon; the test is skipped where Docker is not installed.
+Rendering needs the Docker CLI but no daemon; the test is skipped where Docker is not installed,
+unless `REQUIRE_DOCKER` says it must not be -- CI sets that, because a pin that skips silently
+where the CLI has gone missing is a pin that disappears with a green build.
 """
 
 from __future__ import annotations
@@ -24,9 +26,19 @@ ROOT = Path(__file__).resolve().parents[1]
 PROXY_URL = "http://egress:3128"
 
 
+REQUIRE_DOCKER_ENV = "REQUIRE_DOCKER"
+
+
+def _no_docker(reason: str) -> None:
+    """Skip where the CLI is absent, unless this is somewhere it was promised."""
+    if os.environ.get(REQUIRE_DOCKER_ENV, "").strip().lower() in ("", "0", "false", "no"):
+        pytest.skip(reason)
+    raise AssertionError(f"{reason}, and {REQUIRE_DOCKER_ENV} says these must not be skipped")
+
+
 def _render(env_file: str, **extra: str) -> dict:
     if shutil.which("docker") is None:
-        pytest.skip("docker CLI not installed")
+        _no_docker("docker CLI not installed")
     # Only what the CLI needs to find its plugins, so nothing in the developer's shell
     # (DASHBOARD_PORT, CLAUDE_HOME, ...) leaks into the interpolation under test.
     keep = ("PATH", "HOME", "DOCKER_HOST", "DOCKER_CONFIG", "XDG_RUNTIME_DIR")
@@ -41,7 +53,7 @@ def _render(env_file: str, **extra: str) -> dict:
         timeout=60,
     )
     if result.returncode != 0 and "is not a docker command" in result.stderr:
-        pytest.skip("docker compose plugin not installed")
+        _no_docker("docker compose plugin not installed")
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
 
