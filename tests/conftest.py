@@ -285,8 +285,14 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
     new = AUDIT.violations[_phase_watermark:]
     _phase_watermark = len(AUDIT.violations)
     if new:
+        # A test that failed on its own *and* reached something keeps its own
+        # traceback: overwriting it would hide the reason it broke behind the
+        # symptom, and it is already red either way.
+        existing = report.longrepr
         report.outcome = "failed"
-        report.longrepr = _report(new)
+        report.longrepr = (
+            _report(new) if existing is None else f"{existing}\n\n{_report(new)}"
+        )
     return report
 
 

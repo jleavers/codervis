@@ -153,6 +153,12 @@ def test_dialling_a_non_loopback_address():
     sock.close()
 
 
+def test_a_failure_of_its_own_keeps_its_own_reason():
+    """Violating and failing: the harness must add a reason, not replace one."""
+    _swallow(lambda: io.FileIO(str(CREDENTIALS)).read())
+    assert 1 == 2, "this test's own reason"
+
+
 def test_control_reading_scratch_and_dialling_loopback():
     """The control: the same shapes, at resources the suite is allowed."""
     (SCRATCH / "written-here.json").write_text("{}")
@@ -176,6 +182,7 @@ MUST_FAIL = (
     "test_os_open_of_a_host_credential_file",
     "test_os_scandir_of_a_host_tree",
     "test_dialling_a_non_loopback_address",
+    "test_a_failure_of_its_own_keeps_its_own_reason",
 )
 MUST_PASS = "test_control_reading_scratch_and_dialling_loopback"
 
@@ -231,6 +238,15 @@ def test_reaching_a_denied_resource_fails_the_test_that_did_it(
 def test_the_probe_run_says_why(probe_run) -> None:
     assert "host agent data" in probe_run.stdout
     assert "not loopback" in probe_run.stdout
+
+
+def test_a_test_that_also_failed_on_its_own_keeps_both_reasons(probe_run) -> None:
+    """The harness reports what was touched; it does not overwrite a traceback.
+
+    A test that broke for a reason of its own and reached something too must
+    still say why it broke, or the harness hides the bug behind the symptom.
+    """
+    assert "this test's own reason" in probe_run.stdout, probe_run.stdout
 
 
 def test_the_same_shapes_at_allowed_resources_pass(probe_run) -> None:
