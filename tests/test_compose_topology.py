@@ -18,6 +18,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from app.egress import ALLOW_ENV, PROXY_ENV_NAMES
 from app.main import ALLOWED_HOSTS_ENV, parse_allowed_hosts
@@ -186,3 +187,52 @@ def test_the_gateway_services_run_with_nothing_to_spare(config: dict, service: s
     assert svc.get("cap_drop") == ["ALL"]
     assert "no-new-privileges:true" in (svc.get("security_opt") or [])
     assert "volumes" not in svc
+
+# The pins above need the Docker CLI to render the compose file, so they skip where it is
+# absent unless `REQUIRE_DOCKER` says they must not. That makes CI's own configuration part of
+# the pin: drop the variable and every assertion in this file goes back to skipping silently on
+# a runner whose image lost the CLI, with a green build to show for it. These two need nothing
+# but the workflow file, so they run everywhere.
+CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+
+
+def _workflow() -> dict:
+    return yaml.safe_load(CI_WORKFLOW.read_text())
+
+
+def test_ci_requires_docker_for_the_job_that_runs_this_file() -> None:
+    """`REQUIRE_DOCKER` is what turns "no docker CLI" from a skip into a failure."""
+    jobs = _workflow()["jobs"]
+    running = [
+        job
+        for job in jobs.values()
+        if any("pytest" in str(step.get("run", "")) for step in job.get("steps") or [])
+    ]
+    assert running, "no job runs pytest any more"
+    for job in running:
+        step = next(s for s in job["steps"] if "pytest" in str(s.get("run", "")))
+        env = {**(job.get("env") or {}), **(step.get("env") or {})}
+        assert str(env.get(REQUIRE_DOCKER_ENV, "")).strip().lower() not in (
+            "",
+            "0",
+            "false",
+            "no",
+        ), f"{step.get('name')} would let these pins skip"
+
+
+def test_ci_asserts_the_inside_bridge_holds_no_address() -> None:
+    """The host-side half of #37, which only a real daemon can settle.
+
+    `check` asserts the bound from inside the container; this asserts it from the host, on the
+    one engine this project ever gets to run against. A job that merely *recorded* the bridge's
+    addresses would leave the compose half verified nowhere.
+    """
+    jobs = _workflow()["jobs"]
+    script = "\n".join(
+        str(step.get("run", ""))
+        for job in jobs.values()
+        for step in job.get("steps") or []
+    )
+    assert "ip -4 address show" in script
+    assert "exit 1" in script
+    assert "python -m app.egress check" in script

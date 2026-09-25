@@ -228,8 +228,8 @@ docker compose exec codervis python -m app.egress check
 [ OK ] example.com:443 unreachable directly: no route to a public address round the proxy
 ```
 
-The last line has four more forms, and the difference between the first
-three is what a failed name lookup is allowed to prove. A container whose
+The last line has five more forms, and the difference between the first three
+is what a failed name lookup is allowed to prove. A container whose
 resolver declines public names — which is what an internal network's usually
 does — cannot look `example.com` up at all, and a lookup that failed says
 nothing on its own about whether packets can leave. So the check reads the
@@ -249,7 +249,8 @@ which is a route round the proxy; or the connection never left the container
 above — nothing was established either way.
 
 The address on the on-link line is whatever the container's own routing table
-yields — the first address of its subnet — so it differs between deployments,
+yields — the first address of each on-link subnet, plus any gateway a route
+names — so it differs between deployments,
 and a container on two networks gets one line per network. The admission probes
 open a TCP connection to each host through the proxy and send nothing; the
 on-link and direct probes open one directly and send nothing either. An address

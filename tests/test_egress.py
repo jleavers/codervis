@@ -650,6 +650,30 @@ def test_the_peer_wording_says_what_each_peer_is() -> None:
     assert "establishes nothing either way" in egress.PEER_SELF
 
 
+def test_the_probe_outcome_vocabularies_are_the_ones_the_suite_drives() -> None:
+    """A new outcome has to be driven, not just added.
+
+    The README pin builds what `check` can print by running it with stubs, so a branch for an
+    outcome no stub returns is invisible to it -- README could then go stale about a line the
+    code really prints. Pinning the vocabulary makes adding a fifth constant fail here, which
+    is the prompt to give it a scenario in `test_readme_shows_the_lines_the_check_actually_prints`
+    and a reading in README.
+    """
+    names = {n for n in dir(egress) if n.startswith("ON_LINK_")}
+    assert names == {
+        "ON_LINK_ACCEPTED",
+        "ON_LINK_REFUSED",
+        "ON_LINK_NO_ANSWER",
+        "ON_LINK_UNVERIFIED",
+    }
+    assert {n for n in dir(egress) if n.startswith("DIRECT_")} == {
+        "DIRECT_ANSWERED",
+        "DIRECT_NO_ROUTE",
+        "DIRECT_NO_DNS",
+        "DIRECT_UNVERIFIED",
+    }
+
+
 def test_the_check_command_exits_nonzero_when_any_assertion_failed(capsys, monkeypatch) -> None:
     """The CLI's exit status, which is the whole of what CI gates on.
 
@@ -732,14 +756,53 @@ def test_readme_shows_the_lines_the_check_actually_prints(monkeypatch) -> None:
     # same failures as passes, would be invisible to that -- and it is a fence an operator
     # diffs their own run against. So every sample line anywhere in README must be one `check`
     # can produce, with the verdict README gives it.
+    # Several scenarios, not one: README is entitled to show an on-link address that answered,
+    # one that is this container, or a list over the cap, and a set built from a single run
+    # would reject those as "not producible" rather than checking them.
+    def scenario(**over: object) -> list[str]:
+        opts: dict = {
+            "direct": ("example.com", 443),
+            "direct_probe": lambda *_a, **_k: DIRECT_NO_ROUTE,
+            "on_link": [gateway],
+            "on_link_probe": lambda *_a, **_k: ON_LINK_NO_ANSWER,
+            "timeout_s": 1,
+        }
+        opts.update(over)
+        return [egress.format_result(ok, line) for ok, line in check({"HTTPS_PROXY": proxy}, **opts)]
+
+    flowed = " ".join(readme.split())
     producible = set(produced) | set(no_dns)
-    samples = re.findall(r"^\[(?: OK |FAIL)\] .*$", readme, re.M)
+    for over in (
+        {"on_link_probe": lambda *_a, **_k: ON_LINK_ACCEPTED},
+        {"on_link_probe": lambda *_a, **_k: ON_LINK_REFUSED},
+        {"on_link_probe": lambda *_a, **_k: ON_LINK_UNVERIFIED},
+        {"on_link": [f"10.0.0.{n}" for n in range(1, MAX_ONLINK_PROBES + 3)]},
+        {"direct_probe": lambda *_a, **_k: DIRECT_ANSWERED},
+        {"direct_probe": lambda *_a, **_k: DIRECT_UNVERIFIED},
+    ):
+        producible |= set(scenario(**over))
+    with mock.patch.object(egress, "own_addresses", lambda: frozenset({gateway})):
+        producible |= set(scenario())
+
+    # Anchored with optional indentation: a fence indented inside a list item is valid Markdown,
+    # renders as a code block, and is exactly as much a sample an operator diffs their run
+    # against -- a column-0 anchor would not see it.
+    samples = [m.strip() for m in re.findall(r"^[ \t]*(\[(?: OK |FAIL)\] .*?)[ \t]*$", readme, re.M)]
     assert samples, "README shows no sample output at all"
     assert set(samples) <= producible, sorted(set(samples) - producible)
 
+    # The verdicts the fences carry are also claimed in prose, which no fence comparison holds.
+    assert "Only the first is a pass, and the routing table is what makes it one." in flowed
+
+    # README counts the public-name line's forms for an operator checking they have seen them
+    # all, so the count comes from the code rather than from whoever last edited the sentence.
+    # One of them is in the first fence, hence "N more forms".
+    direct_forms = {line for line in producible if line[7:].startswith("example.com")}
+    spelled = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven"}
+    assert f"{spelled[len(direct_forms) - 1]} more forms" in flowed, sorted(direct_forms)
+
     # Acceptance criterion 5 lives in prose the fences cannot hold: an engine floor, and what
     # an operator on an older engine does instead. Deleting either left the suite green.
-    flowed = " ".join(readme.split())
     assert "Docker Engine 28.0" in flowed
     assert "drops new inbound connections arriving on that bridge's interface" in flowed
     assert "A `FAIL` that says **unverified**" in flowed

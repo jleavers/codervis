@@ -1095,6 +1095,11 @@ def peer_addresses(proxy: str) -> dict[str, str]:
     round it, and the line it prints says which peer it was.
 
     * **This container's own.** Reaching itself establishes nothing either way.
+    This is also the one input that can switch the half off: an operator who pointed
+    ``HTTPS_PROXY`` at a proxy on the host would exempt that host address from being dialled.
+    The compose file points it at `egress`, and nothing here reads a proxy the operator did not
+    set; it is named so that a reader knows the exemption follows the variable.
+
     * **The proxy's.** `egress` is the one peer the dashboard is meant to reach, and on an
       engine that honours ``gateway_mode_ipv4: isolated`` it is *where the gateway would be*:
       no gateway address is allocated for such a network, so the subnet's first address -- the
@@ -1195,7 +1200,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         results = check(os.environ)
         for ok, line in results:
             print(format_result(ok, line))
-        return 0 if all(ok for ok, _ in results) else 1
+        # `all([])` is True, so "no results" would exit 0 -- the one shape that turns CI's
+        # gate into a no-op. A check that asserted nothing has not established the bound.
+        return 0 if results and all(ok for ok, _ in results) else 1
     if not 0 <= args.port <= 65535:
         print("egress: --port must be between 0 and 65535", file=sys.stderr)
         return 1
