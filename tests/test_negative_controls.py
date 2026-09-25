@@ -30,13 +30,14 @@ exists to stop.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import subprocess
 import sys
 import xml.etree.ElementTree as ElementTree
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -92,7 +93,6 @@ class Mutation:
     caught_by: tuple[str, ...]
     before: str | None = None
     after: str = ""
-    marks: tuple[pytest.MarkDecorator, ...] = field(default=(), repr=False)
 
 
 MUTATIONS: tuple[Mutation, ...] = (
@@ -373,6 +373,10 @@ def _undo(mutation: Mutation, tree: Path) -> None:
     target = tree / mutation.path
     if mutation.before is None:
         target.unlink(missing_ok=True)
+        # And the directory it may have had to create, so what is left is what a clone gets:
+        # `rmdir` for that reason, since it refuses a directory the tree already had files in.
+        with contextlib.suppress(OSError):
+            target.parent.rmdir()
         return
     shutil.copy2(ROOT / mutation.path, target)
 
@@ -406,15 +410,21 @@ def _outcomes(report: Path) -> dict[str, int]:
 
     The exit status alone cannot tell a mutation that was caught from one whose tests never
     ran: a selection that skipped -- no Docker CLI, say -- exits 0 exactly as a passing one
-    does, and reporting that as a control is the defect this module exists to catch.
+    does, and reporting that as a control is the defect this module exists to catch. Nor can
+    it tell a failed assertion from a collection error, which is the same wrong-reason red:
+    a mutation that left the file unparseable would otherwise read as the rule being caught.
     """
     if not report.exists():
         return {"total": 0}
-    counts = {"total": 0, "failed": 0, "skipped": 0, "passed": 0}
+    counts = {"total": 0, "failed": 0, "errored": 0, "skipped": 0, "passed": 0}
     for case in ElementTree.parse(report).getroot().iter("testcase"):
         counts["total"] += 1
-        if case.find("failure") is not None or case.find("error") is not None:
+        if case.find("failure") is not None:
             counts["failed"] += 1
+        elif case.find("error") is not None:
+            # A mutation that stops the file importing, or collecting, is red for a reason
+            # that is not the rule: counted apart, so it cannot read as the rule being caught.
+            counts["errored"] += 1
         elif case.find("skipped") is not None:
             counts["skipped"] += 1
         else:
@@ -437,16 +447,14 @@ def baseline(pristine, tmp_path_factory) -> dict[str, int]:
     result = _pytest(selection, pristine, report)
     counts = _outcomes(report)
     assert counts["total"], f"the named tests collected nothing\n{result.stdout[-2000:]}"
-    assert not counts["failed"], (
+    assert not (counts["failed"] or counts["errored"]), (
         "a test some control is named for fails with nothing mutated, so that control would "
         f"pass for the wrong reason:\n{result.stdout[-4000:]}{result.stderr[-2000:]}"
     )
     return counts
 
 
-@pytest.mark.parametrize(
-    "mutation", [pytest.param(m, id=m.key, marks=m.marks) for m in MUTATIONS]
-)
+@pytest.mark.parametrize("mutation", [pytest.param(m, id=m.key) for m in MUTATIONS])
 def test_breaking_the_rule_turns_its_tests_red(
     mutation: Mutation, pristine, baseline, tmp_path
 ) -> None:
@@ -481,4 +489,8 @@ def test_breaking_the_rule_turns_its_tests_red(
             f"every test that pins {mutation.key} skips in this environment "
             f"(the compose checks need the Docker CLI): {mutation.caught_by}"
         )
+    assert not counts["errored"] or counts["failed"], (
+        "the mutant run errored rather than failing its tests, so the rule was never "
+        "exercised: the mutation left the file uncollectable, not the rule broken\n" + context
+    )
     assert counts["failed"], "the rule was broken and its tests still passed\n" + context

@@ -223,7 +223,12 @@ async def test_the_port_the_dashboard_is_published_on_carries_the_head_cap_too()
             sock.sendall(flood)
             return sock.recv(4096)
 
-    answer = await asyncio.to_thread(first_answer)
+    try:
+        answer = await asyncio.to_thread(first_answer)
+    except TimeoutError:
+        # Without the cap the head fits asyncio's own larger default, so nothing answers until
+        # the head deadline does. Named here, because a bare "timed out" says nothing.
+        pytest.fail("no answer: an oversized head is only a prompt 431 while the cap is armed")
     assert answer.startswith(b"HTTP/1.1 431 ")
     server.close()
     await target.stop()
@@ -236,13 +241,16 @@ def test_the_front_doors_bounds_are_the_ones_it_documents() -> None:
     `MAX_REQUEST_HEAD_BYTES`, so a cap raised to 16 MiB or a deadline raised to ten minutes
     was invisible to the whole suite (#46). These are the numbers `README.md` and `CLAUDE.md`
     describe -- a complete head, at most 16 KiB, within 10 s, and at most 256 connections --
-    so widening one is a change made here and in those documents, on purpose.
+    so widening one is a change made here and in those documents, on purpose. The values
+    rather than only the wiring: a default that still reads its constant says nothing about
+    what that constant became.
     """
-    assert (MAX_REQUEST_HEAD_BYTES, REQUEST_TIMEOUT_S, MAX_CONNECTIONS) == (
-        16 * 1024,
-        10.0,
-        256,
-    )
+    assert (
+        MAX_REQUEST_HEAD_BYTES,
+        REQUEST_TIMEOUT_S,
+        CONNECT_TIMEOUT_S,
+        MAX_CONNECTIONS,
+    ) == (16 * 1024, 10.0, 10.0, 256)
     # And a relay built the way `serve()` builds one gets them, rather than a default that has
     # drifted away from the constant beside it.
     defaults = {

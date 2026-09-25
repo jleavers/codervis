@@ -47,7 +47,7 @@ FIXED_TMP_PATH = re.compile(r"(?<![\w/])/tmp/[\w.${}-]+")
 TMP_PATH_EXEMPT: tuple[str, ...] = ()
 
 
-def _shipped_text_files() -> list[Path]:
+def _shipped_files() -> list[Path]:
     """What a clone gets, which is what an agent reads: the tracked files, and only those.
 
     `git ls-files` rather than a walk, so a developer's `.venv`, a pytest cache or an
@@ -64,7 +64,12 @@ def _shipped_text_files() -> list[Path]:
     ).stdout
     paths = [ROOT / name for name in listed.split("\0") if name]
     assert paths, "git ls-files returned nothing; is this a checkout?"
-    return [p for p in paths if p.suffix in TEXT_SUFFIXES and p.is_file()]
+    return [path for path in paths if path.is_file()]
+
+
+def _shipped_text_files() -> list[Path]:
+    """The shipped files this module can scan as text."""
+    return [path for path in _shipped_files() if path.suffix in TEXT_SUFFIXES]
 
 
 def _const_body(source: str, name: str) -> str:
@@ -127,13 +132,24 @@ def test_no_shipped_document_reads_as_work_still_to_do() -> None:
     design specs under `specs/` were never archived when their plans were (#21), so they went
     on reading as live designs -- one of them asserting, falsely against this tree, that
     implementing it changes no mount, secret or Compose behaviour.
+
+    And the subject is what a clone gets, so it comes from the tracked files like every other
+    check here, rather than from a walk of the worktree: an untracked scratch file a developer
+    left under `docs/` is not this suite's business, and a committed one cannot escape by
+    being something other than Markdown -- everything shipped there has to be a document this
+    check can read, or the check would be narrower than it says again.
     """
-    docs = list(DOCS_DIR.rglob("*.md"))
+    docs = [path for path in _shipped_files() if DOCS_DIR in path.parents]
     assert docs, f"no documents under {DOCS_DIR}; has this check outlived its subject?"
-    plans = [p for p in docs if PLANS_DIR in p.parents]
+    unreadable = [path.relative_to(ROOT) for path in docs if path.suffix != ".md"]
+    assert not unreadable, (
+        f"shipped under {DOCS_DIR.relative_to(ROOT)} and not a Markdown document, so nothing "
+        f"below reads it: {unreadable}. Make it one, or widen this check on purpose."
+    )
+    plans = [path for path in docs if PLANS_DIR in path.parents]
     assert plans, f"no plans under {PLANS_DIR}; has this check outlived its subject?"
 
-    live = [p for p in plans if "archive" not in p.relative_to(PLANS_DIR).parts]
+    live = [path for path in plans if "archive" not in path.relative_to(PLANS_DIR).parts]
     assert not live, f"a plan outside the archive reads as pending: {live}"
 
     for path in docs:

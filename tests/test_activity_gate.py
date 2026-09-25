@@ -138,7 +138,7 @@ def _open_off_the_main_thread(
 def test_the_open_refuses_promptly_what_admission_would_never_have_reached(
     gate, tmp_path, monkeypatch, plant: str, reason: str
 ) -> None:
-    """Every defence `open_bytes` holds *after* the lstat that admitted the path.
+    """The three defences `open_bytes` holds *after* the lstat that admitted the path.
 
     A file swapped after admission is the race the lstat alone cannot see, so
     admission is stubbed out to leave the `open` and nothing else -- the only
@@ -150,6 +150,13 @@ def test_the_open_refuses_promptly_what_admission_would_never_have_reached(
     thread until somebody writes; and `from None`, so the `OSError` that
     prompted the refusal -- whose text and `.filename` are the path -- is not
     rendered with it.
+
+    Three, not every flag in that loop: `O_CLOEXEC` is the fourth, and nothing
+    here or in the mutation list pins it, because there is nothing to pin.
+    Python has made every descriptor `os.open` returns non-inheritable since
+    PEP 446, so removing the flag changes no behaviour a test could see. Saying
+    so is the point -- a docstring claiming the loop whole would be the defect
+    this test was written for.
     """
     path = tmp_path / "sessions" / "an-operators-project-name.jsonl"
     if plant == "fifo":
