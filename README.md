@@ -22,11 +22,14 @@ gets live updates via Server-Sent Events; CSS animates the meter fill and the
 colour shifts as the percentage rises.
 
 **Outbound traffic is allow-listed.** The dashboard's container sits on an
-internal Docker network with no route off the host. Its only way out is the
-`egress` service, a CONNECT-only proxy that admits `claude.ai` and
-`chatgpt.com` and nothing else. A redirect, a host override or a compromised
-dependency therefore cannot carry a token anywhere else, and plain `http://` is
-refused outright. Docker cannot publish a port from an internal-only container,
+internal Docker network that gives it no default route and leaves the host no
+address on the network's bridge, so every peer it can dial is another container
+in this project. Its only way out is the `egress` service, a CONNECT-only proxy
+that admits `claude.ai` and `chatgpt.com` and nothing else. A redirect, a host
+override or a compromised dependency therefore cannot carry a token anywhere
+else, and plain `http://` is refused outright. Both halves of that are asserted
+by probing, not by assumption: `python -m app.egress check` dials what the
+container can actually reach ([below](#check-the-egress-bound)). Docker cannot publish a port from an internal-only container,
 so the port you open in the browser belongs to `ingress`, a relay that forwards
 to the dashboard. Neither gateway service holds a credential.
 
@@ -88,7 +91,11 @@ link out of them.
 
 ## Prerequisites
 
-- Docker Desktop (or any recent Docker + Compose v2)
+- Docker Desktop, or Docker Engine 28.1+ with Compose v2. The `inside` network
+  asks the bridge driver for `gateway_mode_ipv4: isolated`, so that the host
+  holds no address on it; an older engine refuses the option and the stack will
+  not start. [Check the egress bound](#check-the-egress-bound) says what to do
+  if you cannot upgrade.
 - Either or both of, installed and signed in on the host:
   - Claude Code (so `~/.claude/.credentials.json` exists)
   - Codex CLI (so `~/.codex/auth.json` exists)
@@ -196,7 +203,9 @@ Anyone who can reach the port can read your dashboard: there is no login, and
 the list of names is not one. Widen it on a network you trust, and see
 [Security notes](#security-notes) before you reach for a reverse proxy.
 
-To confirm the egress bound from inside the dashboard's container:
+### Check the egress bound
+
+To confirm it from inside the dashboard's container:
 
 ```bash
 docker compose exec codervis python -m app.egress check
@@ -206,14 +215,38 @@ docker compose exec codervis python -m app.egress check
 [ OK ] http://egress:3128 refused egress-probe.invalid (403)
 [ OK ] CLAUDE_AI_HOST: claude.ai:443 admitted
 [ OK ] CHATGPT_HOST: chatgpt.com:443 admitted
-[ OK ] example.com:443 unreachable directly: no route round the proxy
+[ OK ] 172.30.0.1 answers nothing on 443, 80, 22: no host on-link, so the proxy is the only peer that leads anywhere
+[ OK ] example.com:443 unreachable directly: no route to a public address round the proxy
 ```
 
-The admission probes open a TCP connection to each host through the proxy and
-send nothing. To change the allow-list, edit `EGRESS_ALLOW` in `.env` and run
-`docker compose up -d egress`.
+The address on the fourth line is whatever the container's own routing table
+yields — the first address of its subnet, which is where Docker would put the
+bridge's gateway — so it differs between deployments. The admission probes open
+a TCP connection to each host through the proxy and send nothing; the last two
+open one directly and send nothing either. To change the allow-list, edit
+`EGRESS_ALLOW` in `.env` and run `docker compose up -d egress`.
 
-To stop:
+The two directions are separate bounds, and the fourth line is the one an
+internal network does not settle on its own. `internal: true` withholds the
+default route, which is what the last line asks about. It does **not** withhold
+the host's own address on the network's bridge: that address is on-link in the
+container's subnet and needs no route, so whatever the host listens on is a
+second way off the dashboard. The compose file closes it with
+`com.docker.network.bridge.gateway_mode_ipv4: isolated`, which leaves the bridge
+with no address at all, and this line is what proves your engine honoured it.
+
+- It needs **Docker Engine 28.1 or newer**. An older engine refuses the option
+  and `docker compose up` fails on the `inside` network; if you cannot upgrade,
+  delete the `driver_opts` block from the `inside` network and add a host
+  firewall rule that drops new inbound connections arriving on that bridge's
+  interface. Nothing in the stack ever connects to the host over it.
+- A `FAIL` on that line means the host is reachable from the dashboard's
+  container, whether it *accepted* the connection or *refused* it — a refusal
+  comes from a live host, so only what it happens to be listening on stands
+  between a compromised dependency and the host. The same firewall rule closes
+  it, and the line reads `OK` once it is in place.
+
+### Stop
 
 ```bash
 docker compose down
@@ -305,6 +338,7 @@ browser-disabled cards are dimmed.
 | Browser shows `reconnecting…` | The container restarted; SSE will reconnect on its own. |
 | Every chip reads `unavailable` and `docker compose logs egress` shows a refused host | The host is not on the egress allow-list: a `CLAUDE_AI_HOST`/`CHATGPT_HOST` override without a matching `EGRESS_ALLOW` entry, or the vendor redirected to another host. |
 | Browser shows `Host not served by this dashboard` (`403`) | The name in the address bar is not in `DASHBOARD_ALLOWED_HOSTS`. Add it (and widen `DASHBOARD_BIND` if the request comes from another machine), then `docker compose up -d`. |
+| `docker compose up` fails creating the `inside` network, naming `gateway_mode_ipv4` or an unknown driver option | The engine is older than 28.1 and does not know the option that keeps the host off the dashboard's bridge. Upgrade, or see [Check the egress bound](#check-the-egress-bound) for the firewall rule that replaces it. |
 | `docker compose up` reports `dependency failed to start` | The `egress` proxy is unhealthy, and the dashboard waits for it. Check `docker compose logs egress`. |
 
 `/healthz` returns JSON with `data_root_exists` and `credentials_present`
@@ -344,6 +378,17 @@ flags that are useful for quick diagnosis.
   the egress allow-list, and only over HTTPS. The proxy sees host names, never
   the TLS session or the tokens inside it. This bounds where a token can be
   sent; it does not change who can reach the published port.
+- That bound is two things, and the second is easy to miss: the container has no
+  default route, *and* the host holds no address on its network's bridge. Without
+  the second, the bridge's gateway is on-link in the container's subnet and
+  reachable with no route at all, so whatever the host listens on is a way off
+  the dashboard for a compromised dependency holding both tokens.
+  `docker compose exec codervis python -m app.egress check` is what tells you
+  which you have, by dialling the addresses the container can reach rather than
+  by trusting the compose file
+  ([Check the egress bound](#check-the-egress-bound)). On an engine older than
+  28.1, a host firewall rule that drops new inbound connections arriving on that
+  bridge's interface is what closes it.
 - Whoever can reach the port is bounded in what they can cost: `ingress` holds
   at most 256 connections, and it drops a client that has not sent a complete
   request within 10 seconds. Every service's log is capped at 3 × 10 MB.

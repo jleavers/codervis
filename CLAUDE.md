@@ -223,9 +223,17 @@ and keep new reader I/O going through the gate.
 `docker-compose.yml` runs three services from one image:
 
 - **`codervis`** — the dashboard. It joins the `inside` network only, which is
-  `internal: true` and therefore has no default route. `HTTP(S)_PROXY` (both
-  cases) points at `egress`; urllib honours them, so the live clients need no
-  proxy code.
+  `internal: true` and therefore has no default route, and asks the bridge
+  driver for `gateway_mode_ipv4: isolated` so the host holds no address on that
+  bridge either. **Both, because `internal: true` is not "`egress` is the only
+  peer".** It withholds the default route and the forwarding to other networks;
+  the bridge's own gateway address belongs to the host and is on-link in the
+  container's subnet, so it needs no route to be reached, and whatever the host
+  listens on was a second way off the dashboard until #37. The option needs
+  Docker Engine 28.1+, an older engine refuses it and the network is not
+  created, and `check` below is what establishes which an operator has.
+  `HTTP(S)_PROXY` (both cases) points at `egress`; urllib honours them, so the
+  live clients need no proxy code.
 - **`egress`** — `app/egress.py`, ported from issuebot's `issuebot.egress`.
   It is a `CONNECT`-only forward proxy that admits `claude.ai` and
   `chatgpt.com` plus the operator's `EGRESS_ALLOW`, and refuses plain `http://`
@@ -253,13 +261,24 @@ pins the behaviour.
 read-only root filesystem and all capabilities dropped, and hold no credential.
 All three services log to json-file capped at 3 × 10 MB (`x-logging` in the
 compose file), since a peer that reaches the port can make each of them log.
-`python -m app.egress check`, run in the `codervis` container, verifies both
-halves of the bound: the proxy filters by name and admits the configured
-upstream hosts, and there is no direct route round it.
-`tests/test_compose_topology.py` pins the compose shape.
+`python -m app.egress check`, run in the `codervis` container, verifies the
+bound by dialling, never by restating the design — which is how the gateway went
+unnoticed: the proxy filters by name and admits the configured upstream hosts,
+no address the container can reach **on-link** answers, and a public name does
+not resolve-and-connect. The on-link half derives its candidates from the
+container's own routing table (every gateway a route names, and the first
+address of each on-link subnet, which is where Docker puts a bridge's gateway),
+and it fails on a refusal as well as on an accept, because an RST comes from a
+live host. A half with nothing to probe fails as unverified rather than passing,
+since "it asked a question the network answers anyway" is the defect it exists
+to prevent. `tests/test_compose_topology.py` pins the compose shape, gateway
+mode included.
 
 **Keep the bound whole.** Do not give `codervis` a non-internal network or
-`ports:`. Do not add a host to `DEFAULT_ALLOW` that the live clients do not
+`ports:`, and do not drop a network's gateway-mode option: an internal network
+without it puts the host back on the dashboard's bridge. A network that turns
+on `enable_ipv6` needs `gateway_mode_ipv6: isolated` too, since that is a
+second gateway address. Do not add a host to `DEFAULT_ALLOW` that the live clients do not
 call. If a client ever needs another host, add it to `DEFAULT_ALLOW` and to the
 test that checks the defaults cover the clients' own hosts.
 
