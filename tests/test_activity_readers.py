@@ -390,7 +390,7 @@ def test_the_gate_is_the_only_way_either_reader_reaches_the_filesystem(
         codex_seen = list(seen)
 
     assert claude_seen and codex_seen, "the watcher saw nothing; it is not wired up"
-    assert {kind for kind, _ in claude_seen} <= {"open", "scandir"}
+    assert {kind for kind, _ in claude_seen} <= filesystem_audit.KINDS
     _assert_within(claude_seen, claude, files=CLAUDE_FILES, trees=CLAUDE_TREES)
     _assert_within(codex_seen, codex, files=ACTIVITY_FILES, trees=ACTIVITY_DIRS)
     # Codex holds STAT alone: not one file was opened, by the gate or past it.
@@ -421,8 +421,14 @@ def test_the_watcher_sees_a_read_reaching_past_the_names_it_used_to_patch(
     assert ("scandir", claude) in observed, "posix.listdir went unseen"
     assert ("open", credentials) in observed, "io.FileIO(path) went unseen"
     # And the one nothing here can see: CPython raises no audit event for a
-    # stat, so the `lstat` above is absent by design, not by innocence.
-    assert [path for kind, path in observed if kind == "stat"] == []
+    # stat, so the `lstat` above is absent by design, not by innocence. Said
+    # against the record's own vocabulary, so that a kind added later has to
+    # come back through this assertion rather than past it.
+    assert "stat" not in filesystem_audit.KINDS, (
+        "the record has grown a stat kind; this test and "
+        "tests/test_reader_filesystem_surface.py divide the claim between them "
+        "on the assumption that it has none"
+    )
 
 
 def test_activity_readers_report_missing_roots(tmp_path) -> None:

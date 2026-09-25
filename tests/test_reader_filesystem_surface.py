@@ -19,11 +19,13 @@ This fails closed. The `os` names a reader may use are an allow-list, so a new
 filesystem surface is derived from `pathlib` itself (`Path` minus `PurePath`),
 so a future release adding a method adds it to the deny-list too.
 
-What it does not reach: a filesystem call made by something a reader imports
-that is neither its gate nor its budget layer, or one assembled at runtime from
-strings. The first is bounded by how few imports either module has, both
-asserted below; the second is a deliberate act, and the gate's own record and
-the session observer are what answer it.
+What it does not reach: a filesystem call assembled at runtime from strings,
+or made by something inside a module a reader is allowed to import. The first
+is a deliberate act, and the gate's own record and the session observer are
+what answer it. The second is why the import check is an allow-list of the
+*whole* set, relative imports included, and why `app/budget.py` -- allowed,
+and holder of the credential-file read `read_text_capped()` -- has a test of
+its own below.
 """
 
 from __future__ import annotations
@@ -42,28 +44,33 @@ READERS = ("app/claude_activity.py", "app/codex_activity.py")
 #: environment, `stat_result` is a type annotation on a value the gate returned.
 OS_ALLOWED = frozenset({"environ", "stat_result"})
 
-#: Modules whose whole point is reaching a resource. A reader importing one has
-#: left the gate whatever it does with it.
-FORBIDDEN_MODULES = frozenset(
+#: Every module either reader may import, relative ones included. An
+#: allow-list rather than a deny-list of the obvious offenders, because the
+#: hole a deny-list leaves is the one that matters: `app/budget.py` is already
+#: imported by both, and `read_text_capped()` in it opens a file. A reader that
+#: added `from .budget import read_text_capped` and pointed it at
+#: `.credentials.json` would pass a deny-list of stdlib names without a murmur.
+#: A new import is a deliberate edit to this list, which is the point.
+IMPORTS_ALLOWED = frozenset(
     {
-        "builtins",
-        "codecs",
-        "fcntl",
-        "fileinput",
-        "glob",
-        "io",
-        "linecache",
-        "mmap",
-        "posix",
-        "shutil",
-        "socket",
-        "ssl",
-        "subprocess",
-        "tempfile",
-        "urllib",
-        "urllib.request",
+        "__future__",
+        "dataclasses",
+        "datetime",
+        "json",
+        "os",
+        "pathlib",
+        "time",
+        "typing",
+        ".activity_gate",
+        ".budget",
     }
 )
+
+#: What a reader may take *from* the modules it is allowed to import, where
+#: the module itself reaches the filesystem. `app/budget.py` holds both the
+#: bounded readers the activity scan needs and `read_text_capped()`, which is
+#: the credential-file read: allowed to `app/quota.py`, never to a reader.
+FROM_BUDGET_ALLOWED = frozenset({"bounded_lines", "env_float", "env_int"})
 
 #: Derived, not typed: every `Path` method that is not on `PurePath` is one
 #: that touches the filesystem, and a new one in a future pathlib lands here
@@ -99,21 +106,30 @@ def _tree(relative: str) -> ast.Module:
 
 
 def _imports(tree: ast.Module) -> set[str]:
+    """Every module named by an import, relative ones as `.name`.
+
+    `node.level` is what makes a relative import relative, and skipping those
+    was how `app/budget.py` -- which opens files -- stayed invisible to this
+    module while both readers already imported from it.
+    """
     names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             names.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            names.add(node.module)
+        elif isinstance(node, ast.ImportFrom):
+            names.add("." * node.level + (node.module or ""))
     return names
 
 
-def _from_os_names(tree: ast.Module) -> set[str]:
-    names: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "os" and node.level == 0:
-            names.update(alias.name for alias in node.names)
-    return names
+def _from_names(tree: ast.Module, module: str, level: int) -> set[str]:
+    return {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.level == level
+        and node.module == module
+        for alias in node.names
+    }
 
 
 def _is_gate_call(func: ast.Attribute) -> bool:
@@ -122,16 +138,30 @@ def _is_gate_call(func: ast.Attribute) -> bool:
 
 
 @pytest.mark.parametrize("relative", READERS)
-def test_a_reader_imports_no_module_that_reaches_a_resource(relative: str) -> None:
-    imported = _imports(_tree(relative))
-    forbidden = sorted(
-        name
-        for name in imported
-        if name in FORBIDDEN_MODULES or name.split(".", 1)[0] in FORBIDDEN_MODULES
+def test_a_reader_imports_only_what_this_file_names(relative: str) -> None:
+    """The whole import set, so a new one is an edit here rather than a hole."""
+    unexpected = sorted(_imports(_tree(relative)) - IMPORTS_ALLOWED)
+    assert not unexpected, (
+        f"{relative} imports {unexpected}. A reader reaches the filesystem "
+        "through its ActivityGate and through nothing else; add the import "
+        "here only once you have checked it reaches nothing itself."
     )
-    assert not forbidden, (
-        f"{relative} imports {forbidden}; a reader reaches the filesystem "
-        "through its ActivityGate and through nothing else"
+
+
+@pytest.mark.parametrize("relative", READERS)
+def test_a_reader_takes_no_file_read_from_the_budget_layer(relative: str) -> None:
+    """`app/budget.py` is allowed, and one name in it is not.
+
+    `read_text_capped()` is the credential-file read -- `app/quota.py` and
+    `app/codex_quota.py` are what it is for. A reader importing it would reach
+    a file with no gate anywhere in the path, through a module this file
+    otherwise has to allow.
+    """
+    taken = _from_names(_tree(relative), "budget", level=1)
+    unexpected = sorted(taken - FROM_BUDGET_ALLOWED)
+    assert not unexpected, (
+        f"{relative} takes {unexpected} from app/budget.py; "
+        f"only {sorted(FROM_BUDGET_ALLOWED)} reach nothing on their own"
     )
 
 
@@ -146,7 +176,7 @@ def test_a_reader_takes_only_allow_listed_names_from_os(relative: str) -> None:
         and isinstance(node.value, ast.Name)
         and node.value.id == "os"
     }
-    used |= _from_os_names(tree)
+    used |= _from_names(tree, "os", level=0)
     unexpected = sorted(used - OS_ALLOWED)
     assert not unexpected, (
         f"{relative} uses os.{{{', '.join(unexpected)}}}. The gate owns what a "

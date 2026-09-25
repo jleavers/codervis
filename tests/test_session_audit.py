@@ -24,12 +24,19 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 PROBE_TIMEOUT_S = 120.0
+
+#: Synthetic, and never anyone's. Distinctive enough that finding one in a
+#: request header is unambiguous.
+CLAUDE_BEARER = "synthetic-claude-bearer-not-a-real-token"
+CODEX_BEARER = "synthetic-codex-bearer-not-a-real-token"
 
 
 # ─── What the harness did before collection ──────────────────────────────────
@@ -41,10 +48,18 @@ def test_the_data_directories_point_at_empty_scratch(
 ) -> None:
     data_dir = Path(os.environ[variable])
     assert data_dir.is_dir(), f"{variable} names no directory"
-    assert list(data_dir.iterdir()) == [], f"{variable} is not empty"
     assert session_scratch in data_dir.parents, (
         f"{variable} is not this session's scratch"
     )
+    # Not "nothing has ever been written here", which would make this test
+    # depend on what ran before it. The property is that a source refreshed
+    # with no stub finds no credential to send.
+    credentials = sorted(
+        path.name
+        for path in data_dir.iterdir()
+        if path.name in (".credentials.json", "auth.json")
+    )
+    assert credentials == [], f"{variable} holds {credentials}"
 
 
 @pytest.mark.parametrize("variable", ("CLAUDE_AI_HOST", "CHATGPT_HOST"))
@@ -287,3 +302,146 @@ def test_the_same_shapes_at_allowed_resources_pass(probe_run) -> None:
     )
     assert f"{len(MUST_FAIL)} failed" in probe_run.stdout, probe_run.stdout
     assert "1 passed" in probe_run.stdout, probe_run.stdout
+
+
+# ─── ambient-2, made permanent ───────────────────────────────────────────────
+
+AMBIENT_PROBE = '''
+import os
+
+import pytest
+
+from app import main
+from app.refresh import SourceRefresher
+
+
+class _StubClaudeQuota:
+    """One source stubbed, as tests/test_main_payload.py stubs the ones it uses."""
+
+    def get(self):
+        return {"five_hour": {"utilization": 1.0}, "seven_day": {"utilization": 2.0}}
+
+
+@pytest.fixture(autouse=True)
+def fresh_sources(monkeypatch):
+    sources = {
+        "_claude_quota_source": SourceRefresher(
+            "claude-quota", lambda: main._live.get(), 30.0
+        ),
+        "_codex_quota_source": SourceRefresher(
+            "codex-quota", lambda: main._codex.get(), 30.0
+        ),
+    }
+    for name, source in sources.items():
+        monkeypatch.setattr(main, name, source)
+    monkeypatch.setattr(main, "_SOURCES", tuple(sources.values()))
+
+
+def test_publishing_with_one_source_stubbed(monkeypatch):
+    """#38 exactly: the Codex client nobody stubbed still runs, for real."""
+    monkeypatch.setattr(main, "_live", _StubClaudeQuota())
+    for source in main._SOURCES:
+        source.refresh_once()
+'''
+
+
+@pytest.fixture(scope="module")
+def ambient_rig(tmp_path_factory) -> dict:
+    """Two runs of the same probe: one under the harness, one without it.
+
+    The probe is `tests/test_main_payload.py` in miniature -- a test that stubs
+    one source and calls `_publish()`, which refreshes all four. Both runs
+    start from an environment that has `CLAUDE_DATA_DIR` and `CODEX_DATA_DIR`
+    holding synthetic credential files and both upstream hosts pointed at a
+    recording loopback stub, which is what an operator's own shell looks like.
+
+    Running it *without* `tests/conftest.py` is what stops this being a test
+    that proves nothing: if a bearer cannot leave under either arrangement, the
+    arrangement is not what is stopping it.
+    """
+    rig = tmp_path_factory.mktemp("ambient")
+    claude = rig / "claude-data"
+    codex = rig / "codex-data"
+    claude.mkdir()
+    codex.mkdir()
+    (claude / ".credentials.json").write_text(
+        json.dumps({"claudeAiOauth": {"accessToken": CLAUDE_BEARER}}), encoding="utf-8"
+    )
+    (codex / "auth.json").write_text(
+        json.dumps({"tokens": {"access_token": CODEX_BEARER, "account_id": "a"}}),
+        encoding="utf-8",
+    )
+
+    received: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's name
+            received.append(self.headers.get("Authorization") or "")
+            body = b"{}"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args) -> None:
+            pass
+
+    stub = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=stub.serve_forever, daemon=True).start()
+    try:
+        upstream = f"http://127.0.0.1:{stub.server_address[1]}"
+        environ = {
+            **os.environ,
+            "CLAUDE_DATA_DIR": str(claude),
+            "CODEX_DATA_DIR": str(codex),
+            "CLAUDE_AI_HOST": upstream,
+            "CHATGPT_HOST": upstream,
+            "PYTHONPATH": str(ROOT),
+        }
+
+        runs = {}
+        for name, with_harness in (("unguarded", False), ("guarded", True)):
+            case = rig / name
+            case.mkdir()
+            (case / "test_ambient.py").write_text(AMBIENT_PROBE, encoding="utf-8")
+            if with_harness:
+                shutil.copy(ROOT / "tests" / "conftest.py", case / "conftest.py")
+            received.clear()
+            completed = subprocess.run(
+                [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"],
+                cwd=case,
+                env=environ,
+                capture_output=True,
+                text=True,
+                timeout=PROBE_TIMEOUT_S,
+            )
+            runs[name] = (completed, list(received))
+    finally:
+        stub.shutdown()
+        stub.server_close()
+    return runs
+
+
+def test_without_the_harness_an_unstubbed_source_sends_its_bearer(ambient_rig) -> None:
+    """The control. #38 as it was, so that the test below is about the fix."""
+    completed, received = ambient_rig["unguarded"]
+    assert completed.returncode == 0, completed.stdout
+    sent = [header for header in received if CODEX_BEARER in header]
+    assert sent, (
+        "the unguarded probe sent no bearer, so the guarded one below proves "
+        f"nothing about the harness\n{completed.stdout}"
+    )
+
+
+def test_under_the_harness_it_sends_nothing_and_still_passes(ambient_rig) -> None:
+    """ambient-2 closed: the environment no longer decides what a test reaches."""
+    completed, received = ambient_rig["guarded"]
+    assert completed.returncode == 0, completed.stdout
+    leaked = [
+        header
+        for header in received
+        if CLAUDE_BEARER in header or CODEX_BEARER in header
+    ]
+    assert leaked == [], f"a synthetic bearer reached the stub: {leaked}"
+    assert received == [], f"the stub was dialled at all: {received}"
