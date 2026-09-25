@@ -19,9 +19,13 @@ written into the copy, run against the tests named for it, and undone. The workt
 never mutated. This is the slowest module in the suite -- one pytest subprocess per mutation --
 and each selection is narrowed to the tests that must answer, to keep it that way.
 
-A control whose named tests all skip in this environment skips too, with that reason, rather
-than passing: `tests/test_compose_topology.py` needs the Docker CLI, and a control that
-reported green where its tests never ran would be the exact defect this module exists to stop.
+Two ways a control could report green without proving anything, and what stops each. A
+selection that never ran: a control whose named tests all skip in this environment skips too,
+with that reason -- `tests/test_compose_topology.py` needs the Docker CLI. And a selection that
+was already red: every test any control names is run once against the unmutated copy first and
+required green, because a test failing for a reason of its own says nothing about the rule it
+was named for. Either of those reported as a control would be the exact defect this module
+exists to stop.
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ import shutil
 import subprocess
 import sys
 import xml.etree.ElementTree as ElementTree
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -58,6 +63,12 @@ _OPEN_PAST_ADMISSION = (
     f"{GATE_TESTS}::test_the_open_refuses_promptly_what_admission_would_never_have_reached"
 )
 _PENDING_WORK = f"{CONTEXT_TESTS}::test_no_shipped_document_reads_as_work_still_to_do"
+
+#: Spelled in parts on purpose. The check this mutation trips reads every tracked text file,
+#: this one included, so a literal fixed name under shared `/tmp` here would fail that check
+#: in the worktree instead of in the copy -- and a control whose named test is already red
+#: proves nothing. `tests/test_agent_tooling_context.py` exempts itself for the same reason.
+_SHARED_TMP_PATH = "/" + "tmp" + "/codervis-cache"
 _PUBLISHED_PORT_HEAD_CAP = (
     f"{INGRESS_TESTS}::test_the_port_the_dashboard_is_published_on_carries_the_head_cap_too"
 )
@@ -270,7 +281,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         rule="no shipped document names a fixed path in shared /tmp",
         path="README.md",
         before="# codervis",
-        after="# codervis\n\nCache wheels under /tmp/codervis-cache first.",
+        after=f"# codervis\n\nCache wheels under {_SHARED_TMP_PATH} first.",
         caught_by=(f"{CONTEXT_TESTS}::test_no_shipped_document_names_a_fixed_path_in_shared_tmp",),
     ),
     Mutation(
@@ -366,7 +377,9 @@ def _undo(mutation: Mutation, tree: Path) -> None:
     shutil.copy2(ROOT / mutation.path, target)
 
 
-def _run(mutation: Mutation, tree: Path, report: Path) -> subprocess.CompletedProcess[str]:
+def _pytest(
+    selection: Sequence[str], tree: Path, report: Path
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
             sys.executable,
@@ -378,7 +391,7 @@ def _run(mutation: Mutation, tree: Path, report: Path) -> subprocess.CompletedPr
             "-p",
             "no:cacheprovider",
             f"--junit-xml={report}",
-            *mutation.caught_by,
+            *selection,
         ],
         cwd=tree,
         capture_output=True,
@@ -409,16 +422,40 @@ def _outcomes(report: Path) -> dict[str, int]:
     return counts
 
 
+@pytest.fixture(scope="module")
+def baseline(pristine, tmp_path_factory) -> dict[str, int]:
+    """Every test any control names, run once against the unmutated copy, and required green.
+
+    Without this, a control passes on a test that was already failing -- for a reason of its
+    own, or because this module's own text tripped one of the document checks, which is how the
+    `/tmp` control first "passed". A red test proves nothing about the rule it is named for, so
+    the whole selection is established green before anything is mutated. One run for all of
+    them, since a mutation is what makes them differ.
+    """
+    report = tmp_path_factory.mktemp("baseline") / "baseline.xml"
+    selection = sorted({node for mutation in MUTATIONS for node in mutation.caught_by})
+    result = _pytest(selection, pristine, report)
+    counts = _outcomes(report)
+    assert counts["total"], f"the named tests collected nothing\n{result.stdout[-2000:]}"
+    assert not counts["failed"], (
+        "a test some control is named for fails with nothing mutated, so that control would "
+        f"pass for the wrong reason:\n{result.stdout[-4000:]}{result.stderr[-2000:]}"
+    )
+    return counts
+
+
 @pytest.mark.parametrize(
     "mutation", [pytest.param(m, id=m.key, marks=m.marks) for m in MUTATIONS]
 )
-def test_breaking_the_rule_turns_its_tests_red(mutation: Mutation, pristine, tmp_path) -> None:
+def test_breaking_the_rule_turns_its_tests_red(
+    mutation: Mutation, pristine, baseline, tmp_path
+) -> None:
     """The control itself: with the rule broken, the tests named for it must fail."""
     report = tmp_path / "mutant.xml"
     _apply(mutation, pristine)
     try:
         try:
-            result = _run(mutation, pristine, report)
+            result = _pytest(mutation.caught_by, pristine, report)
         except subprocess.TimeoutExpired:
             pytest.fail(
                 f"{mutation.key} ({mutation.area}: {mutation.rule}): the tests named for it "
