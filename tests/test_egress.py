@@ -50,9 +50,9 @@ from app.egress import (
     ON_LINK_NO_ANSWER,
     ON_LINK_REFUSED,
     ON_LINK_UNVERIFIED,
-    IPV6_ROUTE_TABLE_PATH,
     PROBE_DENIED_HOST,
     PROBE_ONLINK_PORTS,
+    IPV6_ROUTE_TABLE_PATH,
     ROUTE_TABLE_PATH,
     PROXY_ENV_NAMES,
     Proxy,
@@ -943,6 +943,16 @@ def test_an_unreadable_routing_table_yields_no_addresses_rather_than_raising(tab
     assert on_link_addresses(table) == []
 
 
+def test_a_multicast_route_derives_no_candidate_in_either_family() -> None:
+    """`224.0.0.0/4` and `ff00::/8` are on-link in a container that has them, and the first
+    address of each is a group rather than a host: dialling `224.0.0.1` establishes nothing and
+    spends one of the four probes this check will make. One rule for both families, so both are
+    driven -- the IPv4 route is the one a reader would assume was covered by the older tests."""
+    multicast = ROUTE_HEADER + _route("eth0", "224.0.0.0", "0.0.0.0", "240.0.0.0", "0001")
+    assert on_link_addresses(multicast) == []
+    assert on_link_addresses(multicast, _route6("eth0", "ff00::", 8, "::")) == []
+
+
 def test_an_on_link_default_route_derives_nothing() -> None:
     """`ip route add default dev eth0`: a /0 is not a subnet this container is on, and deriving
     its first address would report 0.0.0.1 as checked. The public-name probe covers that case."""
@@ -951,8 +961,6 @@ def test_an_on_link_default_route_derives_nothing() -> None:
         "eth0\t00000000\t00000000\t0001\t0\t0\t0\t00000000\t0\t0\t0\n"
     )
     assert on_link_addresses(on_link_default) == []
-
-
 
 
 def _column6(address: str) -> str:
@@ -974,6 +982,12 @@ def _route6(
     No header above it, the device *last* rather than first, and ten columns: destination and
     its prefix length, a source prefix and length, the gateway, then metric, refcount, use,
     flags and the device.
+
+    The device is written the way the kernel writes it -- `%8s`, so right-justified in eight
+    columns, and eight spaces where a route has no device at all. That is the shape the parser's
+    "the tenth field, if there is one" reading exists for: a line with no device splits into nine
+    fields, and reading the flags from a fixed index is what keeps a reject route with no device
+    from being derived from.
     """
     return (
         " ".join(
@@ -987,10 +1001,9 @@ def _route6(
                 "00000001",
                 "00000000",
                 flags,
-                iface,
             )
         )
-        + "\n"
+        + f" {iface:>8}\n"
     )
 
 
@@ -1081,6 +1094,39 @@ def test_an_ipv6_link_local_gateway_carries_the_device_it_is_reachable_through()
 )
 def test_an_ipv6_table_yields_no_candidate_it_should_not_rather_than_raising(table: str) -> None:
     assert on_link_addresses(ROUTE_HEADER, table) == []
+
+
+def test_a_route_with_no_device_is_read_from_the_nine_fields_it_prints() -> None:
+    """The kernel prints the device as `%8s`, so a route that has none prints eight spaces and
+    the line splits into nine fields rather than ten. Both readers of this file branch on that,
+    and a regression to a bare `fields[9]` would be an `IndexError` out of `on_link_addresses`
+    into `check` -- which catches nothing, so a traceback and no verdict at all rather than a
+    FAIL. The flags stay at their own index either way, which is what keeps a reject route with
+    no device from being derived from.
+    """
+    assert on_link_addresses(ROUTE_HEADER, _route6("", "fd00:cafe::", 64, "::")) == [
+        "fd00:cafe::1"
+    ]
+    assert on_link_addresses(ROUTE_HEADER, _route6("", "::", 0, "fd00:cafe::1")) == [
+        "fd00:cafe::1"
+    ]
+    assert on_link_addresses(ROUTE_HEADER, _route6("", "fd00:cafe::", 64, "::", REJECT_FLAGS)) == []
+    assert has_default_route(INTERNAL_ROUTE_TABLE, _route6("", "::", 0, "fd00:cafe::1")) is True
+    assert has_default_route(INTERNAL_ROUTE_TABLE, _route6("", "::", 0, "::", REJECT_FLAGS)) is False
+
+
+def test_a_link_local_gateway_the_table_names_no_device_for_is_kept_bare() -> None:
+    """A shape the kernel does not print -- every next hop it renders has a device -- and the
+    reading is deliberate all the same: the candidate is kept without a scope, `create_connection`
+    cannot dial it, and the half reports it as unverified. Dropping it would be this half asking
+    one question fewer than it printed a line for, which is the defect it exists to catch.
+    """
+    assert on_link_addresses(ROUTE_HEADER, _route6("", "::", 0, "fe80::1")) == ["fe80::1"]
+    unverified = check_on_link(
+        ["fe80::1"], ports=[443], probe=lambda *_a, **_k: ON_LINK_UNVERIFIED, timeout_s=1
+    )
+    assert [ok for ok, _ in unverified] == [False]
+    assert "could not be dialled" in unverified[0][1]
 
 
 def test_neither_parser_reads_the_other_family_s_table() -> None:

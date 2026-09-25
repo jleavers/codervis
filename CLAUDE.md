@@ -321,9 +321,7 @@ that file fails rather than skips where the Docker CLI has gone missing.
 `ports:`, and do not drop a network's gateway-mode option: an internal network
 without it puts the host back on the dashboard's bridge. A network that turns
 on `enable_ipv6` needs `gateway_mode_ipv6: isolated` too, since that is a
-second gateway address — and `check` dials that address where an engine left it
-on the bridge, so the compose guard and the check ask the same question of both
-families. Do not add a host to `DEFAULT_ALLOW` that the live
+second gateway address. Do not add a host to `DEFAULT_ALLOW` that the live
 clients do not call. If a client ever needs another host, add it to
 `DEFAULT_ALLOW` and to the test that checks the defaults cover the clients' own
 hosts.

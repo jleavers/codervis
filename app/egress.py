@@ -119,8 +119,11 @@ RTF_REJECT = 0x0200
 # rule that covers a single port must not read as "nothing there", and these are the ports a
 # host is likeliest to be listening on.
 PROBE_ONLINK_PORTS: tuple[int, ...] = (443, 80, 22)
-# How many derived addresses are probed. A container has one or two interfaces; the cap is
-# what stops a surprising routing table turning a check into a scan.
+# How many derived addresses are probed. A container has one or two interfaces, and each can
+# contribute a candidate per family, so this stack's shape -- one internal network -- derives one
+# over IPv4 and one over IPv6 (#42); the cap is what stops a surprising routing table turning a
+# check into a scan. A list beyond it is not passed over: `check_on_link` fails and names what
+# went unprobed, so growing past this is loud rather than quiet.
 MAX_ONLINK_PROBES = 4
 DEFAULT_PORT = 3128
 # Loopback unless told otherwise; compose passes 0.0.0.0 behind the internal network.
@@ -828,7 +831,10 @@ def _ipv6_candidates(route_table: str) -> tuple[list[str], list[str]]:
         elif gateway.is_link_local and device:
             # Without a scope this could not be dialled at all: `connect` to a bare link-local
             # address fails locally, which would report as "not probed" for an address the
-            # table says is reachable through a device it names.
+            # table says is reachable through a device it names. Where the table names no device
+            # for one -- which no next hop the kernel prints does, since every one of them has
+            # a device -- the candidate falls through bare and is reported as unverified rather
+            # than dropped, because a candidate dropped is a question this half did not ask.
             named.append(f"{gateway}%{device}")
         else:
             named.append(str(gateway))
@@ -1120,6 +1126,10 @@ def _target(addr: str, port: int) -> str:
 
     `fd00:cafe::1:443` names neither the address nor the port, and the line it appears in is the
     one a reader takes to `docker network inspect`.
+
+    Only where an address and a port are printed together. The refusal and no-answer lines name
+    the port in words ("on port 443", "on 443, 80, 22"), so the address in them is already
+    unambiguous and bracketing it would be noise.
     """
     return f"[{addr}]:{port}" if ":" in addr else f"{addr}:{port}"
 
@@ -1227,8 +1237,9 @@ def check(
         # with no default route cannot reach an off-link address whether it resolved one or
         # not, and a container that has one was not established either way by a failed lookup.
         # Both tables, because a default route in either family is a way off this container's
-        # subnets (#42), and a table that would not be read settles nothing -- whichever of the
-        # two it was is named, since that is the file an operator goes and looks at.
+        # subnets (#42), and a table that would not be read settles nothing. The line names one
+        # file, since that is what an operator goes and looks at: the IPv4 table where it was
+        # the unreadable one or both were, and the IPv6 table where that was the only one.
         table = read_route_table()
         ipv6_table = read_ipv6_route_table()
         unread = ROUTE_TABLE_PATH if table is None else None
