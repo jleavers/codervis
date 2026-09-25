@@ -228,12 +228,13 @@ docker compose exec codervis python -m app.egress check
 [ OK ] example.com:443 unreachable directly: no route to a public address round the proxy
 ```
 
-The last line has three more forms, and the difference between them is what a
-failed name lookup is allowed to prove. A container whose resolver declines
-public names — which is what an internal network's usually does — cannot look
-`example.com` up at all, and a lookup that failed says nothing on its own about
-whether packets can leave. So the check reads the routing table, which is where
-`internal: true` shows up as the absence of a default route:
+The last line has four more forms, and the difference between the first
+three is what a failed name lookup is allowed to prove. A container whose
+resolver declines public names — which is what an internal network's usually
+does — cannot look `example.com` up at all, and a lookup that failed says
+nothing on its own about whether packets can leave. So the check reads the
+routing table, which is where `internal: true` shows up as the absence of a
+default route:
 
 ```text
 [ OK ] example.com does not resolve here, and the routing table names no default route: there is no route round the proxy to take
@@ -242,8 +243,10 @@ whether packets can leave. So the check reads the routing table, which is where
 ```
 
 Only the first is a pass, and the routing table is what makes it one. The
-remaining form is a `FAIL` saying the name resolved and something answered it,
-which is a route round the proxy.
+remaining two are both `FAIL`s: the name resolved and something answered it,
+which is a route round the proxy; or the connection never left the container
+(`example.com:443 could not be dialled`), which is `unverified` like the two
+above — nothing was established either way.
 
 The address on the on-link line is whatever the container's own routing table
 yields — the first address of its subnet — so it differs between deployments,
@@ -272,6 +275,9 @@ of the container's subnet, which is the address a bridge's gateway takes:
   evidence of it.
 - **Nobody answers on it** — also `OK`. Nothing holds the address, or nothing on
   it answers ports 443, 80 and 22.
+- **It is this container's own address** — `OK`, and nothing was dialled:
+  reaching yourself establishes nothing either way, so the line says so rather
+  than passing over it.
 - **Something that is neither answers** — `FAIL`, and on an engine that ignored
   the option that something is the host.
 
@@ -303,7 +309,8 @@ How to read the on-link line, in the order the cases are worth knowing:
   puts the start order back.
 - A `FAIL` that says **unverified** — on this line or on the public-name one —
   is not a reachable host: it means the check could not ask. The causes, all of
-  them: the container's routing table was unreadable; it yielded no address to
+  the ones a run of this command can print: the container's routing table was
+  unreadable; it yielded no address to
   dial; it yielded more than the check will dial, and the rest are named on that
   line; a connection never left the container (a local reject rule, a descriptor
   limit); or the public name could not be looked up, and the container either

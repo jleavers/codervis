@@ -592,6 +592,12 @@ def test_has_default_route_reads_the_table_rather_than_the_network() -> None:
     assert has_default_route(INTERNAL_ROUTE_TABLE) is False
     assert has_default_route(ROUTED_ROUTE_TABLE) is True
     assert has_default_route(ROUTE_HEADER) is False
+    # A default route with no gateway named -- `ip route add default dev eth0`. It is still a
+    # way off this container's subnets, so it must not read as "no default route" and turn the
+    # direct half's one passing branch into a false pass. `on_link_addresses` has a fixture for
+    # this table shape and derives nothing from it; this half must still see the route.
+    on_link_default = ROUTE_HEADER + _route("eth0", "0.0.0.0", "0.0.0.0", "0.0.0.0", "0001")
+    assert has_default_route(on_link_default) is True
 
 
 @asynctest
@@ -642,6 +648,25 @@ def test_the_peer_wording_says_what_each_peer_is() -> None:
     assert "the allow-listed way off this project rather than a way round it" in egress.PEER_PROXY
     assert "{proxy}" in egress.PEER_PROXY
     assert "establishes nothing either way" in egress.PEER_SELF
+
+
+def test_the_check_command_exits_nonzero_when_any_assertion_failed(capsys, monkeypatch) -> None:
+    """The CLI's exit status, which is the whole of what CI gates on.
+
+    `.github/workflows/ci.yml` runs `docker compose exec -T codervis python -m app.egress check`
+    and reads nothing but the status, so a `main` that returned 0 unconditionally would disable
+    the enforcement of #37 with every assertion in this file still green. Nothing called `main`
+    before this.
+    """
+    for results, expected in (
+        ([(True, "a"), (True, "b")], 0),
+        ([(True, "a"), (False, "b")], 1),
+        ([(False, "a")], 1),
+    ):
+        monkeypatch.setattr(egress, "check", lambda _environ, _r=results: _r)
+        assert egress.main(["check"]) == expected, results
+        printed = capsys.readouterr().out.splitlines()
+        assert printed == [egress.format_result(ok, line) for ok, line in results]
 
 
 def test_readme_shows_the_lines_the_check_actually_prints(monkeypatch) -> None:
@@ -700,11 +725,25 @@ def test_readme_shows_the_lines_the_check_actually_prints(monkeypatch) -> None:
         r"```text\n(\[ OK \] example\.com does not resolve.*?)```", readme, re.S
     )
     assert no_dns_fence, "README no longer shows the no-DNS outcomes"
-    assert [line for line in no_dns_fence.group(1).splitlines() if line.strip()] == [
-        direct_line(INTERNAL_ROUTE_TABLE),
-        direct_line(ROUTED_ROUTE_TABLE),
-        direct_line(None),
-    ]
+    no_dns = [direct_line(INTERNAL_ROUTE_TABLE), direct_line(ROUTED_ROUTE_TABLE), direct_line(None)]
+    assert [line for line in no_dns_fence.group(1).splitlines() if line.strip()] == no_dns
+
+    # Pinning the two fences pins only what they quote. A second fence above them, showing the
+    # same failures as passes, would be invisible to that -- and it is a fence an operator
+    # diffs their own run against. So every sample line anywhere in README must be one `check`
+    # can produce, with the verdict README gives it.
+    producible = set(produced) | set(no_dns)
+    samples = re.findall(r"^\[(?: OK |FAIL)\] .*$", readme, re.M)
+    assert samples, "README shows no sample output at all"
+    assert set(samples) <= producible, sorted(set(samples) - producible)
+
+    # Acceptance criterion 5 lives in prose the fences cannot hold: an engine floor, and what
+    # an operator on an older engine does instead. Deleting either left the suite green.
+    flowed = " ".join(readme.split())
+    assert "Docker Engine 28.0" in flowed
+    assert "drops new inbound connections arriving on that bridge's interface" in flowed
+    assert "A `FAIL` that says **unverified**" in flowed
+    assert "is not a reachable host: it means the check could not ask" in flowed
 
 
 def test_the_public_name_probe_reads_a_refusal_as_reach_not_as_no_route() -> None:
