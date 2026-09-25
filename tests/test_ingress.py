@@ -261,6 +261,9 @@ async def test_serve_leaves_the_relay_on_those_bounds(monkeypatch) -> None:
     server = await serve("127.0.0.1", 9, bind="127.0.0.1", port=0)
     try:
         (overrides,) = handed
+        assert set(overrides) <= set(documented), (
+            f"serve() hands the relay a bound no test reads: {set(overrides) - set(documented)}"
+        )
         widened = {
             name: overrides[name]
             for name, value in documented.items()

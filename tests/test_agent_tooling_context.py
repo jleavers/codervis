@@ -135,8 +135,10 @@ def test_no_document_under_superpowers_reads_as_work_still_to_do() -> None:
     does read them all, and one name for two reaches is how the last one came to promise more
     than it looked at. Every document under `docs/superpowers/` describes work that is over --
     some shipped, some for providers that were deleted -- so none has any business carrying an
-    unticked box, telling a reader to execute it task by task, or omitting the header that says
-    which it is.
+    unticked box, carrying the sub-skill marker that tells an agent to execute the document, or
+    omitting the header that says which kind of finished it is. Prose can still read as work --
+    both specs carry numbered steps under "Tests" -- and no substring check catches that; what
+    answers for it is the header, up front, saying the work is over.
 
     The reach is the whole subtree, not `plans/` alone. It was `plans/` alone until #46, while
     this module's own docstring promised that no shipped document reads as pending: the two

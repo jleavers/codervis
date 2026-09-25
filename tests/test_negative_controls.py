@@ -8,24 +8,31 @@ whole suite green, because the one test that reached past admission planted a li
 test that exercised one passed its own value in; and the pending-work check promised to read
 every shipped document while globbing one directory (#46, #21).
 
-So the rules that carry the security properties get a control each: a deliberate break, named
-here, whose removal is required to make the tests that pin it fail. The list is the standing
-place that stops the next test quietly narrowing -- a rule can still be deleted, but not
-without deleting its control and saying why, and a test that is renamed or narrowed until it
-no longer catches its mutation fails here rather than going quiet.
+So a rule gets a control: a deliberate break, named here, whose removal is required to make the
+tests that pin it fail. The list is the standing place that stops the next test quietly
+narrowing -- a rule can still be deleted, but not without deleting its control and saying why,
+and a test that is renamed or narrowed until it no longer catches its mutation fails here rather
+than going quiet.
+
+It is a growing list and not a complete one, and nothing here should be read as saying the rules
+it omits are witnessed: the egress proxy's own bounds, the gateway services' `user`, `read_only`
+and `cap_drop`, the payload's control-character scrubbing, and the loopback defaults all carry
+security properties and have no control yet. A rule's absence from this list says only that
+nobody has written its mutation. Adding one is the way to find out whether its test bites.
 
 How it runs: the tracked tree is copied once into a temporary directory, and each mutation is
 written into the copy, run against the tests named for it, and undone. The worktree itself is
 never mutated. This is the slowest module in the suite -- one pytest subprocess per mutation --
 and each selection is narrowed to the tests that must answer, to keep it that way.
 
-Two ways a control could report green without proving anything, and what stops each. A
-selection that never ran: a control whose named tests all skip in this environment skips too,
-with that reason -- `tests/test_compose_topology.py` needs the Docker CLI. And a selection that
-was already red: every test any control names is run once against the unmutated copy first and
-required green, because a test failing for a reason of its own says nothing about the rule it
-was named for. Either of those reported as a control would be the exact defect this module
-exists to stop.
+A control reporting green without proving anything is the defect this module would otherwise
+have, so each way that can happen is closed as it is found. A selection that never ran: a
+control whose named tests all skip in this environment skips too, with the reason those tests
+gave -- `tests/test_compose_topology.py` needs the Docker CLI. A selection that was already red:
+every test any control names is run once against the unmutated copy first and required green,
+because a test failing for a reason of its own says nothing about the rule it was named for. A
+mutant run that errored rather than failed, which is a rule never exercised. And a selection
+that skipped only once mutated, which is a survived mutation wearing a skip.
 """
 
 from __future__ import annotations
@@ -227,6 +234,15 @@ MUTATIONS: tuple[Mutation, ...] = (
         path="app/ingress.py",
         before="REQUEST_TIMEOUT_S = 10.0",
         after="REQUEST_TIMEOUT_S = 600.0",
+        caught_by=(f"{INGRESS_TESTS}::test_the_front_doors_bounds_are_the_ones_it_documents",),
+    ),
+    Mutation(
+        key="ingress-connect-deadline-widened",
+        area=FRONT_DOOR,
+        rule="the relay's own dial to the dashboard is bounded at 10 s",
+        path="app/ingress.py",
+        before="CONNECT_TIMEOUT_S = 10.0",
+        after="CONNECT_TIMEOUT_S = 600.0",
         caught_by=(f"{INGRESS_TESTS}::test_the_front_doors_bounds_are_the_ones_it_documents",),
     ),
     Mutation(
@@ -459,10 +475,16 @@ def _pytest(
         capture_output=True,
         text=True,
         timeout=MUTANT_TIMEOUT_S,
-        # `_GIT_ENV` for the same reason it exists, and no `PYTEST_ADDOPTS`: a `-x` or `-p`
-        # a CI wrapper exported would silently apply to all of these runs.
+        # `_GIT_ENV` for the same reason it exists, and no `PYTEST_*` either: an exported
+        # `PYTEST_ADDOPTS` or `PYTEST_PLUGINS` would silently apply a `-x`, or load xdist,
+        # across every one of these runs -- and xdist is what the one shared copy above
+        # cannot take.
         env={
-            **{name: value for name, value in _GIT_ENV.items() if name != "PYTEST_ADDOPTS"},
+            **{
+                name: value
+                for name, value in _GIT_ENV.items()
+                if not name.startswith("PYTEST_")
+            },
             "PYTHONDONTWRITEBYTECODE": "1",
         },
     )
@@ -476,8 +498,10 @@ def _node_id(case: ElementTree.Element) -> str:
     """
     parts = (case.get("classname") or "").split(".")
     file_parts, class_parts = parts, []
-    for index, part in enumerate(parts):
-        if part.startswith("test_"):  # the module; anything after it is a class
+    for index in range(len(parts) - 1, -1, -1):
+        # The last `test_`-prefixed part is the module: anything after it is a class, and
+        # anything before it may be a package that is itself named `test_something`.
+        if parts[index].startswith("test_"):
             file_parts, class_parts = parts[: index + 1], parts[index + 1 :]
             break
     return "::".join(["/".join(file_parts) + ".py", *class_parts, case.get("name") or ""])
