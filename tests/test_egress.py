@@ -549,7 +549,9 @@ def test_reachable_directly_is_true_for_one_that_answers() -> None:
         assert reachable_directly("127.0.0.1", listener.getsockname()[1], timeout_s=2) is True
 
 
-ROUTE_HEADER = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
+ROUTE_HEADER = (
+    "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
+)
 
 
 def _column(address: str) -> str:
@@ -871,7 +873,6 @@ async def test_the_check_passes_when_the_subnets_first_address_is_this_container
     everywhere the suite runs.
     """
 
-
     def unexpected(*args: object, **kwargs: object) -> str:
         raise AssertionError(f"dialled its own address: {args} {kwargs}")
 
@@ -896,7 +897,7 @@ async def test_the_check_passes_when_the_subnets_first_address_is_this_container
 async def test_the_check_accounts_for_the_proxys_address_rather_than_dialling_it(
     monkeypatch,
 ) -> None:
-    """The shape a working deployment actually has on Docker Engine 28.1 or newer.
+    """The shape a working deployment actually has on Docker Engine 28.0 or newer.
 
     `gateway_mode_ipv4: isolated` makes the engine skip allocating a gateway address
     altogether, so the subnet's first address -- the one the host's end of the bridge would
@@ -913,7 +914,9 @@ async def test_the_check_accounts_for_the_proxys_address_rather_than_dialling_it
 
     monkeypatch.setattr(egress, "read_route_table", lambda *a, **k: INTERNAL_ROUTE_TABLE)
     monkeypatch.setattr(egress, "own_addresses", lambda: frozenset({"172.30.0.2"}))
-    monkeypatch.setattr(egress, "resolved_addresses", lambda _host: frozenset({"172.30.0.1"}))
+    monkeypatch.setattr(
+        egress, "resolved_addresses", lambda host: frozenset({"172.30.0.1"} if host else set())
+    )
     async with _CheckRig() as rig:
         results = await asyncio.to_thread(
             functools.partial(
@@ -955,22 +958,32 @@ async def test_the_check_dials_the_gateway_an_engine_that_ignored_the_option_lef
     assert "172.30.0.1:443 accepted a direct connection" in failures[0]
 
 
-def test_the_peers_are_this_container_and_the_proxy(monkeypatch) -> None:
+@pytest.mark.parametrize("proxy", ["http://egress:3128", "egress:3128"])
+def test_the_peers_are_this_container_and_the_proxy(monkeypatch, proxy: str) -> None:
     """Two peers and no more: reaching either is the bound working, and anything else on-link
     is dialled. A proxy name that will not resolve contributes nothing, so its address is
-    probed rather than assumed -- which fails the check rather than passing it."""
+    probed rather than assumed -- which fails the check rather than passing it.
+
+    Both spellings of the variable, because urllib accepts both and the scheme-less one used to
+    resolve nothing here while still naming the proxy to dial -- which failed a whole
+    deployment on the proxy's own address.
+    """
+    resolved: list[str] = []
+
+    def resolve(host: str) -> frozenset[str]:
+        resolved.append(host)
+        return frozenset({"172.30.0.1"})
+
     monkeypatch.setattr(egress, "own_addresses", lambda: frozenset({"172.30.0.2"}))
-    monkeypatch.setattr(egress, "resolved_addresses", lambda _host: frozenset({"172.30.0.1"}))
-    peers = egress.peer_addresses({}, "http://egress:3128")
-    assert peers == {
+    monkeypatch.setattr(egress, "resolved_addresses", resolve)
+    assert egress.peer_addresses(proxy) == {
         "172.30.0.2": "this container's own address",
-        "172.30.0.1": "the proxy http://egress:3128",
+        "172.30.0.1": f"the proxy {proxy}",
     }
+    assert resolved == ["egress"]
 
     monkeypatch.setattr(egress, "resolved_addresses", lambda _host: frozenset())
-    assert egress.peer_addresses({}, "http://egress:3128") == {
-        "172.30.0.2": "this container's own address"
-    }
+    assert egress.peer_addresses(proxy) == {"172.30.0.2": "this container's own address"}
 
 
 def test_the_on_link_half_fails_when_it_is_given_no_ports() -> None:

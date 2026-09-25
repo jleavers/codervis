@@ -230,10 +230,11 @@ and keep new reader I/O going through the gate.
   the bridge's own gateway address belongs to the host and is on-link in the
   container's subnet, so it needs no route to be reached, and whatever the host
   listens on was a second way off the dashboard until #37. The option needs
-  Docker Engine 28.1+. An older engine does not refuse it — the bridge driver's
-  option parser has no case for an unknown label and ignores it — so the stack
-  starts with the host still on the bridge, and `check` below, not a successful
-  `docker compose up`, is what establishes which an operator has.
+  Docker Engine 28.0+. Older engines split two ways: 27.x knows the option but
+  not that value and refuses to create the network, while 26.x and older have no
+  case for the label at all and ignore it, so the stack starts with the host
+  still on the bridge. `check` below, not a successful `docker compose up`, is
+  what establishes which an operator has.
   `HTTP(S)_PROXY` (both cases) points at `egress`; urllib honours them, so the
   live clients need no proxy code.
 - **`egress`** — `app/egress.py`, ported from issuebot's `issuebot.egress`.

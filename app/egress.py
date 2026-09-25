@@ -10,10 +10,10 @@ Two halves, and neither is sufficient alone:
   ``isolated``, so the host holds no address on its bridge either. Both are needed, and the
   second is the one that is easy to miss: ``internal: true`` withholds the default route, while
   the bridge's own gateway address sits in the container's subnet and is reachable with no route
-  at all (#37). An engine that does not know the gateway-mode option ignores it -- the bridge
-  driver's option parser has no case for an unknown label -- and leaves that address in place,
-  so ``check`` below, not a successful ``docker compose up``, is what tells an operator which
-  of the two they have.
+  at all (#37). The gateway-mode option needs Docker Engine 28.0+: 27.x knows the option but
+  not the ``isolated`` value and refuses to create the network, and 26.x and older have no case
+  for the label and ignore it, leaving that address in place. So ``check`` below, not a
+  successful ``docker compose up``, is what tells an operator which of them they have.
 * **The allow-list** makes the route narrow: ``claude.ai`` and ``chatgpt.com``, extended by
   the operator's ``EGRESS_ALLOW``.
 
@@ -45,11 +45,12 @@ import signal
 import socket
 import struct
 import sys
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from ipaddress import IPv4Network, ip_address
 from types import MappingProxyType
-from urllib.parse import urlsplit
+from typing import Protocol
+from urllib.parse import SplitResult, urlsplit
 
 from .codex_quota import CHATGPT_HOST
 from .quota import CLAUDE_AI_HOST
@@ -507,6 +508,16 @@ async def serve_until_stopped(
     return 0
 
 
+def split_proxy_url(proxy_url: str) -> SplitResult:
+    """A proxy variable as urllib reads one, ``egress:3128`` and ``http://egress:3128`` alike.
+
+    One spelling for every caller. Where the check parsed the variable twice with two rules,
+    the scheme-less form named a proxy to dial and no host to account for on-link, which failed
+    a deployment that was whole.
+    """
+    return urlsplit(proxy_url if "//" in proxy_url else f"//{proxy_url}")
+
+
 def probe_proxy(
     proxy_url: str, host: str, port: int = DEFAULT_TARGET_PORT, *, timeout_s: float = 10.0
 ) -> tuple[int, str] | str:
@@ -515,7 +526,7 @@ def probe_proxy(
     Closed the moment the status line is read, so an allowed probe costs the named host one
     accepted TCP connection and no bytes.
     """
-    parts = urlsplit(proxy_url if "//" in proxy_url else f"//{proxy_url}")
+    parts = split_proxy_url(proxy_url)
     try:
         proxy_host, proxy_port = parts.hostname, parts.port or DEFAULT_PORT
     except ValueError:
@@ -700,8 +711,10 @@ def probe_on_link(addr: str, port: int, *, timeout_s: float) -> str:
         return ON_LINK_NO_ANSWER
 
 
-# A probe's shape, so the check can be given one: (address, port, timeout_s) -> outcome.
-OnLinkProbe = Callable[..., str]
+class OnLinkProbe(Protocol):
+    """A probe's shape, so the check can be given one and a stub has to be the same thing."""
+
+    def __call__(self, addr: str, port: int, *, timeout_s: float) -> str: ...
 
 
 def check_on_link(
@@ -763,8 +776,8 @@ def check_on_link(
                 (
                     False,
                     f"{addr}:{answered[0]} accepted a direct connection: that address is "
-                    "on-link, reachable with no route, and it is not the proxy -- so egress is "
-                    "not the only way off this container",
+                    "on-link, reachable with no route, and it is neither this container nor "
+                    "the proxy -- so egress is not the only way off this container",
                 )
             )
         else:
@@ -845,7 +858,7 @@ def check(
             ports=on_link_ports,
             probe=on_link_probe,
             timeout_s=min(timeout_s, 2.0),
-            peers=peer_addresses(environ, proxy),
+            peers=peer_addresses(proxy),
         )
     )
     host, port = direct
@@ -868,7 +881,7 @@ def check(
     return results
 
 
-def peer_addresses(environ: Mapping[str, str], proxy: str) -> dict[str, str]:
+def peer_addresses(proxy: str) -> dict[str, str]:
     """On-link addresses that are this compose project, and what each one is.
 
     An address here is not dialled, because reaching it is the bound working rather than a way
@@ -885,7 +898,7 @@ def peer_addresses(environ: Mapping[str, str], proxy: str) -> dict[str, str]:
       dialled like any other.
     """
     peers = {addr: "this container's own address" for addr in own_addresses()}
-    host = urlsplit(proxy).hostname
+    host = split_proxy_url(proxy).hostname
     if host:
         for addr in resolved_addresses(host):
             peers.setdefault(addr, f"the proxy {proxy}")
