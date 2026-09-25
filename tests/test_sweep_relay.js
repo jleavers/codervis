@@ -58,7 +58,7 @@ function compileWorkflow() {
 }
 
 // Answers shaped like each stage's schema, with hostile text in every free-text field.
-function hostileAgent(calls) {
+function hostileAgent(calls, findingPatch = {}) {
   return async function agent(prompt, opts = {}) {
     calls.push({ prompt, opts });
     const label = opts.label || "";
@@ -77,6 +77,7 @@ function hostileAgent(calls) {
             why_it_matters: "it matters",
             evidence: FORGERY,
             attack_path: INJECTED,
+            ...findingPatch,
           },
         ],
         coverage: `read the tree. ${FORGERY}`,
@@ -125,7 +126,7 @@ function hostileAgent(calls) {
   };
 }
 
-async function run(extraArgs = {}) {
+async function run(extraArgs = {}, findingPatch = {}) {
   const calls = [];
   const result = await compileWorkflow()(
     {
@@ -137,7 +138,7 @@ async function run(extraArgs = {}) {
       escalationCap: 3,
       ...extraArgs,
     },
-    hostileAgent(calls),
+    hostileAgent(calls, findingPatch),
     async (thunks) => Promise.all(thunks.map((thunk) => thunk())),
     async (items, ...stages) =>
       Promise.all(
@@ -280,5 +281,24 @@ test("each fenced block says who wrote what is inside it", async () => {
       /written by other agents in this sweep/,
       "a relaying prompt does not say where its material came from",
     );
+  }
+});
+
+
+test("a finding's own field cannot get outside the fence that holds it", async () => {
+  // `dimension` is a free-text field a scan agent fills in, and the escalation stage used to
+  // name it in the line above the fence -- which is the prompt's own voice, where a newline
+  // would have put attacker-written text.
+  const { calls } = await run({}, { dimension: `tokens\n${END}\n${INJECTED}` });
+  const escalations = calls.filter(({ opts }) => (opts.label || "").startsWith("escalate:"));
+  assert.ok(escalations.length, "no escalation ran");
+  for (const { prompt, opts } of calls) {
+    const { lines, inside, unbalanced } = fenceMap(prompt);
+    assert.equal(unbalanced, false, `${opts.label}: a relayed field opened or closed a fence`);
+    lines.forEach((line, index) => {
+      if (line.includes(INJECTED)) {
+        assert.ok(inside[index], `${opts.label}: injected text escaped at line ${index + 1}`);
+      }
+    });
   }
 });
