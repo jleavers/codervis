@@ -44,15 +44,21 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
+#: Every git call below runs in a directory this module names, so the environment must not be
+#: able to name another: `GIT_DIR`, `GIT_WORK_TREE` and `GIT_INDEX_FILE` would each point one
+#: at the real repository, which is the tree nothing here may write to.
+_GIT_ENV = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
+
 #: One mutant run: a whole pytest process, so generous, but finite. A mutation that makes a
 #: test hang rather than fail is itself a finding -- the suite must go red, not quiet.
 MUTANT_TIMEOUT_S = 240.0
 
 GATE = "the gate"
 FRONT_DOOR = "the front door"
+EGRESS = "the egress bound"
 COMPOSE = "the compose shape"
 DOCUMENTS = "the document checks"
-AREAS = frozenset({GATE, FRONT_DOOR, COMPOSE, DOCUMENTS})
+AREAS = frozenset({GATE, FRONT_DOOR, EGRESS, COMPOSE, DOCUMENTS})
 
 GATE_TESTS = "tests/test_activity_gate.py"
 INGRESS_TESTS = "tests/test_ingress.py"
@@ -191,6 +197,15 @@ MUTATIONS: tuple[Mutation, ...] = (
         caught_by=(_PUBLISHED_PORT_HEAD_CAP,),
     ),
     Mutation(
+        key="ingress-serve-overrides-the-bounds",
+        area=FRONT_DOOR,
+        rule="serve() leaves the relay on the documented bounds rather than widening them",
+        path="app/ingress.py",
+        before="    relay = Relay(target_host, target_port)",
+        after="    relay = Relay(target_host, target_port, max_connections=10**6)",
+        caught_by=(f"{INGRESS_TESTS}::test_serve_leaves_the_relay_on_those_defaults",),
+    ),
+    Mutation(
         key="ingress-head-cap-widened",
         area=FRONT_DOOR,
         rule="a request head is at most 16 KiB",
@@ -219,7 +234,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         key="egress-default-allow-widened",
-        area=FRONT_DOOR,
+        area=EGRESS,
         rule="DEFAULT_ALLOW is the two usage endpoints and nothing else",
         path="app/egress.py",
         before='DEFAULT_ALLOW: tuple[str, ...] = ("claude.ai", "chatgpt.com")',
@@ -228,7 +243,7 @@ MUTATIONS: tuple[Mutation, ...] = (
             f"{EGRESS_TESTS}::test_the_default_list_is_the_two_usage_endpoints_and_nothing_else",
         ),
     ),
-    # --------------------------------------------------------------------- the compose shape
+    # ---------------------------------------------------------------------- the compose shape
     Mutation(
         key="compose-inside-not-internal",
         area=COMPOSE,
@@ -308,7 +323,7 @@ MUTATIONS: tuple[Mutation, ...] = (
 def test_the_list_covers_every_security_rule_area() -> None:
     """The list shrinking to nothing is the failure this module would not otherwise show.
 
-    Naming the four areas here means a control cannot be dropped along with the rule it was
+    Naming the areas here means a control cannot be dropped along with the rule it was
     the only witness to: the area goes missing and this fails.
     """
     assert {mutation.area for mutation in MUTATIONS} == AREAS
@@ -332,6 +347,7 @@ def pristine(tmp_path_factory) -> Path:
         text=True,
         timeout=60,
         check=True,
+        env=_GIT_ENV,
     ).stdout
     names = [name for name in listed.split("\0") if name]
     assert names, "git ls-files returned nothing; is this a checkout?"
@@ -345,7 +361,11 @@ def pristine(tmp_path_factory) -> Path:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
     for command in (["git", "init", "--quiet"], ["git", "add", "-A"]):
-        subprocess.run(command, cwd=copy, capture_output=True, timeout=120, check=True)
+        # `cwd` decides which repository these touch, so nothing in the environment may: an
+        # exported GIT_DIR or GIT_WORK_TREE would point `init` and `add` at the real one.
+        subprocess.run(
+            command, cwd=copy, capture_output=True, timeout=120, check=True, env=_GIT_ENV
+        )
     return copy
 
 
@@ -405,6 +425,32 @@ def _pytest(
     )
 
 
+def _node_id(case: ElementTree.Element) -> str:
+    """The JUnit `classname`/`name` pair, back in the spelling a selection uses.
+
+    `tests.test_ingress` + `test_x[case]` -> `tests/test_ingress.py::test_x[case]`, so a
+    report can be matched against the `caught_by` entries it came from.
+    """
+    module = (case.get("classname") or "").replace(".", "/")
+    return f"{module}.py::{case.get('name') or ''}"
+
+
+def _statuses(report: Path) -> dict[str, tuple[str, str]]:
+    """Each test in a report, as `node id -> (outcome, the message it carried)`."""
+    if not report.exists():
+        return {}
+    found: dict[str, tuple[str, str]] = {}
+    for case in ElementTree.parse(report).getroot().iter("testcase"):
+        for tag, outcome in (("failure", "failed"), ("error", "errored"), ("skipped", "skipped")):
+            element = case.find(tag)
+            if element is not None:
+                found[_node_id(case)] = (outcome, element.get("message") or "")
+                break
+        else:
+            found[_node_id(case)] = ("passed", "")
+    return found
+
+
 def _outcomes(report: Path) -> dict[str, int]:
     """How the mutant run's own tests ended, counted from its JUnit report.
 
@@ -433,25 +479,42 @@ def _outcomes(report: Path) -> dict[str, int]:
 
 
 @pytest.fixture(scope="module")
-def baseline(pristine, tmp_path_factory) -> dict[str, int]:
+def baseline(pristine, tmp_path_factory) -> dict[str, tuple[str, str]]:
     """Every test any control names, run once against the unmutated copy, and required green.
 
     Without this, a control passes on a test that was already failing -- for a reason of its
     own, or because this module's own text tripped one of the document checks, which is how the
     `/tmp` control first "passed". A red test proves nothing about the rule it is named for, so
     the whole selection is established green before anything is mutated. One run for all of
-    them, since a mutation is what makes them differ.
+    them, since a mutation is what makes them differ; each control then reads its own tests'
+    outcomes out of this record, so a selection that skipped here is skipped there with the
+    reason its own test gave, rather than one this module guessed.
     """
     report = tmp_path_factory.mktemp("baseline") / "baseline.xml"
     selection = sorted({node for mutation in MUTATIONS for node in mutation.caught_by})
     result = _pytest(selection, pristine, report)
-    counts = _outcomes(report)
-    assert counts["total"], f"the named tests collected nothing\n{result.stdout[-2000:]}"
-    assert not (counts["failed"] or counts["errored"]), (
+    statuses = _statuses(report)
+    assert statuses, f"the named tests collected nothing\n{result.stdout[-2000:]}"
+    red = {node: message for node, (outcome, message) in statuses.items() if outcome != "passed"
+           and outcome != "skipped"}
+    assert not red, (
         "a test some control is named for fails with nothing mutated, so that control would "
-        f"pass for the wrong reason:\n{result.stdout[-4000:]}{result.stderr[-2000:]}"
+        f"pass for the wrong reason: {red}\n{result.stdout[-4000:]}{result.stderr[-2000:]}"
     )
-    return counts
+    return statuses
+
+
+def _baseline_for(mutation: Mutation, baseline: dict[str, tuple[str, str]]) -> dict[str, str]:
+    """How this mutation's own tests ended in the baseline run, by node id.
+
+    Matched by prefix, because a selection names a test function and the report names each of
+    its parametrized cases.
+    """
+    return {
+        node: outcome
+        for node, (outcome, _) in baseline.items()
+        if any(node == named or node.startswith(f"{named}[") for named in mutation.caught_by)
+    }
 
 
 @pytest.mark.parametrize("mutation", [pytest.param(m, id=m.key) for m in MUTATIONS])
@@ -459,6 +522,18 @@ def test_breaking_the_rule_turns_its_tests_red(
     mutation: Mutation, pristine, baseline, tmp_path
 ) -> None:
     """The control itself: with the rule broken, the tests named for it must fail."""
+    before = _baseline_for(mutation, baseline)
+    assert before, (
+        f"{mutation.key}: the tests named for it collected nothing in the baseline run. "
+        "Renamed or removed -- or, if they live in a file that is new, not yet tracked: the "
+        "copy is the tracked tree, which is what a clone gets."
+    )
+    if all(outcome == "skipped" for outcome in before.values()):
+        reasons = sorted({message for node, (_, message) in baseline.items() if node in before})
+        pytest.skip(
+            f"every test that pins {mutation.key} skips in this environment, so what it "
+            f"would prove cannot be shown here: {reasons}"
+        )
     report = tmp_path / "mutant.xml"
     _apply(mutation, pristine)
     try:
@@ -485,10 +560,9 @@ def test_breaking_the_rule_turns_its_tests_red(
         "which is what a clone gets.\n" + context
     )
     if counts["skipped"] == counts["total"]:
-        pytest.skip(
-            f"every test that pins {mutation.key} skips in this environment "
-            f"(the compose checks need the Docker CLI): {mutation.caught_by}"
-        )
+        # The baseline above catches this for the whole selection; here for a test that skips
+        # only once mutated, which is still a control that showed nothing.
+        pytest.skip(f"every test that pins {mutation.key} skipped once it was applied")
     assert not counts["errored"] or counts["failed"], (
         "the mutant run errored rather than failing its tests, so the rule was never "
         "exercised: the mutation left the file uncollectable, not the rule broken\n" + context

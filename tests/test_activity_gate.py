@@ -151,6 +151,11 @@ def test_the_open_refuses_promptly_what_admission_would_never_have_reached(
     prompted the refusal -- whose text and `.filename` are the path -- is not
     rendered with it.
 
+    The reason a missing file is refused with reads as link-flavoured, and is
+    meant to: the gate answers `ENOENT` and `ELOOP` alike, because a reason that
+    told them apart would say whether the path exists, which is the oracle this
+    module was written to close.
+
     Three, not every flag in that loop: `O_CLOEXEC` is the fourth, and nothing
     here or in the mutation list pins it, because there is nothing to pin.
     Python has made every descriptor `os.open` returns non-inheritable since

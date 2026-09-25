@@ -6,6 +6,7 @@ Hermetic: the target is a loopback server started by the test.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import inspect
 import socket
@@ -13,6 +14,7 @@ import time
 
 import pytest
 
+from app import ingress
 from app.ingress import (
     CONNECT_TIMEOUT_S,
     MAX_CONNECTIONS,
@@ -24,6 +26,21 @@ from app.ingress import (
 )
 
 HEAD = b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"
+
+
+@contextlib.contextmanager
+def monkeypatch_attr(module, name: str, value):
+    """Swap one module attribute back and forth; `monkeypatch` cannot reach into `asyncio.run`.
+
+    The bodies here run on a loop `asynctest` starts, so pytest's own fixture would undo the
+    swap only after the loop had finished with it.
+    """
+    original = getattr(module, name)
+    setattr(module, name, value)
+    try:
+        yield
+    finally:
+        setattr(module, name, original)
 
 
 def asynctest(fn):
@@ -234,6 +251,29 @@ async def test_the_port_the_dashboard_is_published_on_carries_the_head_cap_too()
     await target.stop()
 
 
+@asynctest
+async def test_serve_leaves_the_relay_on_those_defaults() -> None:
+    """The other half of arming them: the values above are only a bound if `serve()` takes them.
+
+    The head cap is armed on the listening socket, and the test above that; these two live on
+    the relay, where `serve()` passing its own would override them silently -- the whole suite
+    would stay green, because every other test here builds its `Relay` itself. Asserting that
+    it overrides nothing, rather than reaching into the relay for what it holds.
+    """
+    passed: list[dict[str, object]] = []
+
+    class Recording(Relay):
+        def __init__(self, host: str, port: int, **kwargs: object) -> None:
+            passed.append(kwargs)
+            super().__init__(host, port, **kwargs)  # type: ignore[arg-type]
+
+    with monkeypatch_attr(ingress, "Relay", Recording):
+        server = await serve("127.0.0.1", 9, bind="127.0.0.1", port=0)
+
+    assert passed == [{}], "serve() overrode a bound the constants above are meant to set"
+    server.close()
+
+
 def test_the_front_doors_bounds_are_the_ones_it_documents() -> None:
     """The values, because none of the tests above reads a default of its own accord.
 
@@ -241,9 +281,11 @@ def test_the_front_doors_bounds_are_the_ones_it_documents() -> None:
     `MAX_REQUEST_HEAD_BYTES`, so a cap raised to 16 MiB or a deadline raised to ten minutes
     was invisible to the whole suite (#46). These are the numbers `README.md` and `CLAUDE.md`
     describe -- a complete head, at most 16 KiB, within 10 s, and at most 256 connections --
-    so widening one is a change made here and in those documents, on purpose. The values
-    rather than only the wiring: a default that still reads its constant says nothing about
-    what that constant became.
+    so widening one is a change made here and in those documents, on purpose. `CONNECT_TIMEOUT_S`
+    is the fourth and no shipped document states it: it bounds the relay's own dial to the
+    dashboard rather than anything a peer can do, and it is pinned here alone. The values rather
+    than only the wiring: a default that still reads its constant says nothing about what that
+    constant became.
     """
     assert (
         MAX_REQUEST_HEAD_BYTES,

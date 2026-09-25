@@ -16,6 +16,7 @@ tells its agent that what it reads is data.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -29,7 +30,10 @@ WORKFLOW = ROOT / ".claude" / "workflows" / "security-sweep.js"
 
 # What an archived document opens with. The plans carry this sentence; the two design specs
 # beside them did not, which is how they outlived the archiving of their own plans and went on
-# reading as designs someone had yet to implement (#46).
+# reading as designs someone had yet to implement (#46). Requiring it of every document here
+# leaves no room for a live one, which is the state of this subtree and not a law of nature:
+# a design that is genuinely outstanding belongs somewhere this check does not cover, or the
+# check gets widened on purpose -- not a pasted header that makes it read as finished.
 ARCHIVED_MARKER = "> **Archived —"
 
 TEXT_SUFFIXES = {".md", ".js", ".json", ".yml", ".yaml", ".py", ".sh", ".toml", ".ini"}
@@ -61,6 +65,10 @@ def _shipped_files() -> list[Path]:
         text=True,
         timeout=60,
         check=True,
+        # `cwd` decides which repository this reads, so nothing in the environment may: an
+        # exported GIT_DIR or GIT_WORK_TREE -- a git hook's, a CI wrapper's -- would otherwise
+        # answer for a tree nobody here named.
+        env={name: value for name, value in os.environ.items() if not name.startswith("GIT_")},
     ).stdout
     paths = [ROOT / name for name in listed.split("\0") if name]
     assert paths, "git ls-files returned nothing; is this a checkout?"
@@ -130,8 +138,8 @@ def test_no_shipped_document_reads_as_work_still_to_do() -> None:
     The reach is the whole subtree, not `plans/` alone. It was `plans/` alone until #46, while
     this module's own docstring promised that no shipped document reads as pending: the two
     design specs under `specs/` were never archived when their plans were (#21), so they went
-    on reading as live designs -- one of them asserting, falsely against this tree, that
-    implementing it changes no mount, secret or Compose behaviour.
+    on reading as live designs -- one of them describing a credential mount this tree does not
+    have as one that "remains", and asserting that implementing it needs no Compose change.
 
     And the subject is what a clone gets, so it comes from the tracked files like every other
     check here, rather than from a walk of the worktree: an untracked scratch file a developer
