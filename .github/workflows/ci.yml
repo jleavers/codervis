@@ -112,7 +112,11 @@ jobs:
 
       - name: Render Compose config
         env:
-          USERPROFILE: /tmp/codervis-ci
+          # Only has to resolve .env.example's ${USERPROFILE} interpolation, so the runner's
+          # own temp directory does it -- and unlike a fixed name in shared /tmp, it is not a
+          # path a second principal on a self-hosted runner can create first (#30). Step-level
+          # `env:`, because the `runner` context is out of scope in a job-level one.
+          USERPROFILE: ${{ runner.temp }}
         run: docker compose --env-file .env.example config --quiet
 
   egress:
@@ -121,15 +125,26 @@ jobs:
     # Synthetic credential files only. Nothing below sends them anywhere: `check` opens CONNECT
     # tunnels and closes them unused, and /healthz makes no upstream call.
     env:
-      CLAUDE_HOME: /tmp/codervis-ci/claude
-      CODEX_HOME: /tmp/codervis-ci/codex
       DASHBOARD_PORT: 8765
     steps:
       - uses: actions/checkout@v7
 
+      # The runner's own temp directory rather than a fixed name in shared /tmp: a GitHub-hosted
+      # runner is single-principal, but a self-hosted one is not, and these are
+      # credential-shaped files whatever is in them (#30). `mktemp -d` on top, so the name is
+      # not one anything else could have created first. They go through $GITHUB_ENV rather than
+      # the job-level `env:` above because the `runner` context is out of scope there -- and
+      # every later step needs the same two paths, since `up`, `exec` and `down` all interpolate
+      # them out of docker-compose.yml.
+      - name: Make a private directory for the synthetic credential files
+        run: |
+          home="$(mktemp -d "${RUNNER_TEMP}/codervis-ci.XXXXXX")"
+          mkdir -p "$home/claude" "$home/codex"
+          echo "CLAUDE_HOME=$home/claude" >> "$GITHUB_ENV"
+          echo "CODEX_HOME=$home/codex" >> "$GITHUB_ENV"
+
       - name: Start the stack
         run: |
-          mkdir -p "$CLAUDE_HOME" "$CODEX_HOME"
           printf '{"claudeAiOauth":{"accessToken":"ci-not-a-token"}}' > "$CLAUDE_HOME/.credentials.json"
           printf '{"tokens":{"access_token":"ci-not-a-token"}}' > "$CODEX_HOME/auth.json"
           docker compose up --build --detach --wait

@@ -47,12 +47,12 @@ TEXT_SUFFIXES = {".md", ".js", ".json", ".yml", ".yaml", ".py", ".sh", ".toml", 
 # of the spellings two plans happened to use: the next author will use a third.
 FIXED_TMP_PATH = re.compile(r"(?<![\w/])/tmp/[\w.${}-]+")
 
-# One exemption, named rather than pattern-dodged. `.github/workflows/ci.yml` builds synthetic
-# credential files under a fixed `/tmp/codervis-ci`; a GitHub-hosted runner is single-principal
-# so nothing else can get there first, and the fix (the runner's own temp directory) needs a
-# token with `workflow` scope, which the agent that wrote this check does not have. Tracked as
-# follow-up #30; delete this line with that change, not around it.
-TMP_PATH_EXEMPT = (".github/workflows/ci.yml",)
+# No exemptions. There was one, for the synthetic credential files `.github/workflows/ci.yml`
+# used to build under a fixed `/tmp/codervis-ci`; #30 moved them to the runner's own temp
+# directory and emptied this, which is the only way an exemption here is meant to end. A file
+# that has to name such a path again gets a line and the reason, not a spelling the pattern
+# above happens to miss.
+TMP_PATH_EXEMPT: tuple[str, ...] = ()
 
 
 def _shipped_text_files() -> list[Path]:
