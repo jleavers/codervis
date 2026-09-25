@@ -224,7 +224,7 @@ docker compose exec codervis python -m app.egress check
 [ OK ] http://egress:3128 refused egress-probe.invalid (403)
 [ OK ] CLAUDE_AI_HOST: claude.ai:443 admitted
 [ OK ] CHATGPT_HOST: chatgpt.com:443 admitted
-[ OK ] 172.30.0.1 is the proxy http://egress:3128, which is on-link by design and leads nowhere off this compose project
+[ OK ] 172.30.0.1 is on-link by design: the proxy http://egress:3128, which is the allow-listed way off this project rather than a way round it
 [ OK ] example.com:443 unreachable directly: no route to a public address round the proxy
 ```
 
@@ -287,14 +287,17 @@ How to read the on-link line, in the order the cases are worth knowing:
 - A `FAIL` that says **unverified** is not a reachable host: it means the check
   could not ask. The container's routing table was unreadable, or it yielded no
   address to dial, or it yielded more than the check will dial and the rest are
-  named on that line. An unasked question is reported as a failure here rather
-  than passed over, because that is the defect this line exists to prevent.
+  named on that line, or a connection never left the container at all (a local
+  reject rule, a descriptor limit). An unasked question is reported as a failure
+  here rather than passed over, because that is the defect this line exists to
+  prevent.
 
 **If you cannot upgrade to 28.0+**, add a host firewall rule that drops new
 inbound connections arriving on that bridge's interface; nothing in the stack
 ever connects to the host over it. On 27.x you must also delete the
 `driver_opts` block from the `inside` network, or the network is not created
-at all; on 26.x and older the block is ignored and can stay.
+at all — which then fails `tests/test_compose_topology.py`, since that block is
+what the test pins; on 26.x and older the block is ignored and can stay.
 
 ### Stop
 
@@ -317,7 +320,8 @@ read your real credential files and do not call the live quota endpoints. The
 proxy and relay tests use loopback sockets only.
 `tests/test_compose_topology.py` renders `docker-compose.yml` with
 `docker compose config`, which needs the Docker CLI but no daemon. It is skipped
-where Docker is not installed.
+where Docker is not installed, unless `REQUIRE_DOCKER=1` says it must not be —
+CI sets that, so the compose pins fail rather than vanish into a skip.
 
 ## What you see
 

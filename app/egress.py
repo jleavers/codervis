@@ -21,18 +21,27 @@ Two halves, and neither is sufficient alone:
   at all (#37). The gateway-mode option needs Docker Engine 28.0+: 27.x knows the option but
   not the ``isolated`` value and refuses to create the network, and 26.x and older have no case
   for the label and ignore it, leaving that address in place. So ``check`` below, not a
-  successful ``docker compose up``, is what tells an operator which of them they have.
+  successful ``docker compose up``, is what tells an operator which of them they have -- and an
+  operator who cannot upgrade closes the path with a host firewall rule that drops new inbound
+  connections arriving on that bridge's interface, since nothing in the stack ever connects to
+  the host over it. README's network section has the remedy for each engine.
 * **The allow-list** makes the route narrow: ``claude.ai`` and ``chatgpt.com``, extended by
   the operator's ``EGRESS_ALLOW``.
 
 ``check`` asserts the whole bound from inside the dashboard's container, and asserts it by
 probing what is reachable rather than by restating the design: the proxy filters by name and
-admits the configured upstreams, every address the container can dial on-link is either a peer
-in this compose project or answers nothing, and a public name does not resolve-and-connect. A
+admits the configured upstreams, the on-link addresses it derives are each either a peer in
+this compose project or answer nothing, and a public name does not resolve-and-connect. A
 refusal on an on-link address is a failure like an accept, because an RST comes from a live
 host. Silence is the weaker half of that: it means nothing answered the ports asked, which a
 host behind a default-drop rule also produces, so the on-link half is one of three assertions
 rather than the only one.
+
+What the on-link half derives is not every address the container could dial: it is the address
+a bridge gateway would hold -- the first of each on-link subnet -- and any gateway a route
+names (`on_link_addresses`, which says what that misses). A second host address further into
+the subnet, or a gateway placed elsewhere by an explicit ``ipam.config.gateway``, is not
+probed; the compose file puts neither there, and a change that does has to extend this.
 
 ``CONNECT`` is deliberately all of it. The proxy reads the host name from the request line and
 never sees a byte of the TLS session it relays, so it holds no certificate authority and never
@@ -47,6 +56,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import errno
 import logging
 import os
 import signal
@@ -585,12 +595,34 @@ def reachable_directly(host: str, port: int = DEFAULT_TARGET_PORT, *, timeout_s:
         return False
 
 
-# What an on-link probe found. Two of the three mean the address is live, and the wording says
+# What an on-link probe found. Two of these mean the address is live, and the wording says
 # which, because they call for different reading: something answered, or the host is there with
-# nothing on that port.
+# nothing on that port. `ON_LINK_UNVERIFIED` is the fourth, and it is not an answer at all: the
+# connection never left this container, so the address was not established either way.
 ON_LINK_ACCEPTED = "accepted"
 ON_LINK_REFUSED = "refused"
 ON_LINK_NO_ANSWER = "no answer"
+ON_LINK_UNVERIFIED = "not probed"
+
+# Why an on-link address is accounted for rather than dialled (`peer_addresses`). Said once
+# here, because the pass line an operator reads is the whole output of this half, and the two
+# reasons are not interchangeable: reaching this container proves nothing either way, while the
+# proxy is the one peer that *does* lead off the project -- by the route the allow-list bounds.
+PEER_SELF = "this container's own address, so reaching it establishes nothing either way"
+PEER_PROXY = (
+    "the proxy {proxy}, which is the allow-listed way off this project rather than a way "
+    "round it"
+)
+
+# The errnos that mean the probe was made and nothing came back. Everything else an OSError can
+# carry -- EPERM and EACCES from a local rule, EMFILE and ENOBUFS from this container running
+# out of something, EAFNOSUPPORT -- means no packet was sent, which is not evidence about the
+# address and must not read as one. `TimeoutError` carries no errno and is handled on its own.
+NO_ANSWER_ERRNOS = frozenset(
+    getattr(errno, name)
+    for name in ("ETIMEDOUT", "ENETUNREACH", "EHOSTUNREACH", "ENETDOWN", "EHOSTDOWN")
+    if hasattr(errno, name)
+)
 
 
 def _address(column: str) -> str:
@@ -715,16 +747,25 @@ def probe_on_link(addr: str, port: int, *, timeout_s: float) -> str:
     every port asked looks the same from here. That is why this is one of three things `check`
     asserts and not the only one, and why README's fallback is a firewall rule rather than a
     green line.
+
+    A failure that stopped the connection leaving this container is not silence and is not
+    reported as it: `EPERM` from a local rule, `EMFILE` from running out of descriptors and the
+    like mean no packet was sent, so the address is `ON_LINK_UNVERIFIED` -- a probe not made,
+    which fails the check like every other one here.
     """
     try:
         with socket.create_connection((addr, port), timeout_s):
             return ON_LINK_ACCEPTED
     except ConnectionRefusedError:
         return ON_LINK_REFUSED
-    except OSError:
-        # ETIMEDOUT, ENETUNREACH, EHOSTUNREACH, EACCES from a local reject rule: nothing came
-        # back, which is what an address with nobody holding it looks like.
+    except ConnectionResetError:
+        # A reset comes from a live host just as a refusal does.
+        return ON_LINK_REFUSED
+    except TimeoutError:
+        # socket.timeout, which carries no errno: the probe went out and nothing came back.
         return ON_LINK_NO_ANSWER
+    except OSError as exc:
+        return ON_LINK_NO_ANSWER if exc.errno in NO_ANSWER_ERRNOS else ON_LINK_UNVERIFIED
 
 
 class OnLinkProbe(Protocol):
@@ -775,13 +816,15 @@ def check_on_link(
             for port, outcome in ((port, probe(addr, port, timeout_s=timeout_s)) for port in ports)
             if outcome != ON_LINK_NO_ANSWER
         ]
-        # An accept is the more useful thing to report, so every port is tried rather than
-        # stopping at the first answer: a refusal on 443 would otherwise hide a service on 22.
-        # An address that answers does so at once, and one that answers nowhere is dialled on
-        # every port either way, so this costs a timeout only where a rule covers some ports.
-        answered = next(
-            (answer for answer in answers if answer[1] == ON_LINK_ACCEPTED),
-            answers[0] if answers else None,
+        # Every port is tried rather than stopping at the first answer: a refusal on 443 would
+        # otherwise hide a service on 22. An address that answers does so at once, and one that
+        # answers nowhere is dialled on every port either way, so this costs a timeout only
+        # where a rule covers some ports. Of what came back, an accept is the most useful thing
+        # to report and a refusal next -- both establish the address is live -- and "could not
+        # be dialled" last, since it establishes nothing and would hide a port that answered.
+        priority = (ON_LINK_ACCEPTED, ON_LINK_REFUSED, ON_LINK_UNVERIFIED)
+        answered = min(
+            answers, key=lambda answer: priority.index(answer[1]), default=None
         )
         if answered is None:
             results.append(
@@ -798,6 +841,15 @@ def check_on_link(
                     f"{addr}:{answered[0]} accepted a direct connection: that address is "
                     "on-link, reachable with no route, and it is neither this container nor "
                     "the proxy -- so egress is not the only way off this container",
+                )
+            )
+        elif answered[1] == ON_LINK_UNVERIFIED:
+            results.append(
+                (
+                    False,
+                    f"{addr} could not be dialled on {_ports(ports)}: the connection never left "
+                    "this container, so nothing was established about that address and the "
+                    "bound is unverified for it",
                 )
             )
         else:
@@ -825,7 +877,7 @@ def check(
     on_link_probe: OnLinkProbe = probe_on_link,
     timeout_s: float = 10.0,
 ) -> list[tuple[bool, str]]:
-    """Both halves of the bound, as seen from inside the dashboard's container.
+    """Every assertion the bound rests on, as seen from inside the dashboard's container.
 
     The proxy must refuse a name that resolves nowhere, admit every host the live clients are
     configured for, and be the only way out. "The only way out" is asserted in both directions
@@ -917,12 +969,12 @@ def peer_addresses(proxy: str) -> dict[str, str]:
       option holds that address on the bridge, the name resolves elsewhere, and the address is
       dialled like any other.
     """
-    peers = {addr: "this container's own address" for addr in own_addresses()}
+    peers = {addr: PEER_SELF for addr in own_addresses()}
     parts = split_proxy_url(proxy)
     host = parts.hostname if parts else None
     if host:
         for addr in resolved_addresses(host):
-            peers.setdefault(addr, f"the proxy {proxy}")
+            peers.setdefault(addr, PEER_PROXY.format(proxy=proxy))
     return peers
 
 
@@ -959,16 +1011,19 @@ def _on_link_results(
     else:
         candidates = list(on_link)
     if not candidates:
+        source = "the routing table" if on_link is None else "the candidates passed in"
         return [
             (
                 False,
-                "no on-link address could be derived from the routing table, so the bound is "
+                f"no on-link address could be derived from {source}, so the bound is "
                 "unverified: a container joined to a network has a subnet to derive one from",
             )
         ]
     accounted = [
-        (True, f"{addr} is {peers[addr]}, which is on-link by design and leads nowhere off this "
-         "compose project")
+        (
+            True,
+            f"{addr} is on-link by design: {peers[addr]}",
+        )
         for addr in candidates
         if addr in peers
     ]

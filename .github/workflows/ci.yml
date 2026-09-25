@@ -155,21 +155,30 @@ jobs:
           printf '{"tokens":{"access_token":"ci-not-a-token"}}' > "$CODEX_HOME/auth.json"
           docker compose up --build --detach --wait
 
-      # Which engine honoured the gateway-isolation option, and what it did: an `inside` network
-      # whose bridge has no IPv4 address is the compose half of #37 taking effect, and the step
-      # below is what asserts it from inside the container. Recorded rather than asserted here,
-      # so the run says what the engine was when a newer one changes the option's spelling. The
-      # stack has already started at this point, so an engine that refused the option would have
-      # failed the step above instead.
-      - name: Record the engine version and the inside bridge's addresses
+      # The compose half of #37, asserted on the host rather than taken on trust: with
+      # `gateway_mode_ipv4: isolated` honoured, the engine allocates no gateway address and the
+      # `inside` bridge carries no IPv4 address, so there is nothing of the host's to dial. This
+      # is the claim README's engine table makes, and CI is the only place with a real daemon to
+      # settle it on -- so it fails here rather than being recorded and read later. The engine
+      # version is printed first so the run says which engine the result was true of.
+      #
+      # The network is taken from the dashboard's own container rather than by label, because
+      # that is the network under test and it joins exactly one. The stack has already started,
+      # so an engine that *refused* the option failed the step above instead.
+      - name: Assert the inside bridge carries no address of the host's
         run: |
           docker version --format 'engine {{.Server.Version}}'
-          network="$(docker network ls \
-            --filter label=com.docker.compose.network=inside --format '{{.Name}}')"
+          network="$(docker inspect codervis \
+            --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{end}}')"
           docker network inspect "$network" \
             --format 'internal={{.Internal}} options={{json .Options}} ipam={{json .IPAM.Config}}'
           bridge="br-$(docker network inspect "$network" --format '{{.Id}}' | cut -c1-12)"
-          ip -4 address show "$bridge" || true
+          ip -4 address show "$bridge"
+          if ip -4 address show "$bridge" | grep -q 'inet '; then
+            echo "::error::$bridge has an IPv4 address, so the host is on the dashboard's" \
+              "bridge and gateway_mode_ipv4=isolated did not take effect (#37)"
+            exit 1
+          fi
 
       - name: Check the bound from inside the dashboard container
         run: docker compose exec -T codervis python -m app.egress check

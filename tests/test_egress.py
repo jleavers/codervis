@@ -17,10 +17,12 @@ end, by the CI `egress` job.
 from __future__ import annotations
 
 import asyncio
+import errno
 import functools
 import logging
 import socket
 import sys
+from unittest import mock
 from urllib.parse import urlsplit
 
 import pytest
@@ -37,6 +39,7 @@ from app.egress import (
     ON_LINK_ACCEPTED,
     ON_LINK_NO_ANSWER,
     ON_LINK_REFUSED,
+    ON_LINK_UNVERIFIED,
     PROBE_DENIED_HOST,
     PROBE_ONLINK_PORTS,
     PROXY_ENV_NAMES,
@@ -661,6 +664,50 @@ def test_the_on_link_half_passes_only_when_nothing_answers() -> None:
     assert "answered nothing on" in results[0][1]
 
 
+def test_a_probe_that_never_left_the_container_is_not_reported_as_silence() -> None:
+    """The rule this whole check rests on, applied to the socket call itself.
+
+    `ON_LINK_NO_ANSWER` is evidence: the probe went out and nothing came back. A local failure
+    -- `EPERM` from a reject rule, `EMFILE` from running out of descriptors -- sent no packet,
+    so it establishes nothing about the address, and reporting it as silence would print
+    `[ OK ] ... answered nothing` for an address that was never dialled. That is the defect
+    this file exists to prevent, one layer further down.
+    """
+    for failure, expected in (
+        (OSError(errno.ETIMEDOUT, "timed out"), ON_LINK_NO_ANSWER),
+        (OSError(errno.ENETUNREACH, "unreachable"), ON_LINK_NO_ANSWER),
+        (OSError(errno.EHOSTUNREACH, "no host"), ON_LINK_NO_ANSWER),
+        (TimeoutError(), ON_LINK_NO_ANSWER),
+        (OSError(errno.EPERM, "blocked"), ON_LINK_UNVERIFIED),
+        (OSError(errno.EMFILE, "too many files"), ON_LINK_UNVERIFIED),
+        (OSError(errno.EAFNOSUPPORT, "no family"), ON_LINK_UNVERIFIED),
+        (ConnectionResetError(errno.ECONNRESET, "reset"), ON_LINK_REFUSED),
+    ):
+        with mock.patch.object(egress.socket, "create_connection", side_effect=failure):
+            assert probe_on_link("172.30.0.1", 443, timeout_s=0.1) == expected, failure
+
+
+def test_the_on_link_half_fails_an_address_it_could_not_dial() -> None:
+    """A probe that did not happen fails, and says so rather than borrowing another verdict."""
+    results = check_on_link(
+        ["172.30.0.1"], probe=lambda *_a, **_k: ON_LINK_UNVERIFIED, timeout_s=1
+    )
+    assert [ok for ok, _ in results] == [False]
+    assert "could not be dialled" in results[0][1]
+    assert "unverified" in results[0][1]
+
+
+def test_an_address_that_answered_outranks_one_port_that_could_not_be_dialled() -> None:
+    """A refusal establishes the address is live; "not probed" establishes nothing. The line an
+    operator reads must be the one that found something."""
+    answers = {443: ON_LINK_UNVERIFIED, 80: ON_LINK_REFUSED, 22: ON_LINK_UNVERIFIED}
+    results = check_on_link(
+        ["172.30.0.1"], probe=lambda addr, port, **k: answers[port], timeout_s=1
+    )
+    assert [ok for ok, _ in results] == [False]
+    assert "refused a direct connection on port 80" in results[0][1]
+
+
 def test_the_on_link_half_names_an_accept_over_a_refusal_on_another_port() -> None:
     """Every port is tried, so a closed 443 does not hide a service on 22 -- both fail, but the
     operator is told which one to go and look at."""
@@ -890,7 +937,9 @@ async def test_the_check_passes_when_the_subnets_first_address_is_this_container
             )
         )
     assert all(ok for ok, _ in results), results
-    assert any("is this container's own address" in line for _ok, line in results)
+    assert any(
+        line.endswith(f"is on-link by design: {egress.PEER_SELF}") for _ok, line in results
+    )
 
 
 @asynctest
@@ -927,7 +976,10 @@ async def test_the_check_accounts_for_the_proxys_address_rather_than_dialling_it
             )
         )
     assert all(ok for ok, _ in results), results
-    assert any("172.30.0.1 is the proxy" in line for _ok, line in results)
+    assert (
+        f"172.30.0.1 is on-link by design: {egress.PEER_PROXY.format(proxy=rig.url)}"
+        in [line for _ok, line in results]
+    )
 
 
 @asynctest
@@ -975,13 +1027,13 @@ def test_the_peers_are_this_container_and_the_proxy(monkeypatch, proxy: str) -> 
     monkeypatch.setattr(egress, "own_addresses", lambda: frozenset({"172.30.0.2"}))
     monkeypatch.setattr(egress, "resolved_addresses", resolve)
     assert egress.peer_addresses(proxy) == {
-        "172.30.0.2": "this container's own address",
-        "172.30.0.1": f"the proxy {proxy}",
+        "172.30.0.2": egress.PEER_SELF,
+        "172.30.0.1": egress.PEER_PROXY.format(proxy=proxy),
     }
     assert resolved == ["egress"]
 
     monkeypatch.setattr(egress, "resolved_addresses", lambda _host: frozenset())
-    assert egress.peer_addresses(proxy) == {"172.30.0.2": "this container's own address"}
+    assert egress.peer_addresses(proxy) == {"172.30.0.2": egress.PEER_SELF}
 
 
 @pytest.mark.parametrize("proxy", ["[::1", "://"])
@@ -993,7 +1045,7 @@ def test_a_proxy_variable_that_will_not_parse_is_reported_rather_than_raised(
     from either is the defect. Nothing here opens a socket or resolves a name that is not this
     host's own: neither value names a proxy host to dial."""
     monkeypatch.setattr(egress, "own_addresses", lambda: frozenset({"172.30.0.2"}))
-    assert egress.peer_addresses(proxy) == {"172.30.0.2": "this container's own address"}
+    assert egress.peer_addresses(proxy) == {"172.30.0.2": egress.PEER_SELF}
     answer = probe_proxy(proxy, "example.com", timeout_s=0.5)
     assert isinstance(answer, str) and "proxy URL" in answer
 
