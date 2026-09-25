@@ -117,6 +117,21 @@ The `gaps` lanes (`args.lanes: "gaps"`), built from the first run's completeness
 | `publication` | what becomes public with the repository: history beyond the first scan, PR heads, issue/PR threads, Actions logs |
 | `ambient-inputs` | inputs nobody typed for this app: proxy/CA variables, Docker client config, uvicorn env, `${USERPROFILE}`, the Codex tree |
 
+The `fixes` lanes (`args.lanes: "fixes"`) are for the tree after the first two runs' issues
+were fixed (from `9b0612b`). Pass the closed issues as `known`, so the lanes test the fixes
+rather than rediscover the original findings:
+
+| Lane | Threat model |
+| --- | --- |
+| `fix-holds` | each closed issue's invariant, treated as a claim to break: `Host` spellings, the boundary and vocabulary, refreshers and budgets, the activity gate's documented race and its test watcher, the front door, and a sandbox that does not start on every host |
+| `egress-topology` | what the dashboard container can still reach besides the proxy (embedded DNS, the host, `ingress`, IPv6), what the proxy lets through, and whether the tests enforce or only exercise it; may start a throwaway copy of the stack under its own project name |
+| `publication` | the second run's publication lane again, with a coverage record that makes an empty result mean clean |
+| `ambient` | proxy and CA variables now that a proxy is set on purpose, uvicorn's environment, the `${USERPROFILE}` mount defaults, the suite in a developer's shell, and image drift |
+
+Every lane in every set returns `coverage`, a concrete record of what it examined, and the
+completeness critic is given all of them. A lane with no findings and a thin record has not
+cleared its surface.
+
 ## Phase 6: present, and get approval
 
 The harness refuses report files written by subagents, so the report comes back as text: write
