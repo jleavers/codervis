@@ -1,8 +1,15 @@
 """The dashboard's network egress, bounded by an allow-listing ``CONNECT`` proxy.
 
 The dashboard holds two long-lived bearer tokens and needs exactly two hosts. This proxy is the
-only route off the host its container has, and it admits only the hosts on its allow-list, so
-a redirect, a host override or a compromised dependency cannot carry a token anywhere else.
+only route off the host its container has, and it admits only the hosts on its allow-list, so a
+redirect, a host override or a compromised dependency cannot send a token to a host that is not
+on that list.
+
+**That bounds the destination host, and nothing else.** ``CONNECT`` is relayed without being
+opened, so which account or tenant a request reaches at ``claude.ai`` or ``chatgpt.com``, and
+anything else inside the tunnel, are outside what this can see or limit. Code running in the
+dashboard's container can still use a token it holds against the hosts the clients use (#45).
+
 Two halves, and neither is sufficient alone:
 
 * **The network** makes the proxy unavoidable: docker-compose.yml puts the dashboard on an

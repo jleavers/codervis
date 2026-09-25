@@ -26,9 +26,12 @@ internal Docker network that gives it no default route and leaves the host no
 address on the network's bridge, so every peer it can dial is another container
 in this project. Its only way out is the `egress` service, a CONNECT-only proxy
 that admits `claude.ai` and `chatgpt.com` and nothing else. A redirect, a host
-override or a compromised dependency therefore cannot carry a token anywhere
-else, and plain `http://` is refused outright. Both halves of that are asserted
-by probing, not by assumption: `python -m app.egress check` dials what the
+override or a compromised dependency therefore cannot send a token to a host
+that is not on that list, and plain `http://` is refused outright. What that
+does **not** bound is what happens inside an allowed tunnel: the proxy relays
+the TLS session without opening it, so the account or tenant a request reaches
+at an allowed host is not something it can see, let alone limit. Both halves of
+the network bound are asserted by probing, not by assumption: `python -m app.egress check` dials what the
 container can actually reach ([below](#check-the-egress-bound)), and it needs
 Docker Engine 28.0+ to be true — an engine from before then either refuses the
 option that keeps the host off the bridge or ignores it, and the check is what

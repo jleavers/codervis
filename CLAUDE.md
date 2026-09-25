@@ -243,6 +243,12 @@ and keep new reader I/O going through the gate.
   with 405. It sees host names only, never the TLS session or a token. Its
   healthcheck is `python -m app.egress healthcheck`, which requires a 403 for
   the reserved `egress-probe.invalid`.
+  **What it bounds is the destination host, and only that.** It relays the
+  tunnel without opening it, so which account or tenant a request reaches at an
+  allowed host, and anything else inside the session, are not bounded by
+  anything here (#45). "A compromised dependency cannot carry a token anywhere
+  else" is the claim to avoid: it can still use a token against the hosts the
+  live clients use.
 - **`ingress`** — `app/ingress.py`, a byte relay that publishes
   `DASHBOARD_PORT` and forwards to `codervis:8000`. It is needed because Docker
   ignores `ports:` on an internal-only container. It is also the front door's
