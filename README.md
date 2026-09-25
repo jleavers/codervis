@@ -245,6 +245,11 @@ with no address at all, and this line is what proves your engine honoured it.
   comes from a live host, so only what it happens to be listening on stands
   between a compromised dependency and the host. The same firewall rule closes
   it, and the line reads `OK` once it is in place.
+- A `FAIL` that says **unverified** is not a reachable host: it means the check
+  could not ask. The container's routing table was unreadable, or it yielded no
+  address to dial, or it yielded more than the check will dial and the rest are
+  named on that line. An unasked question is reported as a failure here rather
+  than passed over, because that is the defect this line exists to prevent.
 
 ### Stop
 

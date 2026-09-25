@@ -271,8 +271,12 @@ address of each on-link subnet, which is where Docker puts a bridge's gateway),
 and it fails on a refusal as well as on an accept, because an RST comes from a
 live host. A half with nothing to probe fails as unverified rather than passing,
 since "it asked a question the network answers anyway" is the defect it exists
-to prevent. `tests/test_compose_topology.py` pins the compose shape, gateway
-mode included.
+to prevent, and so does a candidate list longer than the cap on how many it will
+dial, naming what went unprobed. The one candidate it may drop and still pass is
+one that resolves to the container's own address, because reaching itself
+establishes nothing either way. `tests/test_compose_topology.py` pins the compose
+shape, gateway mode included, and CI sets `REQUIRE_DOCKER` so that file fails
+rather than skips where the Docker CLI has gone missing.
 
 **Keep the bound whole.** Do not give `codervis` a non-internal network or
 `ports:`, and do not drop a network's gateway-mode option: an internal network
