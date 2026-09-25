@@ -17,9 +17,9 @@ if (!args || !args.runDir) {
 const { stamp, sha, repo, worktree, runDir } = args
 const escalationCap = Number.isInteger(args.escalationCap) ? args.escalationCap : 3
 // Where agents put everything temporary: venvs, clones, stub servers, throwaway compose copies.
-// Inside the repository (under the gitignored .claude/worktrees/) but outside the worktree,
-// because .claude/settings.json blocks reads outside the working directories, and every
-// agent sent to /tmp costs the operator a permission prompt per command.
+// Inside the repository (under the gitignored .claude/worktrees/) but outside the worktree:
+// one directory the launching session deletes after the run, and not shared /tmp, where a
+// fixed name is one another local principal can create first (#21).
 const scratch = args.scratch || `${worktree}-scratch`
 
 // Which lane set to run. `baseline` is the four threat models a first sweep of this tree wants.
@@ -223,15 +223,15 @@ contracts rather than rediscovering them.
 **Your scratch directory is \`${scratch}\`.** Everything temporary goes in a subdirectory of it
 named for your task: venvs, clones and mirrors, synthetic data, stub servers, copies of the
 worktree, throwaway client configuration. Wherever a brief says "a temporary directory", it
-means there. Never use \`/tmp\` or any other path outside the repository: the operator's
-settings block reads outside the working directories, and every command sent there costs them
-a permission prompt. Remove nothing from the scratch directory that another agent made; the
-launching session deletes it after the run.
+means there. Never use \`/tmp\` or any other path outside the repository: shared \`/tmp\` is
+where another local principal can create a name before you do (#21), and one directory is what
+the launching session cleans up. Remove nothing from the scratch directory that another agent
+made; the launching session deletes it after the run.
 
 **Keep each command's output small** -- pipe through \`head\`, \`grep\`, \`wc\` or \`sort | uniq -c\`,
-or write a large result to a file in your scratch directory and read slices of it. Output too
-large for the tool is saved under \`~/.claude\`, which the operator's settings deny you, so a
-large dump is simply lost and has to be produced again.
+or write a large result to a file in your scratch directory and read slices of it. A large dump
+costs context every later step pays for, and output too large for the tool is spilled to a file
+you would have to read back in slices anyway.
 
 ${HANDS_OFF}
 
@@ -676,22 +676,15 @@ Go fix by fix, reading the code rather than the commit messages:
 - **#20, the front door** (\`app/ingress.py\`, and the \`x-logging\` anchor in
   \`docker-compose.yml\`). Check the request deadline and the head cap against a client that
   pipelines, sends a body before the head completes, or reopens as fast as it is closed.
-- **#21, the execution context** (\`.claude/settings.json\`, the "execution context" section of
-  \`AGENTS.md\`, \`tests/test_agent_tooling_context.py\`). Established by the launching session
-  before this run, not for you to rediscover: on this host the sandbox backend does not start.
-  \`/usr/bin/bwrap\` is installed, but \`kernel.apparmor_restrict_unprivileged_userns=1\`, and a
-  shell here reached a domain off \`sandbox.network.allowedDomains\`. Every shell command
-  therefore runs unconfined, and only \`permissions.deny\` binds, and only the file tools. You
-  may confirm that with \`bwrap --ro-bind / / true\`, without reading any store. Your
-  questions:
-  - Does the repository anywhere claim a guarantee it does not deliver on a host like this?
-    The skill says the sandbox applies to every agent the workflow starts.
-  - Does \`tests/test_agent_tooling_context.py\` pin the rule's *effect*, or only the settings
-    file's *shape*?
-  - When the sandbox does work, the rule leaves the sweep's own dedupe and publication steps no
-    way to read the tracker. \`gh\` keeps its token under \`~/.config/gh\`, which the sandbox
-    denies, and AGENTS.md forbids unsandboxing a command that reads tracker text. Is that a
-    real dead end, or is there a sanctioned route?
+- **#21, the text repo-shipped agent tooling carries** (the archived plans under
+  \`docs/superpowers/plans/archive/\`, the "What repo-shipped agent text may say" section of
+  \`AGENTS.md\`, the sweep's \`DATA_NOT_INSTRUCTIONS\` preamble, and
+  \`tests/test_agent_tooling_context.py\`). The fix's other half, a committed
+  \`.claude/settings.json\`, was reverted in #34 because it bound the operator's own sessions.
+  If the swept commit still carries that file, it is on its way out: it is not a finding
+  either way. Your questions: does any shipped text still carry an environment prefix, a fixed
+  path in shared space, or instructions that read as pending work? And does the test see every
+  form of those, or only the spellings it was written for?
 
 For this lane, \`attack_path\` must name the specific input that goes round the fix and the
 line where the fix fails to see it.`,
@@ -786,11 +779,9 @@ What to cover:
   username. CI's egress job writes synthetic credential files; #30 moved them into the
   runner's temp directory. Check that no run ever wrote or printed a real one.
 
-**If \`gh\` is refused** (a working sandbox denies \`~/.config/gh\`), do not work round it:
-AGENTS.md forbids unsandboxing a command that reads tracker text. Record the refusal in
-\`coverage\` and cover what you can reach without it. Issues #14–#21 describing unfixed attack
-paths is a publication-timing decision for the operator, not a finding, and all of them are
-now fixed.`,
+If a tool is refused or a surface is out of reach, record it in \`coverage\` and cover what you
+can. Issues #14–#21 describing unfixed attack paths is a publication-timing decision for the
+operator, not a finding, and all of them are now fixed.`,
   },
   {
     key: 'ambient',
@@ -825,8 +816,8 @@ Cover:
   does a verbatim copy interpolate to? What does Docker create or mount there, owned by whom,
   and what does the dashboard then report? Establish it with \`docker compose config\` against
   a copy in a temporary directory, never \`up\`.
-- **The test suite run in a developer's shell.** The sandbox does not start on this host, so
-  \`python -m pytest\` runs with the ambient environment. \`app.main\` builds its live clients
+- **The test suite run in a developer's shell.** The repository does not confine a developer's
+  shell (#34), so \`python -m pytest\` runs with the ambient environment. \`app.main\` builds its live clients
   from \`CLAUDE_DATA_DIR\`, \`CODEX_DATA_DIR\`, \`CLAUDE_AI_HOST\` and \`CHATGPT_HOST\` at import,
   and starts refreshers in its lifespan. For each test module, establish *by reading* when the
   stubs go in and whether a real client could read a real file or call a real endpoint first.
@@ -948,6 +939,16 @@ a cluster missing any of them is not a cluster:
 - \`fix_shape\`: WHERE the invariant would live. No diffs, no patches, no code. A diff in a
   security report is an invitation to apply it, and applying six diffs is the treadmill this
   field exists to prevent.
+
+  **A fix shape secures the application and what it ships** -- its code, its defaults, its
+  image and compose file, and the text in the repository -- for the people who run it and the
+  people who clone it. **It never constrains the operator's own development environment.** A
+  committed agent-settings file, hook or sandbox binds every session in the checkout, the
+  operator's included, and is not a fix shape: #21's was, and it was reverted (#34) after it
+  turned every command the operator ran into a permission prompt while securing nothing for
+  anyone else. Where a cluster's only remedy lies in how the operator's own tools are
+  configured, say so in \`blast_radius\`, and put the remedy in \`fix_shape\` as advice to the
+  operator rather than as a change to the repository.
 
 Set \`severity\` to the highest severity among the cluster's findings, \`finding_ids\` to every
 id in it, and \`dimensions\` to the lanes they came from — a cluster spanning two lanes is
