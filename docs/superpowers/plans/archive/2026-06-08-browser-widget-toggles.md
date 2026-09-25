@@ -4,9 +4,8 @@
 > built (#2), not as work to do. Nothing here is a task list: the checkbox syntax was
 > removed so no agent picks it up, and so were the package-cache prefixes its commands
 > carried, which named a fixed directory in world-writable `/tmp` — a name another
-> local principal can create and fill first. What environment a command runs in
-> is set once, in `.claude/settings.json`; see "The execution context you run in" in
-> `AGENTS.md`. The five-provider shape below is also out of date: Gemini, Cursor and
+> local principal can create and fill first; see "What repo-shipped agent text may
+> say" in `AGENTS.md`. The five-provider shape below is also out of date: Gemini, Cursor and
 > Copilot were removed in #13.
 
 **Goal:** Add persistent, browser-local header toggles for all five provider widgets while changing `*_ENABLED` environment variables into first-visit defaults only.

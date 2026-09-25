@@ -1,41 +1,27 @@
-"""The execution context repo-shipped agent tooling runs in.
+"""What repo-shipped agent tooling says, as distinct from where it runs.
 
-This repository ships text that agents execute -- the plans under
-`docs/superpowers/plans/`, the security-sweep skill and its workflow -- and it ships it to a
-host whose whole reason for existing is that it holds two live bearer tokens. Every one of
-those documents used to make its own local choice about the environment it ran in, with no
-rule to check the choice against, which is how one of them came to name a fixed directory in
-world-writable `/tmp` as a package cache six times.
+This repository ships text that agents execute -- the archived plans under
+`docs/superpowers/plans/`, the security-sweep skill and its workflow. That text used to make
+its own local choices about the environment it ran in, which is how one plan came to name a
+fixed directory in world-writable `/tmp` as a package cache six times (#21).
 
-So the rule is one file the harness reads, not a paragraph each author restates:
-`.claude/settings.json` confines shell commands and refuses reads of the host's secret stores.
-These assert that file's shape, because a settings file is only an enforcement point while it
-says what it is believed to say -- and assert that no shipped document has gone back to
-carrying its own environment prefix or reads as work still to do.
+The environment an operator's agents run in is the operator's own to configure. The
+repository does not ship a `.claude/settings.json` that confines it: one did (#31), and it
+turned every shell command the operator ran in this checkout into a permission prompt and
+blocked the harness's own auto-memory, which secured nothing for anyone who clones the
+repository. What these tests hold instead is the shipped text: that no document carries its
+own environment prefix, that none reads as work still to do, and that every sweep prompt
+tells its agent that what it reads is data.
 """
 
 from __future__ import annotations
 
-import json
 import re
 import subprocess
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[1]
-SETTINGS_PATH = ROOT / ".claude" / "settings.json"
-
-# The two the container bind-mounts, and so the two an agent on this host can reach directly.
-CREDENTIAL_STORES = ("~/.claude", "~/.codex")
-
-# Secret stores that are nothing to do with codervis but sit on the same host, named because
-# the sweep's own hands-off rule names them. The list is a backstop, not the boundary: the
-# boundary is `blockReadsOutsideWorkingDirectories`, which needs no list.
-OTHER_SECRET_STORES = ("~/.ssh", "~/.aws", "~/.config/gh", "~/.docker")
-
-# The two undocumented endpoints the live clients call, which the suite must never reach.
-LIVE_QUOTA_HOSTS = ("claude.ai", "chatgpt.com")
+PROJECT_SETTINGS = ROOT / ".claude" / "settings.json"
 
 PLANS_DIR = ROOT / "docs" / "superpowers" / "plans"
 WORKFLOW = ROOT / ".claude" / "workflows" / "security-sweep.js"
@@ -87,83 +73,27 @@ def _const_body(source: str, name: str) -> str:
     return source[start : end.start()]
 
 
-@pytest.fixture(scope="module")
-def settings() -> dict:
-    assert SETTINGS_PATH.is_file(), (
-        "the execution-context rule for agent tooling lives in .claude/settings.json"
-    )
-    return json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+def test_the_repository_does_not_configure_the_operators_agent_environment() -> None:
+    """A committed project settings file binds every session in the checkout, the operator's.
 
-
-def _deny_rules(settings: dict) -> list[str]:
-    return list(settings.get("permissions", {}).get("deny", []))
-
-
-def test_shell_commands_are_confined(settings: dict) -> None:
-    """The sandbox is what makes the rule bind a shell command rather than a file tool."""
-    sandbox = settings.get("sandbox", {})
-    assert sandbox.get("enabled") is True
-
-
-def test_confinement_grants_nothing(settings: dict) -> None:
-    """A settings file that tightens must not widen on the way past.
-
-    `autoAllowBashIfSandboxed` defaults to true, so turning the sandbox on would otherwise
-    run every command in this project without asking -- a grant this repository did not have
-    before and is not asking for. And nothing here adds an allow rule: whatever an operator
-    already granted is what an agent may still do.
+    One was added for #21 and reverted: with its sandbox on a host where the sandbox cannot
+    start, every shell command became a prompt, and its `Read(~/.claude/**)` deny also
+    refused the harness's own auto-memory, which no `!` rule could carve back out. A fix that
+    wants to constrain agents belongs in the text they read or in the operator's own
+    settings, not here. If a settings file is ever needed, it is a decision to make on
+    purpose -- delete this test in the same change, and say why.
     """
-    sandbox = settings.get("sandbox", {})
-    assert sandbox.get("autoAllowBashIfSandboxed") is False
-    assert not settings.get("permissions", {}).get("allow"), (
-        "this file exists to restrict; grants belong in the operator's own settings"
+    assert not PROJECT_SETTINGS.exists(), (
+        f"{PROJECT_SETTINGS.relative_to(ROOT)} would bind the operator's own sessions"
     )
-
-
-def test_reads_outside_the_working_directories_are_blocked(settings: dict) -> None:
-    """The allow-list form of the rule, which is the one that cannot forget a store."""
-    permissions = settings.get("permissions", {})
-    assert permissions.get("blockReadsOutsideWorkingDirectories") is True
-
-
-def test_the_credential_stores_are_denied_by_name(settings: dict) -> None:
-    """And the deny-list form, which survives an operator widening the working directories."""
-    rules = " ".join(_deny_rules(settings))
-    for store in CREDENTIAL_STORES + OTHER_SECRET_STORES:
-        assert store in rules, f"no deny rule covers {store}"
-
-
-def test_the_credential_stores_are_denied_to_sandboxed_commands(settings: dict) -> None:
-    """`permissions.deny` binds the file tools; the credential layer binds the shell too."""
-    files = settings.get("sandbox", {}).get("credentials", {}).get("files", [])
-    denied = {entry.get("path") for entry in files if entry.get("mode") == "deny"}
-    for store in CREDENTIAL_STORES + OTHER_SECRET_STORES:
-        assert store in denied, f"sandboxed commands are not denied {store}"
-
-
-def test_sandboxed_egress_cannot_reach_the_live_quota_endpoints(settings: dict) -> None:
-    """The one allow-list in this file, and the two hosts that must never join it.
-
-    `CLAUDE.md` and `AGENTS.md` both say the suite must not call the undocumented quota
-    endpoints. Under the sandbox that stops being a promise: the hosts are simply not
-    reachable, and adding them here would quietly take the enforcement back.
-    """
-    allowed = settings["sandbox"]["network"]["allowedDomains"]
-    assert allowed, "an empty allow-list makes every sandboxed fetch a prompt"
-    for host in LIVE_QUOTA_HOSTS:
-        assert not any(host in entry for entry in allowed), (
-            f"{host} is the live quota endpoint's host; it does not belong in the sandbox's "
-            "allow-list"
-        )
 
 
 def test_no_shipped_document_names_a_fixed_path_in_shared_tmp() -> None:
-    """The instance that made the rule necessary.
+    """The instance #21 found.
 
     A fixed name under world-writable `/tmp` is a directory any other local principal can
     pre-create and fill, and the command that reads it runs as the operator. Nothing in a
-    shipped document should name one -- and under the rule above, nothing needs to: the
-    environment a command runs in is the harness's business, not each document's.
+    shipped document should name one.
     """
     this_file = Path(__file__).resolve()
     offenders = []
