@@ -25,7 +25,8 @@ const scratch = args.scratch || `${worktree}-scratch`
 // Which lane set to run. `baseline` is the four threat models a first sweep of this tree wants.
 // `gaps` re-aims four lanes at what the first run's completeness critic said nobody owned.
 // `fixes` is for the tree after those two runs' issues were fixed: it treats each fix as a claim
-// to break, and takes up what the second run's critic said was still unreached.
+// to break, and takes up what the second run's critic said was still unreached. `unowned` takes
+// up the third run's critic: the surfaces no lane has owned, three of them named by every critic.
 // Grow further sets the same way rather than editing the baseline: the baseline is still what
 // the next first-sweep-after-a-big-change wants. Keep new lanes threat-shaped -- a brief that
 // is only a reading list produces coverage rather than attack paths, and coverage findings are
@@ -830,7 +831,176 @@ Cover:
   },
 ]
 
-const LANE_SETS = { baseline: BASELINE_LANES, gaps: GAP_LANES, fixes: FIX_LANES }
+// The fourth set, from the third run's completeness critic (20260925T102222Z), which named
+// fifteen surfaces no lane owned. Three of them had been named by all three critics, which is
+// the signal that the lane sets kept routing round them. Grouped by attacker again: whoever
+// reaches the dashboard's port or its address (`front-door`), code already running inside the
+// dashboard's container (`inside-codervis`), whatever the build and GitHub supply
+// (`supply-chain`), and the claims that tests, specs and agent-read text make
+// (`assurance`). Every surface a critic named three times is assigned a lane with an
+// instruction either to record a read of it or to declare it out of scope with a reason.
+const UNOWNED_LANES = [
+  {
+    key: 'front-door',
+    title: 'every route into codervis:8000, and everything it serves back',
+    brief: `Your attacker is anyone who can send the dashboard a request: a LAN peer, a
+process on the host, another container, or a web page in the operator's browser. #15 and #20
+bound the front door, but both fixes live in \`ingress\`: the \`Host\` allow-list, the 10 s
+head deadline, the 16 KiB head cap and the 256-connection budget. uvicorn arms no timer of its
+own, and \`/api/stream\` holds one generator per connection. So your first question is
+whether anything reaches \`codervis:8000\` **without** passing through \`ingress\`.
+
+- **Routes round \`ingress\`** (the third critic's gap 1). Candidates:
+  - a host-local process using the dashboard's address on the \`inside\` bridge
+  - the \`egress\` container, which also sits on \`inside\`
+  - a LAN peer that routes to either bridge subnet
+
+  #37 (open, do not re-derive) is the *outbound* half: \`codervis\` reaching the host through
+  the gateway. You own the *inbound* half. Establish what Docker's own rules for an
+  \`internal\` network admit, from its documentation and source; you cannot read the host
+  firewall without root. Then demonstrate on a throwaway stack, and say which of \`ingress\`'s
+  bounds a route round it skips.
+- **\`/healthz\` under a hung mount** (gap 10). \`app/main.py:741-767\` is the one handler that
+  still reads the bind mounts per request, through four \`stat()\` calls in
+  \`asyncio.to_thread\`. Its docstring concedes that a wedged \`stat()\` "wedges alone". Check
+  whether that holds when many requests arrive against a hung mount. It depends on the default
+  executor's size and queue, and on what else shares that executor, the refreshers included.
+- **The FastAPI defaults and the static mount** (gap 13, named by three critics).
+  \`/openapi.json\`, \`/docs\`, \`/redoc\` and \`/docs/oauth2-redirect\` are still on
+  (\`app/main.py:271\`). \`/docs/oauth2-redirect\` runs script at the dashboard's origin. Also
+  cover other methods on every route, and HEAD and Range on \`/static\`. Record a read of each,
+  or declare it out of scope with a reason. Do not leave it unmentioned a fourth time.
+- **The browser side** (gap 14, named by three critics). \`app/static/app.js\` (the
+  \`style.setProperty('--pct', …)\` sink, the initial \`apply\`, the EventSource reconnect, the
+  toggle's \`dataset.provider\`), \`app/static/widget-state.js\` and what it keeps in
+  \`localStorage\`. Run \`node --test tests/test_app.js tests/test_widget_state.js\`, which no
+  sweep has run. The same rule applies: a recorded read, or an explicit out-of-scope.
+
+**This lane may start a throwaway copy of the stack.** Use \`docker compose -p
+sweep-front-<anything>\` from a copy of the worktree in your scratch directory, with an
+override file that renames \`container_name: codervis\`, synthetic credential files,
+\`DASHBOARD_BIND=127.0.0.1\` on a free port, and \`down --rmi local\` before you return. The
+operator's own \`codervis\` project stays off limits.`,
+  },
+  {
+    key: 'inside-codervis',
+    title: 'what code already running inside the dashboard can take, and where it can send it',
+    brief: `Your attacker is code running inside the \`codervis\` container: a compromised transitive
+dependency, which is the principal the egress proxy exists to confine. It runs as root with
+Docker's default capabilities, holds both bearer tokens in memory, and can read everything the
+container mounts. #37 (open, do not re-derive) is its TCP route to the host through the
+\`inside\` bridge gateway. Go past it:
+
+- **The allowed names as exfiltration sinks** (the third critic's gap 2). The proxy filters by
+  the CONNECT target and never sees inside the tunnel. Inside a tunnel to \`claude.ai:443\` or
+  \`chatgpt.com:443\`, the client controls the TLS SNI, the HTTP \`Host\` and the account it
+  authenticates as. Could it post a token to an account it controls at either service, or
+  reach another tenant on a shared CDN edge (domain fronting)? If so, the name filter bounds
+  where bytes go but not who receives them, and \`app/egress.py:3-5\`'s claim ("cannot carry a
+  token anywhere else") holds only for network destinations.
+  - Establish this from the vendors' and CDNs' documentation, and from reasoning about
+    \`app/egress.py\`.
+  - **Never send anything to claude.ai or chatgpt.com.**
+  - You may demonstrate SNI or \`Host\` passthrough on a throwaway stack whose \`EGRESS_ALLOW\`
+    admits a local stub TLS server you run in your scratch directory.
+- **The whole-tree mounts** (gap 3). \`docker-compose.yml\` mounts all of \`~/.claude\` and
+  \`~/.codex\`, but the app reads three paths. What do those trees hold beyond the two tokens:
+  MCP server configuration and environments, settings, history, third-party text in
+  transcripts? Establish the contents from each vendor's documentation, **never from the
+  operator's copy**. The first run refuted "whole trees mounted" because it needed a separate
+  file-read primitive. For this attacker, that premise does not hold.
+- **Root and \`NET_RAW\`** (gap 4). The Dockerfile has no \`USER\`, and the \`codervis\`
+  service has no \`cap_drop\`. What do raw frames on the \`inside\` bridge (\`AF_PACKET\`,
+  ARP, IPv6 link-local) add to the reach the third run measured through the IP stack alone?
+  Probe it on a throwaway stack.
+
+**This lane may start a throwaway copy of the stack.** Use \`docker compose -p
+sweep-inside-<anything>\`, with the same rules as any throwaway stack: a copy of the worktree in
+your scratch directory, \`container_name\` overridden, synthetic credentials, loopback
+publish, and \`down --rmi local\` before you return. For every finding, say whether the fix
+lives in what ships (the compose file, the image, the app) or only in the operator's host. The
+latter is advice, not a repository fix.`,
+  },
+  {
+    key: 'supply-chain',
+    title: 'what the build, CI and GitHub supply, and what they will serve once public',
+    brief: `Your attackers are whoever controls something this repository pulls in or publishes:
+an upstream action or package, a registry, a pull request from a fork once the repository is
+public, or anyone who reads GitHub's copy of the history. No lane has owned this since the
+first run's deploy lane, which saw a much smaller CI file.
+
+- **CI and Dependabot** (the third critic's gap 8). \`.github/workflows/ci.yml\` has changed by
+  about 99 lines since the first sweep, and \`.github/dependabot.yml\` has never had a record.
+  Cover:
+  - the \`uses:\` lines, all pinned by tag
+  - the \`type=gha,mode=max\` build cache, and whether a \`pull_request\` build from a fork can
+    write a scope a \`main\` build later reads
+  - each job's \`permissions\`
+  - the egress job's \`docker compose up --build\`
+  - any interpolation of attacker-controllable text into a \`run:\` step
+  - what Dependabot does and does not cover
+- **Advisories across the image** (gap 12, named by two critics). Check the resolved pip
+  closure at its current versions (fastapi 0.141.1, starlette 1.7.0, uvicorn 0.53.0 and the
+  rest; resolve it in a scratch venv) and the Debian packages in \`python:3.14-slim\`, against
+  published advisories. Use pip-audit or OSV, and Debian's security tracker. Say which
+  advisories are reachable in this tree and why, and give version numbers, not adjectives.
+- **Shared variable names with issuebot** (gap 9). issuebot runs on this host, and
+  \`app/egress.py\` was ported from it. Does issuebot's setup export variables that codervis's
+  compose file interpolates, such as \`EGRESS_ALLOW\`, \`DASHBOARD_*\` or \`*_HOME\`? An
+  operator shell configured for issuebot would then widen codervis's egress allow-list or
+  mounts without warning. Establish this from issuebot's *tracked* source and docs:
+  \`git -C ~/_dev/issuebot ls-files\` and \`git -C ~/_dev/issuebot show HEAD:<path>\`. Never
+  read its \`.env\` or any untracked file, and never the operator's shell environment.
+- **History GitHub will serve by SHA** (gap 11). The third run's publication lane showed that
+  GitHub serves force-pushed-over commits by SHA. It could not see rewrites older than the
+  events API's window. Establish whether the repository activity endpoint reaches further
+  back, and what its retention is. Scan whatever it lists with prefix-only rules: quote at
+  most six characters of any candidate, and never a full value.`,
+  },
+  {
+    key: 'assurance',
+    title: 'the claims tests, specs and agent-read text make, against what enforces them',
+    brief: `Your attacker is anyone who benefits from a claim nobody checks: a regression that
+passes a green suite, or an agent that acts on text a stranger wrote while holding the
+operator's shell. #38 (open, do not re-derive) is the reader-level test watcher. Cover:
+
+- **The gate-level tests** (the third critic's gap 5). \`tests/test_activity_gate.py\` (297
+  lines) should enforce the no-link rule, the hard-link rule, \`O_NOFOLLOW\` and each reader's
+  operations. Check it by mutation. Copy the worktree into your scratch directory, remove one
+  rule at a time from the copy's \`app/activity_gate.py\`, and run the gate tests against the
+  copy, sealed, with \`PYTHONDONTWRITEBYTECODE=1\` and \`-p no:cacheprovider\`. A rule whose
+  removal leaves the suite green is a vacuous-test finding, and its \`attack_path\` is the
+  regression it would let through. Never mutate the worktree itself.
+- **The unarchived design specs** (gap 15, named by three critics).
+  \`docs/superpowers/specs/2026-06-08-browser-widget-toggles-design.md\` (including its :138
+  claim that "OAuth tokens are never logged or returned") and
+  \`docs/superpowers/specs/2026-06-08-agy-1.0.6-compatibility-design.md\`. Check each stated
+  invariant against the code, and whether either spec reads as work still to do. Record a read
+  of each, or declare it out of scope with a reason.
+- **Container logs as agent input** (gap 6). uvicorn's default access log records the path and
+  query string of every request, including refused ones, so any client of the published port
+  can write text into it. CLAUDE.md and AGENTS.md tell agents to run \`docker compose logs\`,
+  and AGENTS.md's list of text other principals can write does not name container logs.
+  Establish what an attacker can put there and what an agent reading it is told.
+- **The sweep's own tooling** (gap 7). Review \`.claude/skills/security-sweep/SKILL.md\` and
+  \`.claude/workflows/security-sweep.js\` as they stand at this commit. They are repo-shipped
+  text that runs agents unattended on the machine that holds both tokens, builds throwaway
+  stacks, and files issues with the operator's GitHub credentials. What are its agents
+  permitted and told to do? Where does a prompt grant more than its lane needs? Would text
+  from the tracker or a log reach an agent that can act on it?
+
+The scope rule the triage pass applies holds here too: a fix to repo-shipped text or tooling is
+a change to that text or tooling, never a setting that constrains the operator's own
+environment.`,
+  },
+]
+
+const LANE_SETS = {
+  baseline: BASELINE_LANES,
+  gaps: GAP_LANES,
+  fixes: FIX_LANES,
+  unowned: UNOWNED_LANES,
+}
 const LANES = LANE_SETS[laneSet]
 if (!LANES) {
   throw new Error(`unknown lane set ${laneSet}; expected one of ${Object.keys(LANE_SETS).join(', ')}`)
