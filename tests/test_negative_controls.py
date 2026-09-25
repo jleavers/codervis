@@ -266,6 +266,30 @@ MUTATIONS: tuple[Mutation, ...] = (
             f"{EGRESS_TESTS}::test_the_default_list_is_the_two_usage_endpoints_and_nothing_else",
         ),
     ),
+    Mutation(
+        key="egress-ipv6-routes-unread",
+        area=EGRESS,
+        rule="the on-link half derives candidates from the IPv6 table as well as the IPv4 one",
+        path="app/egress.py",
+        before="    if ipv6_route_table is not None:",
+        after="    if False:",
+        caught_by=(
+            f"{EGRESS_TESTS}::test_the_check_dials_the_ipv6_gateway_a_dual_stack_network_would_have",
+            f"{EGRESS_TESTS}::test_the_on_link_addresses_include_the_gateway_of_a_second_family",
+        ),
+    ),
+    Mutation(
+        key="egress-ipv6-table-unreadable-reads-as-absent",
+        area=EGRESS,
+        rule="an IPv6 table that is there and will not be read is unverified, not an absent family",
+        path="app/egress.py",
+        before='    if not os.path.exists(path):\n        return ""\n    return read_route_table(path)',
+        after='    return read_route_table(path) or ""',
+        caught_by=(
+            f"{EGRESS_TESTS}::test_an_ipv6_table_that_will_not_read_is_unverified_beside_what_was_still_dialled",
+            f"{EGRESS_TESTS}::test_read_ipv6_route_table_tells_a_kernel_without_ipv6_from_one_that_would_not_read",
+        ),
+    ),
     # ---------------------------------------------------------------------- the compose shape
     Mutation(
         key="compose-inside-not-internal",

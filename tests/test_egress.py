@@ -8,7 +8,9 @@ must not become a packet to whatever subnet the suite happens to be running on.
 
 Two probes here do touch the machine, and both stay on it: `probe_on_link`'s silence case dials
 169.254.0.1, a link-local address no route reaches, and `own_addresses` resolves this host's own
-name. Neither leaves the host, and neither is the thing being asserted anywhere else.
+name. Neither leaves the host, and neither is the thing being asserted anywhere else. The IPv6
+half is driven the same way -- a synthetic `ipv6_route` table for what gets derived, and a
+listener the test started on `::1` for what a v6 literal does when it is dialled for real.
 
 The compose topology around the proxy is covered by tests/test_compose_topology.py and, end to
 end, by the CI `egress` job.
@@ -48,6 +50,7 @@ from app.egress import (
     ON_LINK_NO_ANSWER,
     ON_LINK_REFUSED,
     ON_LINK_UNVERIFIED,
+    IPV6_ROUTE_TABLE_PATH,
     PROBE_DENIED_HOST,
     PROBE_ONLINK_PORTS,
     ROUTE_TABLE_PATH,
@@ -69,6 +72,7 @@ from app.egress import (
     probe_direct,
     probe_on_link,
     probe_proxy,
+    read_ipv6_route_table,
     read_route_table,
     serve,
     serve_until_stopped,
@@ -106,6 +110,19 @@ def _dead_port() -> int:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         return probe.getsockname()[1]
+
+
+def _pin_tables(monkeypatch, route_table: str | None, ipv6_route_table: str | None = "") -> None:
+    """Both routing tables, for a case that lets `check` read them.
+
+    Both, or the case is the machine's: a runner with an IPv6 prefix on-link would contribute a
+    candidate this test did not create -- a probe to an address the suite knows nothing about,
+    and a result that differs between a laptop and a runner. `""` is a kernel with no IPv6,
+    which is what these cases are about unless one says otherwise, and `None` is a table that
+    could not be read.
+    """
+    monkeypatch.setattr(egress, "read_route_table", lambda *a, **k: route_table)
+    monkeypatch.setattr(egress, "read_ipv6_route_table", lambda *a, **k: ipv6_route_table)
 
 
 # --- the allow-list, as text ----------------------------------------------------------
@@ -579,8 +596,9 @@ def test_nothing_to_probe_names_where_the_candidates_should_have_come_from() -> 
     assert "the candidates passed in" in from_caller[0][1]
     assert "routing table" not in from_caller[0][1]
 
-    # A header-only table, so the other branch is pinned without reading this machine's state.
-    with mock.patch.object(egress, "read_route_table", lambda *a, **k: ROUTE_HEADER):
+    # Header-only tables, so the other branch is pinned without reading this machine's state.
+    with pytest.MonkeyPatch.context() as patch:
+        _pin_tables(patch, ROUTE_HEADER)
         from_table = egress._on_link_results(None, ports=[443], probe=stub, timeout_s=1)
     assert [ok for ok, _ in from_table] == [False]
     assert "the routing table" in from_table[0][1]
@@ -616,7 +634,8 @@ async def test_a_name_that_will_not_resolve_passes_only_with_no_default_route() 
             (ROUTED_ROUTE_TABLE, False, "this container has a default route"),
             (None, False, f"{ROUTE_TABLE_PATH} could not be read"),
         ):
-            with mock.patch.object(egress, "read_route_table", lambda *a, **k: table):
+            with pytest.MonkeyPatch.context() as patch:
+                _pin_tables(patch, table)
                 results = await rig.run(direct_probe=lambda *_a, **_k: DIRECT_NO_DNS)
             line = [(ok, text) for ok, text in results if "example.com" in text]
             assert len(line) == 1, results
@@ -736,7 +755,8 @@ def test_readme_shows_the_lines_the_check_actually_prints(monkeypatch) -> None:
     # and still call them both passes. Comparing the formatted line -- verdict prefix included
     # -- is what ties each one to the `OK` or `FAIL` README claims for it.
     def direct_line(table: str | None) -> str:
-        with mock.patch.object(egress, "read_route_table", lambda *a, **k: table):
+        with pytest.MonkeyPatch.context() as patch:
+            _pin_tables(patch, table)
             results = check(
                 {"HTTPS_PROXY": proxy},
                 direct=("example.com", 443),
@@ -931,6 +951,285 @@ def test_an_on_link_default_route_derives_nothing() -> None:
         "eth0\t00000000\t00000000\t0001\t0\t0\t0\t00000000\t0\t0\t0\n"
     )
     assert on_link_addresses(on_link_default) == []
+
+
+
+
+def _column6(address: str) -> str:
+    """An address as /proc/net/ipv6_route renders it: the sixteen bytes as hex, in wire order.
+
+    Built rather than written out, as `_column` is -- and the contrast is the point. There is no
+    host order to undo here, because `%pi6` prints the bytes in the order they go on the wire, so
+    a fixture that is built from `inet_pton` is the same on either endianness and pins that the
+    parser does no unpacking.
+    """
+    return socket.inet_pton(socket.AF_INET6, address).hex()
+
+
+def _route6(
+    iface: str, destination: str, prefixlen: int, gateway: str, flags: str = "00000001"
+) -> str:
+    """One line of /proc/net/ipv6_route, which is not shaped like /proc/net/route's.
+
+    No header above it, the device *last* rather than first, and ten columns: destination and
+    its prefix length, a source prefix and length, the gateway, then metric, refcount, use,
+    flags and the device.
+    """
+    return (
+        " ".join(
+            (
+                _column6(destination),
+                f"{prefixlen:02x}",
+                _column6("::"),
+                "00",
+                _column6(gateway),
+                "00000100",
+                "00000001",
+                "00000000",
+                flags,
+                iface,
+            )
+        )
+        + "\n"
+    )
+
+
+# RTF_NONEXTHOP | RTF_REJECT: the `unreachable default` an IPv6-enabled netns holds when it has
+# nowhere to send the family, which is in every such container's table and is not a way out.
+REJECT_FLAGS = f"{0x00200200:08x}"
+# The IPv6 side of a dual-stack `inside` network, as a container joined to one holds it: the ULA
+# prefix the compose file would configure, the link-local prefix every interface has, multicast,
+# and the kernel's own two entries on `lo`. Nothing here is a way off the container, and the
+# only candidate in it is fd00:cafe::1 -- the first address of the container's own prefix, which
+# is where Docker puts a bridge's IPv6 gateway.
+INTERNAL_IPV6_ROUTE_TABLE = (
+    _route6("eth0", "fd00:cafe::", 64, "::")
+    + _route6("eth0", "fe80::", 64, "::")
+    + _route6("eth0", "ff00::", 8, "::")
+    + _route6("lo", "::1", 128, "::")
+    + _route6("lo", "::", 0, "::", flags=REJECT_FLAGS)
+)
+# The same container given an IPv6 default route as well, which is what a dual-stack network
+# that is not internal does: fd00:cafe::1 is the gateway it names.
+ROUTED_IPV6_ROUTE_TABLE = (
+    _route6("eth0", "::", 0, "fd00:cafe::1", flags="00000003") + INTERNAL_IPV6_ROUTE_TABLE
+)
+
+
+def test_the_on_link_addresses_include_the_gateway_of_a_second_family() -> None:
+    """A network with `enable_ipv6` has a second gateway address, on-link in the container's own
+    prefix and reachable with no route exactly as the first one is (#42). Both tables are read,
+    and the IPv4 candidates keep their place at the front.
+
+    What the IPv6 table holds beside that prefix is in the fixture on purpose: `fe80::/64`,
+    `ff00::/8` and two `lo` entries are in every IPv6-enabled container, and none of them is an
+    address to dial -- so a derivation that took "the first address of each on-link prefix"
+    literally would spend the probe cap on three addresses nothing holds.
+    """
+    assert on_link_addresses(INTERNAL_ROUTE_TABLE, INTERNAL_IPV6_ROUTE_TABLE) == [
+        "172.30.0.1",
+        "fd00:cafe::1",
+    ]
+
+
+def test_a_gateway_an_ipv6_route_names_comes_first_and_is_not_repeated() -> None:
+    """Gateways before derived addresses, across both families, and the same address named by a
+    route and derived from a prefix is one candidate."""
+    assert on_link_addresses(INTERNAL_ROUTE_TABLE, ROUTED_IPV6_ROUTE_TABLE) == [
+        "fd00:cafe::1",
+        "172.30.0.1",
+    ]
+
+
+def test_an_ipv6_link_local_gateway_carries_the_device_it_is_reachable_through() -> None:
+    """A router-advertised default route names a link-local gateway, and a link-local address
+    cannot be dialled without a scope: `connect` to a bare `fe80::1` fails inside this container,
+    which would report as "not probed" for an address the table says is reachable. The device is
+    in the table, so the candidate carries it."""
+    table = _route6("eth0", "::", 0, "fe80::1", flags="00000003")
+    assert on_link_addresses(ROUTE_HEADER, table) == ["fe80::1%eth0"]
+
+
+@pytest.mark.parametrize(
+    "table",
+    [
+        "",
+        "not a route table\n",
+        # A line that is short of the nine columns the kernel prints.
+        "00000000000000000000000000000000 00 eth0\n",
+        # Columns that are not hex, and one that is hex of the wrong length.
+        _route6("eth0", "fd00:cafe::", 64, "::").replace(_column6("fd00:cafe::"), "z" * 32),
+        _route6("eth0", "fd00:cafe::", 64, "::").replace(_column6("fd00:cafe::"), "ff"),
+        # A /127 and a /128 hold no separate gateway address to derive, as a /31 and a /32 do
+        # not over IPv4.
+        _route6("eth0", "fd00:cafe::", 127, "::"),
+        _route6("eth0", "fd00:cafe::", 128, "::"),
+        # `::/0` on-link: a default route is not a subnet this container is on, and deriving its
+        # first address would report ::1 as checked.
+        _route6("eth0", "::", 0, "::"),
+        # Link-local: built from the interface's MAC rather than handed out, so nothing is at
+        # fe80::1. Multicast: a group, not a host. Both are on-link in every such container.
+        _route6("eth0", "fe80::", 64, "::"),
+        _route6("eth0", "ff00::", 8, "::"),
+        # The kernel's own entries, which are on `lo`.
+        _route6("lo", "::1", 128, "::"),
+        _route6("lo", "fd00:cafe::", 64, "::"),
+        # A reject route: this netns saying it has nowhere to send the family, on a real device.
+        _route6("eth0", "::", 0, "::", flags=REJECT_FLAGS),
+        _route6("eth0", "fd00:cafe::", 64, "::", flags=REJECT_FLAGS),
+    ],
+)
+def test_an_ipv6_table_yields_no_candidate_it_should_not_rather_than_raising(table: str) -> None:
+    assert on_link_addresses(ROUTE_HEADER, table) == []
+
+
+def test_neither_parser_reads_the_other_family_s_table() -> None:
+    """Two files are read by path, so which one a parser was handed is worth pinning: a v4 table
+    parsed as a v6 one derives hex nonsense, and `check` would dial it."""
+    assert on_link_addresses(INTERNAL_IPV6_ROUTE_TABLE) == []
+    assert on_link_addresses(ROUTE_HEADER, INTERNAL_ROUTE_TABLE) == []
+
+
+def test_the_ipv6_table_is_optional_and_not_read_is_not_empty() -> None:
+    """`None` is "not read" and derives nothing, which is what a caller with one table gets."""
+    assert on_link_addresses(INTERNAL_ROUTE_TABLE, None) == ["172.30.0.1"]
+    assert on_link_addresses(INTERNAL_ROUTE_TABLE) == ["172.30.0.1"]
+
+
+def test_read_ipv6_route_table_tells_a_kernel_without_ipv6_from_one_that_would_not_read(
+    tmp_path,
+) -> None:
+    """Two answers that must not be one value. No file is no IPv6 stack: nothing is on-link over
+    a family the netns does not have, so an empty table is honest and the half rests on the
+    other family. A file that is there and will not be read leaves the family unknown, and
+    `_on_link_results` reports that as unverified rather than passing over it.
+    """
+    assert read_ipv6_route_table(str(tmp_path / "nonexistent")) == ""
+    # There, and not readable as a file: the same OSError any other unreadable path gives.
+    assert read_ipv6_route_table(str(tmp_path)) is None
+
+
+def test_has_default_route_reads_both_families() -> None:
+    """A container whose only default route is an IPv6 one has a way off its own subnets, and
+    that is what the direct half's fallback asks (#42). The `unreachable default` on `lo` that
+    every IPv6-enabled netns holds must not read as one, or the fallback would call every
+    correct deployment unverified."""
+    assert has_default_route(INTERNAL_ROUTE_TABLE, INTERNAL_IPV6_ROUTE_TABLE) is False
+    assert has_default_route(INTERNAL_ROUTE_TABLE, ROUTED_IPV6_ROUTE_TABLE) is True
+    assert has_default_route(INTERNAL_ROUTE_TABLE, None) is False
+    # A reject route on a real device is not a way out either.
+    assert has_default_route(INTERNAL_ROUTE_TABLE, _route6("eth0", "::", 0, "::", REJECT_FLAGS)) \
+        is False
+
+
+def _ipv6_loopback() -> socket.socket:
+    """A listening socket on `::1`, or a skip where this machine has no IPv6 loopback.
+
+    `socket.has_ipv6` is a compile-time flag, so it is not the question: a runner can have the
+    module and no address to bind.
+    """
+    if not socket.has_ipv6:  # pragma: no cover -- depends on the interpreter build
+        pytest.skip("this interpreter was built without IPv6")
+    listener = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    try:
+        listener.bind(("::1", 0))
+    except OSError as exc:  # pragma: no cover -- depends on the machine
+        listener.close()
+        pytest.skip(f"no IPv6 loopback address here: {exc.errno}")
+    return listener
+
+
+def test_probe_on_link_dials_an_ipv6_literal_as_ipv6() -> None:
+    """The probe needs no family told to it: a literal from the routing table is dialled in the
+    family it is written in, and an accept and a refusal are the same two findings as over IPv4.
+
+    Hermetic like the IPv4 case: the only address dialled is a loopback socket this test made.
+    """
+    with _ipv6_loopback() as listener:
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        assert probe_on_link("::1", port, timeout_s=2) == ON_LINK_ACCEPTED
+    # The listener is closed, so the same port is now a refusal from a live host.
+    assert probe_on_link("::1", port, timeout_s=2) == ON_LINK_REFUSED
+
+
+def test_the_on_link_half_reports_an_ipv6_address_as_an_address_and_a_port() -> None:
+    """`fd00:cafe::1:443` names neither, and this line is one an operator pastes back."""
+    accepted = check_on_link(
+        ["fd00:cafe::1"], ports=[443], probe=lambda *_a, **_k: ON_LINK_ACCEPTED, timeout_s=1
+    )
+    assert [ok for ok, _ in accepted] == [False]
+    assert "[fd00:cafe::1]:443 accepted a direct connection" in accepted[0][1]
+    refused = check_on_link(
+        ["fd00:cafe::1"], ports=[443], probe=lambda *_a, **_k: ON_LINK_REFUSED, timeout_s=1
+    )
+    assert [ok for ok, _ in refused] == [False]
+    assert "fd00:cafe::1 refused a direct connection on port 443" in refused[0][1]
+    silent = check_on_link(
+        ["fd00:cafe::1"], ports=[443], probe=lambda *_a, **_k: ON_LINK_NO_ANSWER, timeout_s=1
+    )
+    assert [ok for ok, _ in silent] == [True]
+
+
+def test_an_ipv6_table_that_will_not_read_is_unverified_beside_what_was_still_dialled(
+    monkeypatch,
+) -> None:
+    """A file that is there and will not be read leaves one family unknown, and the rule here is
+    that a probe not made establishes nothing -- so it fails, by name, rather than being passed
+    over. The IPv4 candidates are still worth dialling, so the half does both: one failure for
+    the family it could not read, and the probes for the family it could.
+    """
+    dialled: list[str] = []
+
+    def probe(addr: str, _port: int, **_kwargs: object) -> str:
+        dialled.append(addr)
+        return ON_LINK_NO_ANSWER
+
+    _pin_tables(monkeypatch, INTERNAL_ROUTE_TABLE, None)
+    results = egress._on_link_results(None, ports=[443], probe=probe, timeout_s=1)
+    assert dialled == ["172.30.0.1"], results
+    unverified = [(ok, line) for ok, line in results if IPV6_ROUTE_TABLE_PATH in line]
+    assert [ok for ok, _ in unverified] == [False]
+    assert "unverified for that family" in unverified[0][1]
+    # The IPv4 candidate still got its own line, which is the half not giving up on what it could
+    # establish: a family that could not be read is one failure, not a silent whole.
+    assert any(line.startswith("172.30.0.1 answered nothing") for _ok, line in results)
+
+
+def test_a_kernel_without_ipv6_is_not_an_unreadable_table(monkeypatch) -> None:
+    """Nothing is on-link over a family the netns does not have, so the half rests on the other
+    one and says nothing about IPv6. Reporting unverified there would fail every container the
+    stack actually ships on."""
+    _pin_tables(monkeypatch, INTERNAL_ROUTE_TABLE, "")
+    results = egress._on_link_results(
+        None, ports=[443], probe=lambda *_a, **_k: ON_LINK_NO_ANSWER, timeout_s=1
+    )
+    assert all(ok for ok, _ in results), results
+    assert not [line for _ok, line in results if IPV6_ROUTE_TABLE_PATH in line]
+
+
+def test_resolved_addresses_asks_for_both_families() -> None:
+    """A peer's address is matched as a string, so a family left out of the lookup is a peer
+    *dialled*: the proxy's own IPv6 address would fail a correct dual-stack deployment (#42).
+
+    The resolver is stubbed rather than given a name to look up: which families this machine's
+    `localhost` answers with is the machine's business, and the assertion is about what this
+    function asks for.
+    """
+    asked: list[object] = []
+
+    def getaddrinfo(host: str, port: object, family: int, kind: int):
+        asked.append((host, family, kind))
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("172.30.0.1", 0)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fd00:cafe::1", 0, 0, 0)),
+        ]
+
+    with mock.patch.object(socket, "getaddrinfo", getaddrinfo):
+        assert egress.resolved_addresses("egress") == frozenset(
+            {"172.30.0.1", "fd00:cafe::1"}
+        )
+    assert asked == [("egress", socket.AF_UNSPEC, socket.SOCK_STREAM)]
 
 
 def test_read_route_table_says_when_there_is_none() -> None:
@@ -1247,7 +1546,7 @@ async def test_the_check_passes_when_the_subnets_first_address_is_this_container
     def unexpected(*args: object, **kwargs: object) -> str:
         raise AssertionError(f"dialled its own address: {args} {kwargs}")
 
-    monkeypatch.setattr(egress, "read_route_table", lambda *a, **k: INTERNAL_ROUTE_TABLE)
+    _pin_tables(monkeypatch, INTERNAL_ROUTE_TABLE)
     monkeypatch.setattr(egress, "own_addresses", lambda: frozenset({"172.30.0.1"}))
     async with _CheckRig() as rig:
         results = await asyncio.to_thread(
@@ -1286,7 +1585,7 @@ async def test_the_check_accounts_for_the_proxys_address_rather_than_dialling_it
     def unexpected(*args: object, **kwargs: object) -> str:
         raise AssertionError(f"dialled the proxy's own address: {args} {kwargs}")
 
-    monkeypatch.setattr(egress, "read_route_table", lambda *a, **k: INTERNAL_ROUTE_TABLE)
+    _pin_tables(monkeypatch, INTERNAL_ROUTE_TABLE)
     monkeypatch.setattr(egress, "own_addresses", lambda: frozenset({"172.30.0.2"}))
     monkeypatch.setattr(egress, "resolved_addresses", lambda _host: frozenset({"172.30.0.1"}))
     async with _CheckRig() as rig:
@@ -1315,7 +1614,7 @@ async def test_the_check_dials_the_gateway_an_engine_that_ignored_the_option_lef
     """The other side of the same case, and the one the issue is about: where the proxy's name
     resolves somewhere else, the subnet's first address is nobody's peer -- it is the host's end
     of the bridge -- so it is dialled, and answering fails the check."""
-    monkeypatch.setattr(egress, "read_route_table", lambda *a, **k: INTERNAL_ROUTE_TABLE)
+    _pin_tables(monkeypatch, INTERNAL_ROUTE_TABLE)
     monkeypatch.setattr(egress, "own_addresses", lambda: frozenset({"172.30.0.2"}))
     monkeypatch.setattr(egress, "resolved_addresses", lambda _host: frozenset({"172.30.0.3"}))
     async with _CheckRig() as rig:
@@ -1333,6 +1632,135 @@ async def test_the_check_dials_the_gateway_an_engine_that_ignored_the_option_lef
     failures = [line for ok, line in results if not ok]
     assert len(failures) == 1
     assert "172.30.0.1:443 accepted a direct connection" in failures[0]
+
+
+@asynctest
+@pytest.mark.parametrize(
+    "outcome, passes",
+    [(ON_LINK_ACCEPTED, False), (ON_LINK_REFUSED, False), (ON_LINK_NO_ANSWER, True)],
+)
+async def test_the_check_dials_the_ipv6_gateway_a_dual_stack_network_would_have(
+    monkeypatch, outcome: str, passes: bool
+) -> None:
+    """The issue's first criterion, end to end through `check` (#42): an IPv6 address this
+    container can reach on-link fails the check on the same terms as an IPv4 one -- an accept and
+    a refusal both fail, silence passes.
+
+    The shape is a dual-stack `inside` network on an engine that honoured `gateway_mode_ipv4` and
+    not the IPv6 one, which is what an operator adding `enable_ipv6` to that network without the
+    second option would have: the IPv4 candidate is this container's own address, so it is
+    accounted for, and `fd00:cafe::1` -- the host's end of the bridge over IPv6 -- is dialled.
+    Both tables are injected, so nothing here depends on the machine the suite runs on, and the
+    probe is a stub, so no packet goes to an address this test did not name.
+    """
+    dialled: list[tuple[str, int]] = []
+
+    def probe(addr: str, port: int, **_kwargs: object) -> str:
+        dialled.append((addr, port))
+        return outcome
+
+    _pin_tables(monkeypatch, INTERNAL_ROUTE_TABLE, INTERNAL_IPV6_ROUTE_TABLE)
+    monkeypatch.setattr(egress, "own_addresses", lambda: frozenset({"172.30.0.1"}))
+    # The proxy's name resolves nowhere here, so the only address accounted for is this
+    # container's: the IPv6 candidate stands for the bridge's gateway and not for `egress`.
+    monkeypatch.setattr(egress, "resolved_addresses", lambda _host: frozenset())
+    async with _CheckRig() as rig:
+        results = await asyncio.to_thread(
+            functools.partial(
+                check,
+                rig.environ,
+                direct=("example.com", 443),
+                direct_probe=lambda *_a, **_k: DIRECT_NO_ROUTE,
+                on_link=None,
+                on_link_ports=[443],
+                on_link_probe=probe,
+                timeout_s=2,
+            )
+        )
+    assert dialled == [("fd00:cafe::1", 443)], results
+    line = [(ok, text) for ok, text in results if "fd00:cafe::1" in text]
+    assert len(line) == 1, results
+    assert line[0][0] is passes, line
+    assert all(ok for ok, _ in results) is passes, results
+    if outcome == ON_LINK_ACCEPTED:
+        # The address and the port as an operator would paste them back.
+        assert "[fd00:cafe::1]:443 accepted a direct connection" in line[0][1]
+    elif outcome == ON_LINK_REFUSED:
+        assert "refused a direct connection on port 443" in line[0][1]
+
+
+@asynctest
+async def test_the_check_accounts_for_the_proxys_ipv6_address_rather_than_dialling_it(
+    monkeypatch,
+) -> None:
+    """The dual-stack shape of a deployment that is whole, which must not fail on its own peers.
+
+    Both families are accounted for the way one was: this container's addresses and the proxy's,
+    matched as strings against what the tables yielded. A resolver asked for IPv4 alone would
+    leave the proxy's IPv6 address unlabelled, and the check would dial `egress` and fail on the
+    RST -- reporting the bound broken in the deployment where it holds.
+    """
+
+    def unexpected(*args: object, **kwargs: object) -> str:
+        raise AssertionError(f"dialled a peer: {args} {kwargs}")
+
+    _pin_tables(monkeypatch, INTERNAL_ROUTE_TABLE, INTERNAL_IPV6_ROUTE_TABLE)
+    monkeypatch.setattr(
+        egress, "own_addresses", lambda: frozenset({"172.30.0.2", "fd00:cafe::2"})
+    )
+    monkeypatch.setattr(
+        egress, "resolved_addresses", lambda _host: frozenset({"172.30.0.1", "fd00:cafe::1"})
+    )
+    async with _CheckRig() as rig:
+        results = await asyncio.to_thread(
+            functools.partial(
+                check,
+                rig.environ,
+                direct=("example.com", 443),
+                direct_probe=lambda *_a, **_k: DIRECT_NO_ROUTE,
+                on_link=None,
+                on_link_ports=[443],
+                on_link_probe=unexpected,
+                timeout_s=2,
+            )
+        )
+    assert all(ok for ok, _ in results), results
+    printed = [line for _ok, line in results]
+    for addr in ("172.30.0.1", "fd00:cafe::1"):
+        assert f"{addr} is on-link by design: {egress.PEER_PROXY.format(proxy=rig.url)}" in printed
+
+
+@asynctest
+async def test_a_name_that_will_not_resolve_is_unverified_when_the_ipv6_table_will_not_read(
+    monkeypatch,
+) -> None:
+    """The direct half's fallback reads both tables, so both can be the one it could not read --
+    and the line names which file an operator should go and look at. A table that would not be
+    read settles nothing about whether this container has a route off its own subnets, whichever
+    family it held.
+    """
+    _pin_tables(monkeypatch, INTERNAL_ROUTE_TABLE, None)
+    async with _CheckRig() as rig:
+        results = await rig.run(direct_probe=lambda *_a, **_k: DIRECT_NO_DNS)
+    line = [(ok, text) for ok, text in results if "example.com" in text]
+    assert len(line) == 1, results
+    assert line[0][0] is False
+    assert f"could not be looked up and {IPV6_ROUTE_TABLE_PATH} could not be read" in line[0][1]
+    assert "unverified" in line[0][1]
+
+
+@asynctest
+async def test_an_ipv6_default_route_is_a_way_off_this_container_too(monkeypatch) -> None:
+    """The same fallback's other half: a container whose only default route is an IPv6 one has a
+    way off its subnets, so a public name that will not resolve establishes nothing (#42). Read
+    over IPv4 alone this passed, which is the pass this guards."""
+    _pin_tables(monkeypatch, INTERNAL_ROUTE_TABLE, ROUTED_IPV6_ROUTE_TABLE)
+    async with _CheckRig() as rig:
+        results = await rig.run(direct_probe=lambda *_a, **_k: DIRECT_NO_DNS)
+    line = [(ok, text) for ok, text in results if "example.com" in text]
+    assert len(line) == 1, results
+    assert line[0][0] is False
+    assert "this container has a default route" in line[0][1]
 
 
 @pytest.mark.parametrize("proxy", ["http://egress:3128", "egress:3128", "https://egress:3128"])
@@ -1387,7 +1815,7 @@ async def test_the_check_reports_a_proxy_variable_that_will_not_parse(monkeypatc
         dialled.append(addr)
         return ON_LINK_NO_ANSWER
 
-    monkeypatch.setattr(egress, "read_route_table", lambda *a, **k: INTERNAL_ROUTE_TABLE)
+    _pin_tables(monkeypatch, INTERNAL_ROUTE_TABLE)
     monkeypatch.setattr(egress, "own_addresses", lambda: frozenset({"172.30.0.2"}))
     async with _CheckRig() as rig:
         results = await asyncio.to_thread(
@@ -1442,7 +1870,7 @@ async def test_the_check_reads_the_containers_own_routing_table_when_given_none(
         dialled.append(addr)
         return ON_LINK_NO_ANSWER
 
-    monkeypatch.setattr(egress, "read_route_table", lambda *a, **k: INTERNAL_ROUTE_TABLE)
+    _pin_tables(monkeypatch, INTERNAL_ROUTE_TABLE)
     monkeypatch.setattr(egress, "own_addresses", lambda: frozenset({"172.30.0.2"}))
     async with _CheckRig() as rig:
         results = await asyncio.to_thread(
@@ -1463,7 +1891,7 @@ async def test_the_check_reads_the_containers_own_routing_table_when_given_none(
 @asynctest
 async def test_the_check_fails_when_the_routing_table_cannot_be_read(monkeypatch) -> None:
     """Not a platform this can assert the bound on is not the same as a bound that holds."""
-    monkeypatch.setattr(egress, "read_route_table", lambda *a, **k: None)
+    _pin_tables(monkeypatch, None, None)
     async with _CheckRig() as rig:
         results = await asyncio.to_thread(
             functools.partial(
