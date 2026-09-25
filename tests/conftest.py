@@ -33,15 +33,26 @@ settings, an agent hook or a sandbox: #21's committed `.claude/settings.json`
 was reverted (#34, #35) because it bound the operator's own sessions, and
 `tests/test_agent_tooling_context.py` keeps it that way.
 
-What the observer does *not* see, because CPython raises no audit event for
-them, is `os.stat` and `os.lstat`. The stat half of the watcher's claim is
-carried by a structural test instead — see
-`tests/test_reader_filesystem_surface.py`. Nor does the deny check resolve
-symbolic links on every open: it compares an absolute path against each denied
-root and against that root's own `realpath`, which catches a root reached
-through a symlinked `HOME` but not a link planted mid-path by a test. The
-gate's own no-link rule is what covers that, and
-`tests/test_activity_gate.py` pins it.
+**What it does not see**, enumerated because an incomplete list read as
+exhaustive is how #38 happened one level down:
+
+- `os.stat` and `os.lstat`. CPython raises no audit event for either, and a
+  credential file's mtime is enough to publish as `last_activity`. That half
+  is carried by a structural test instead --
+  `tests/test_reader_filesystem_surface.py`.
+- a path opened relative to a directory descriptor (`os.open(name, dir_fd=fd)`).
+  The event carries the relative name, which resolves against the working
+  directory here and so matches no denied root.
+- a link planted mid-path by a test. The deny check compares an absolute path
+  against each denied root and against that root's own `realpath`, which
+  catches a root reached through a symlinked `HOME`; resolving every open
+  would cost a syscall per call. The gate's own no-link rule covers the case
+  that matters, and `tests/test_activity_gate.py` pins it.
+- anything a *child process* does. An audit hook does not cross `fork`/`exec`.
+  The two modules that spawn one -- `tests/test_negative_controls.py` and
+  `tests/test_session_audit.py` -- spawn pytest, which loads this file again
+  and is bounded by it in turn; a test that spawned something else would not
+  be.
 """
 
 from __future__ import annotations
@@ -53,6 +64,7 @@ import shutil
 import socket
 import sys
 import tempfile
+import warnings
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -127,6 +139,10 @@ def _denied_roots() -> frozenset[str]:
     candidates = [
         home / ".claude",
         home / ".codex",
+        # Beside the roots, not under them: an agent's own per-user state file
+        # is a sibling, and prefix matching on a root never reaches a sibling.
+        home / ".claude.json",
+        home / ".codex.json",
         Path("/data/claude"),
         Path("/data/codex"),
         *(Path(value) for value in _AMBIENT_DATA_DIRS if value),
@@ -150,10 +166,21 @@ def _denied_roots() -> frozenset[str]:
             # A root reached through a symlinked HOME is the same root.
             os.path.realpath(os.path.abspath(candidate)),
         ):
-            if any(
-                absolute == keep or keep.startswith(absolute.rstrip(os.sep) + os.sep)
+            contains = [
+                keep
                 for keep in never_denied
-            ):
+                if absolute == keep or keep.startswith(absolute.rstrip(os.sep) + os.sep)
+            ]
+            if contains:
+                # Loudly: the suite carries on, and from here on it is bounded
+                # by less than this file says it is.
+                warnings.warn(
+                    f"tests/conftest.py is not denying {absolute}: it contains "
+                    f"{contains[0]}, which pytest and this suite must be able "
+                    "to read. Point the variable that named it at a directory "
+                    "of its own.",
+                    stacklevel=1,
+                )
                 continue
             roots.add(absolute)
     return frozenset(roots)
@@ -164,8 +191,22 @@ DENIED_ROOTS = _denied_roots()
 
 # ─── 2. The session observer ─────────────────────────────────────────────────
 
-_WATCHED = frozenset({"open", "os.listdir", "os.scandir", "socket.connect"})
+# `socket.connect` is not the only way an address is dialled: UDP leaves
+# through `sendto` and `sendmsg`, which are events of their own. All three
+# carry the address at `args[1]`.
+_ADDRESS_EVENTS = frozenset({"socket.connect", "socket.sendto", "socket.sendmsg"})
 _KINDS = {"open": "open", "os.listdir": "scandir", "os.scandir": "scandir"}
+_WATCHED = frozenset(_KINDS) | _ADDRESS_EVENTS
+
+
+def _resolves_only_to_loopback(name: str) -> bool:
+    try:
+        info = socket.getaddrinfo(name, None)
+    except OSError:
+        return False
+    return bool(info) and all(
+        ipaddress.ip_address(entry[4][0].split("%", 1)[0]).is_loopback for entry in info
+    )
 
 
 class SessionAudit:
@@ -173,12 +214,48 @@ class SessionAudit:
 
     One instance per session, fed by an audit hook. `violations` is what no
     test may do at all; `watch()` is how a test asks what it did do.
+
+    A test holds this object -- `watch()` is a fixture -- so nothing it can
+    reach may disarm the guard. The count is a separate integer rather than
+    `len(violations)`, and `violations` hands back a tuple, so clearing or
+    rebinding the record cannot make a phase look clean; `_watchers` is an
+    immutable tuple rebound whole, so a background refresher thread reading it
+    while a `watch()` enters or leaves sees one state or the other rather than
+    a list mid-mutation.
     """
+
+    KINDS = frozenset({"open", "scandir"})
 
     def __init__(self, denied_roots: frozenset[str]) -> None:
         self._denied = tuple(denied_roots)
-        self.violations: list[str] = []
-        self._watchers: list[tuple[str, list[tuple[str, Path]]]] = []
+        self.__messages: list[str] = []
+        self.__count = 0
+        self._watchers: tuple[tuple[str, list[tuple[str, Path]]], ...] = ()
+
+    @property
+    def violations(self) -> tuple[str, ...]:
+        return tuple(self.__messages)
+
+    @property
+    def count(self) -> int:
+        """Monotonic, and never derived from the messages.
+
+        What fails a phase is that this number moved. The messages say what
+        happened; emptying them changes the report and not the verdict.
+        """
+        return self.__count
+
+    def since(self, mark: int) -> tuple[str, ...]:
+        """What was recorded since `mark`, counted rather than measured."""
+        new = self.__count - mark
+        if new <= 0:
+            return ()
+        kept = tuple(self.__messages[-new:])
+        if len(kept) == new:
+            return kept
+        return kept + (
+            f"{new - len(kept)} more, whose record was emptied during this test",
+        )
 
     # -- what the hook feeds it ------------------------------------------
     def saw_path(self, kind: str, target: object) -> str | None:
@@ -204,19 +281,23 @@ class SessionAudit:
         if not isinstance(host, (str, bytes)):
             return None
         text = host.decode() if isinstance(host, bytes) else host
-        if text == "localhost":
-            return None
         try:
             if ipaddress.ip_address(text.split("%", 1)[0]).is_loopback:
                 return None
         except ValueError:
-            pass  # a name this process did not resolve here: treat as off-box
+            # A name, not a literal. This file's whole thesis is that keying on
+            # a name is the bug, so resolve it and judge the addresses: a
+            # `localhost` that an /etc/hosts entry points off-box is not
+            # loopback whatever it is spelled.
+            if _resolves_only_to_loopback(text):
+                return None
         return self._violation(
             f"socket.connect to {text}:{address[1]}, which is not loopback"
         )
 
     def _violation(self, message: str) -> str:
-        self.violations.append(message)
+        self.__messages.append(message)
+        self.__count += 1
         return message
 
     # -- what a test asks it ---------------------------------------------
@@ -230,11 +311,11 @@ class SessionAudit:
         """
         seen: list[tuple[str, Path]] = []
         entry = (os.path.abspath(scope), seen)
-        self._watchers.append(entry)
+        self._watchers = self._watchers + (entry,)
         try:
             yield seen
         finally:
-            self._watchers.remove(entry)
+            self._watchers = tuple(w for w in self._watchers if w is not entry)
 
 
 AUDIT = SessionAudit(DENIED_ROOTS)
@@ -256,7 +337,7 @@ def _hook(event: str, args: tuple) -> None:
     # assumed.
     if event not in _WATCHED:
         return
-    if event == "socket.connect":
+    if event in _ADDRESS_EVENTS:
         message = AUDIT.saw_address(args[1]) if len(args) > 1 else None
     else:
         message = AUDIT.saw_path(_KINDS[event], args[0]) if args else None
@@ -270,7 +351,7 @@ sys.addaudithook(_hook)
 # ─── 3. Whichever test did it, fails ─────────────────────────────────────────
 
 
-def _report(violations: list[str]) -> str:
+def _report(violations: tuple[str, ...]) -> str:
     listed = "\n".join(f"  - {item}" for item in violations)
     return (
         "this test reached a resource the suite promises it does not touch:\n"
@@ -285,7 +366,7 @@ _phase_watermark = 0
 
 def pytest_runtest_logstart(nodeid: str, location: tuple) -> None:
     global _phase_watermark
-    _phase_watermark = len(AUDIT.violations)
+    _phase_watermark = AUDIT.count
 
 
 @pytest.hookimpl(wrapper=True)
@@ -303,8 +384,8 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
     """
     global _phase_watermark
     report = yield
-    new = AUDIT.violations[_phase_watermark:]
-    _phase_watermark = len(AUDIT.violations)
+    new = AUDIT.since(_phase_watermark)
+    _phase_watermark = AUDIT.count
     if new:
         # A test that failed on its own *and* reached something keeps its own
         # traceback: overwriting it would hide the reason it broke behind the
@@ -325,7 +406,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     recorded and never mentioned. The run fails; a green exit status is the one
     thing this file exists to stop being available cheaply.
     """
-    unaccounted = AUDIT.violations[_phase_watermark:]
+    unaccounted = AUDIT.since(_phase_watermark)
     if unaccounted:
         session.exitstatus = 1
         reporter = session.config.pluginmanager.get_plugin("terminalreporter")

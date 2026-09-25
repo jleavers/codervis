@@ -153,6 +153,33 @@ def test_dialling_a_non_loopback_address():
     sock.close()
 
 
+def test_udp_sendto_a_non_loopback_address():
+    """`socket.connect` is not the only way an address is dialled."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    _swallow(lambda: sock.sendto(b"x", ("192.0.2.1", 9)))
+    sock.close()
+
+
+def test_udp_sendmsg_a_non_loopback_address():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    _swallow(lambda: sock.sendmsg([b"x"], [], 0, ("192.0.2.1", 9)))
+    sock.close()
+
+
+def test_clearing_the_record_does_not_clear_the_finding(filesystem_audit):
+    """The record is a test's to read, never a test's to empty."""
+    _swallow(lambda: io.FileIO(str(CREDENTIALS)).read())
+    for attempt in (
+        lambda: filesystem_audit.violations.clear(),
+        lambda: filesystem_audit._SessionAudit__messages.clear(),
+        lambda: setattr(filesystem_audit, "_SessionAudit__messages", []),
+    ):
+        try:
+            attempt()
+        except AttributeError:
+            pass
+
+
 def test_a_failure_of_its_own_keeps_its_own_reason():
     """Violating and failing: the harness must add a reason, not replace one."""
     _swallow(lambda: io.FileIO(str(CREDENTIALS)).read())
@@ -182,6 +209,9 @@ MUST_FAIL = (
     "test_os_open_of_a_host_credential_file",
     "test_os_scandir_of_a_host_tree",
     "test_dialling_a_non_loopback_address",
+    "test_udp_sendto_a_non_loopback_address",
+    "test_udp_sendmsg_a_non_loopback_address",
+    "test_clearing_the_record_does_not_clear_the_finding",
     "test_a_failure_of_its_own_keeps_its_own_reason",
 )
 MUST_PASS = "test_control_reading_scratch_and_dialling_loopback"
