@@ -1,0 +1,8 @@
+# A change to these paths is a change to what every agent working in a checkout inherits:
+# the instruction files it is handed, the sweep skill and workflow it runs, and the CI that
+# runs on every pull request. Review one as a change to the agent's privileges, not as
+# documentation -- see "What repo-shipped agent text may say" in AGENTS.md.
+/CLAUDE.md     @jleavers
+/AGENTS.md     @jleavers
+/.claude/      @jleavers
+/.github/      @jleavers
