@@ -44,25 +44,30 @@ asks the operator first — several hundred prompts across a run. Auto mode's cl
 approves the routine read-only commands and still stops the risky ones. Check the mode before
 launching, not after the prompts start.
 
-On Windows chain with `;` and use PowerShell equivalents; the commands below are the Bash form.
+**Write each command out literally.** Auto mode can switch on Claude Code's read block without
+any settings file, and under it a command the permission checker cannot analyze — one with
+`$VAR`, `$(...)`, a `cd` before `git`, or an inline loop — asks the operator. So take the stamp
+first, then substitute it by hand into the commands below (shown with `<STAMP>`). The workflow
+tells every agent the same rule (`COMMAND_SHAPES`).
+
+On Windows use PowerShell equivalents; the commands below are the Bash form, run from the
+repository root.
 
 ```bash
-STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-WT=.claude/worktrees/security-sweep-$STAMP
-RD=.claude/security-sweeps/$STAMP
+date -u +%Y%m%dT%H%M%SZ                         # the stamp; substitute it below
 git fetch origin
 git rev-list --count main..origin/main          # informational only
-git worktree add --detach "$WT" origin/main
-git -C "$WT" rev-parse HEAD                     # the swept SHA
-mkdir -p "$RD" "$WT-scratch"
+git worktree add --detach .claude/worktrees/security-sweep-<STAMP> origin/main
+git -C .claude/worktrees/security-sweep-<STAMP> rev-parse HEAD      # the swept SHA
+mkdir -p .claude/security-sweeps/<STAMP> .claude/worktrees/security-sweep-<STAMP>-scratch
 ```
 
-`$WT-scratch` is where every agent puts anything temporary (venvs, clones, stub servers,
+The `-scratch` directory is where every agent puts anything temporary (venvs, clones, stub servers,
 throwaway stacks). It sits inside the repository rather than in shared `/tmp`, where a fixed
 name is one another local principal can create first, and under `.claude/worktrees/`, so git
 ignores it. The workflow derives it from `worktree` unless `scratch` is passed.
 
-Then write `$RD/run.json`:
+Then write `.claude/security-sweeps/<STAMP>/run.json` with the Write tool:
 
 ```json
 {"stamp": "...", "sha": "...", "repo": "jleavers/codervis",
@@ -196,10 +201,10 @@ instead of re-finding it as new.
 ## Phase 8: cleanup
 
 ```bash
-git worktree remove .claude/worktrees/security-sweep-$STAMP
+git worktree remove .claude/worktrees/security-sweep-<STAMP>
 git worktree list
 docker ps -a --format '{{.Names}}' | grep '^sweep-'      # a lane's throwaway stack, left behind?
-rm -rf -- ".claude/worktrees/security-sweep-$STAMP-scratch"
+rm -rf -- .claude/worktrees/security-sweep-<STAMP>-scratch
 ```
 
 Never `rm -rf` the worktree, and never `--force`. If the remove fails because the worktree is
