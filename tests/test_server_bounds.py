@@ -34,7 +34,9 @@ from app.server import (
     APP,
     MAX_CONNECTIONS,
     MAX_REQUEST_HEAD_BYTES,
+    NO_BODY_IN_TIME,
     NO_REQUEST_IN_TIME,
+    REQUEST_BODY_TIMEOUT_S,
     REQUEST_TIMEOUT_S,
     BoundedHeadH11Protocol,
     build_config,
@@ -64,6 +66,7 @@ class Impatient(BoundedHeadH11Protocol):
     """
 
     request_timeout_s = 0.75
+    request_body_timeout_s = 0.75
 
 
 async def _stub(scope: dict, receive, send) -> None:
@@ -88,6 +91,56 @@ async def _slow_stream(scope: dict, receive, send) -> None:
         await send({"type": "http.response.body", "body": b"tick\n", "more_body": True})
         await asyncio.sleep(Impatient.request_timeout_s / 2)
     await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+
+async def _body_reader(scope: dict, receive, send) -> None:
+    """A handler that reads its request body before answering, which is what makes the answer say
+    when the body *finished*. No route in this app takes a body, but the bound has to hold for one
+    that did, and reading the body is the only shape where a slow one delays a response at all."""
+    received = 0
+    while True:
+        message = await receive()
+        if message["type"] == "http.disconnect":
+            return
+        received += len(message.get("body", b""))
+        if not message.get("more_body", False):
+            break
+    payload = str(received).encode()
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 200,
+            "headers": [(b"content-length", str(len(payload)).encode())],
+        }
+    )
+    await send({"type": "http.response.body", "body": payload})
+
+
+async def _websocket(scope: dict, receive, send) -> None:
+    """Accepts an upgrade and holds it open for longer than any deadline here.
+
+    `requirements.txt` pins `uvicorn[standard]`, so the image has a WebSocket library and this
+    branch of uvicorn's `handle_events` is live whether or not the dashboard routes to it.
+    """
+    if scope["type"] != "websocket":
+        await _stub(scope, receive, send)
+        return
+    await receive()
+    await send({"type": "websocket.accept"})
+    await asyncio.sleep(Impatient.request_body_timeout_s * 5)
+    await send({"type": "websocket.close", "code": 1000})
+
+
+async def _slow_stream_after_a_body(scope: dict, receive, send) -> None:
+    """Reads a whole request body, then streams for far longer than the body deadline: the shape
+    that proves the deadline ends with the body rather than running on into the response."""
+    while True:
+        message = await receive()
+        if message["type"] == "http.disconnect":
+            return
+        if not message.get("more_body", False):
+            break
+    await _slow_stream(scope, receive, send)
 
 
 @contextlib.contextmanager
@@ -536,6 +589,268 @@ def test_a_second_request_after_a_long_response_is_still_served() -> None:
             sock.close()
 
 
+# The body deadline
+
+
+def _post_head(length: int | None = None, *, chunked: bool = False) -> bytes:
+    framing = b"Transfer-Encoding: chunked" if chunked else b"Content-Length: %d" % length
+    return b"POST /takes-a-body HTTP/1.1\r\nHost: 127.0.0.1\r\n" + framing + b"\r\n\r\n"
+
+
+def _dribble_body(sock: socket.socket, chunk: bytes, *, timeout: float) -> float:
+    """Send ``chunk`` every quarter-deadline for eight deadlines, or until the peer answers.
+
+    Returns how long the drip was allowed to run. Stopping on the first answer is what makes that
+    number the assertion: a deadline renewed by each arriving byte still fires, one interval after
+    the client gives up, so a test that only waited for a 408 would pass on a bound that bounds
+    nothing.
+    """
+    started = time.monotonic()
+    until = started + timeout * 8
+    while time.monotonic() < until:
+        if select.select([sock], [], [], 0)[0]:
+            break
+        try:
+            sock.sendall(chunk)
+        except OSError:
+            break
+        time.sleep(timeout / 4)
+    return time.monotonic() - started
+
+
+@pytest.mark.parametrize("chunked", [False, True], ids=["content-length", "chunked"])
+def test_a_dribbled_request_body_is_refused_before_it_finishes(chunked: bool) -> None:
+    """#66: the head bounds are all spent by the end of the head, so a peer that finished a head
+    and then dribbled a body it never completed held a counted connection for as long as it liked.
+    Measured against the shipped configuration before this deadline existed: a 40-byte body sent a
+    byte at a time was served, 59 s after its head.
+
+    Both framings, because h11 reaches `SEND_BODY` by either road and the deadline is armed on
+    that state rather than on a header. *When* the refusal comes is asserted as well as that one
+    does, for the same reason as the head deadline's own drip test.
+    """
+    timeout = Impatient.request_body_timeout_s
+    body = b"5\r\nxxxxx\r\n" if chunked else b"x"
+    with _running(_body_reader, protocol=Impatient) as port:
+        sock = _connect(port)
+        try:
+            sock.sendall(_post_head(chunked=True) if chunked else _post_head(4096))
+            ran_for = _dribble_body(sock, body, timeout=timeout)
+            assert _status(sock).startswith(b"HTTP/1.1 408 ")
+            assert ran_for < timeout * 3, (
+                f"the body drip was allowed to run for {ran_for:.1f}s against a {timeout}s "
+                "deadline: the deadline is being renewed by the arriving bytes"
+            )
+        finally:
+            sock.close()
+
+
+def test_the_body_refusal_is_the_one_the_server_names() -> None:
+    """A silent body, so the whole answer can be compared byte for byte. It is deliberately not
+    `NO_REQUEST_IN_TIME`: a request that never arrived and one that stopped half way are different
+    things to whoever reads a capture, and the relay has no body refusal to match."""
+    with _running(_body_reader, protocol=Impatient) as port:
+        sock = _connect(port)
+        try:
+            sock.sendall(_post_head(64))
+            assert _drain(sock) == NO_BODY_IN_TIME
+        finally:
+            sock.close()
+
+
+def test_a_body_that_arrives_promptly_is_still_served() -> None:
+    """The other side of the bound, under the *shipped* deadline rather than a shortened one: an
+    ordinary POST whose body arrives at once is answered normally, and the whole of it reaches the
+    application. A bound that refused every body would pass every refusal test above."""
+    payload = b"x" * 4096
+    with _running(_body_reader) as port:
+        sock = _connect(port)
+        try:
+            sock.sendall(_post_head(len(payload)) + payload)
+            answer = _drain(sock)
+            assert answer.startswith(b"HTTP/1.1 200 "), answer[:80]
+            assert answer.endswith(str(len(payload)).encode()), answer[-40:]
+        finally:
+            sock.close()
+
+
+def test_a_second_body_on_a_kept_alive_connection_is_bounded_too() -> None:
+    """Every request of every connection, as with the head bounds: the deadline is armed from the
+    state h11 is in, so a connection that has already been served once is not a connection that
+    has spent its body deadline."""
+    timeout = Impatient.request_body_timeout_s
+    with _running(_body_reader, protocol=Impatient) as port:
+        sock = _connect(port)
+        try:
+            sock.sendall(_post_head(2) + b"ok")
+            assert _status(sock).startswith(b"HTTP/1.1 200 ")
+            sock.sendall(_post_head(4096))
+            ran_for = _dribble_body(sock, b"x", timeout=timeout)
+            assert _status(sock).startswith(b"HTTP/1.1 408 ")
+            assert ran_for < timeout * 3, ran_for
+        finally:
+            sock.close()
+
+
+def test_a_dribbled_body_under_an_already_answered_request_still_loses_its_slot() -> None:
+    """The shape every route in this dashboard actually has: the application answers without
+    reading the body -- as Starlette's own 405 does -- and the peer keeps dribbling. The
+    connection is still what the peer is holding, so it still goes; what must not happen is a
+    second response written over the one already sent.
+    """
+    timeout = Impatient.request_body_timeout_s
+    with _running(protocol=Impatient) as port:
+        sock = _connect(port)
+        try:
+            sock.sendall(_post_head(4096))
+            started = time.monotonic()
+            answer = b""
+            while time.monotonic() < started + timeout * 8:
+                try:
+                    sock.sendall(b"x")
+                except OSError:
+                    break
+                time.sleep(timeout / 4)
+                try:
+                    if not (chunk := sock.recv(65536)):
+                        break
+                except (TimeoutError, BlockingIOError):
+                    continue
+                except OSError:
+                    break
+                answer += chunk
+            closed_after = time.monotonic() - started
+            assert _statuses(answer) == [b"HTTP/1.1 200 OK"], answer[:200]
+            assert closed_after < timeout * 4, (
+                f"the connection was held for {closed_after:.1f}s after its request was answered"
+            )
+        finally:
+            sock.close()
+
+
+def test_the_body_deadline_does_not_touch_a_response_in_flight() -> None:
+    """The acceptance criterion this bound is riskiest against: it is the first bound here armed
+    *after* dispatch, and getting it wrong cuts off SSE, which the dashboard must never do.
+
+    The stream runs for three times the body deadline, and the body it follows was complete, so
+    nothing may be armed against it. `/api/stream` is a `GET` and never enters `SEND_BODY` at all;
+    this is the harder case, where a body and a long response are on the same connection.
+    """
+    payload = b"x" * 32
+    with _running(_slow_stream_after_a_body, protocol=Impatient) as port:
+        sock = _connect(port)
+        try:
+            sock.sendall(_post_head(len(payload)) + payload)
+            body = _drain(sock)
+            assert body.startswith(b"HTTP/1.1 200 "), body[:80]
+            assert body.count(b"tick") == 6, body[-200:]
+        finally:
+            sock.close()
+
+
+def test_no_body_deadline_is_armed_against_a_bodiless_stream() -> None:
+    """And the direct version of it, on the server's own state rather than on what the client
+    read back: a `GET` that streams for longer than the body deadline has neither deadline armed
+    against it. This is what keeps `test_..._does_not_touch_a_response_in_flight` from being the
+    only thing between an SSE stream and a timer.
+    """
+    live: list[BoundedHeadH11Protocol] = []
+
+    class Reporting(Impatient):
+        def connection_made(self, transport) -> None:  # type: ignore[override]
+            super().connection_made(transport)
+            live.append(self)
+
+    with _running(_slow_stream, protocol=Reporting) as port:
+        sock = _connect(port)
+        try:
+            sock.sendall(HEAD)
+            assert _status(sock).startswith(b"HTTP/1.1 200 ")
+            (protocol,) = live
+            assert protocol._body_deadline is None, "a body deadline is armed against a stream"
+            assert protocol._head_deadline is None, "a head deadline is armed against a stream"
+        finally:
+            sock.close()
+
+
+def test_the_body_deadline_refuses_only_while_a_body_is_awaited() -> None:
+    """The guard at the moment the timer fires, which is the backstop for a stray one -- and it
+    carries more here than the head deadline's does, because this timer is armed while an
+    application is running and so has a response it could collide with. A fake connection is
+    enough: every branch is a question about h11's state and uvicorn's cycle.
+    """
+    protocol = BoundedHeadH11Protocol.__new__(BoundedHeadH11Protocol)
+    refused: list[bytes] = []
+    closed: list[bool] = []
+    protocol._refuse = refused.append  # type: ignore[method-assign]
+    protocol._close = lambda: closed.append(True)  # type: ignore[method-assign]
+    protocol.cycle = None  # type: ignore[assignment]
+
+    class Sending:
+        their_state = h11.SEND_BODY
+
+    class Finished:
+        their_state = h11.DONE
+
+    protocol.conn = Finished()  # type: ignore[assignment]
+    protocol._body_timed_out()
+    assert (refused, closed) == ([], []), "a body deadline fired after the body was complete"
+
+    protocol.conn = Sending()  # type: ignore[assignment]
+    protocol._body_timed_out()
+    assert refused == [NO_BODY_IN_TIME] and closed == []
+
+    # And with a response already on the wire: the connection goes, but no second response is
+    # written over the first. Two responses on one connection is worse than none.
+    refused.clear()
+    protocol.cycle = type("Cycle", (), {"response_started": True})()  # type: ignore[assignment]
+    protocol._body_timed_out()
+    assert (refused, closed) == ([], [True])
+
+
+def test_no_deadline_survives_a_websocket_upgrade() -> None:
+    """The one place h11's `SEND_BODY` does not mean "a body is coming".
+
+    uvicorn hands the connection to the WebSocket protocol from inside `handle_events` and
+    `return`s *before* the `EndOfMessage` that would leave `SEND_BODY`, then calls
+    `transport.set_protocol()`, after which this protocol's `connection_lost` never runs. A body
+    deadline armed on the way out of that call would therefore never be cancelled, and would fire
+    into an established WebSocket stream: an HTTP 408 written mid-frame, and the connection closed
+    under a peer that had done nothing wrong.
+
+    So the assertion is on the wire and not on an attribute: nothing arrives after the handshake,
+    and the connection is still open well past the deadline.
+    """
+    timeout = Impatient.request_body_timeout_s
+    handshake = (
+        b"GET /ws HTTP/1.1\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Upgrade: websocket\r\n"
+        b"Connection: Upgrade\r\n"
+        b"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+        b"Sec-WebSocket-Version: 13\r\n"
+        b"\r\n"
+    )
+    with _running(_websocket, protocol=Impatient) as port:
+        sock = _connect(port)
+        try:
+            sock.sendall(handshake)
+            assert _status(sock).startswith(b"HTTP/1.1 101 "), "the upgrade was not accepted"
+            after = b""
+            until = time.monotonic() + timeout * 3
+            while time.monotonic() < until:
+                if not select.select([sock], [], [], 0.05)[0]:
+                    continue
+                chunk = sock.recv(65536)
+                assert chunk, (
+                    f"the upgraded connection was closed within {timeout * 3}s of its handshake"
+                )
+                after += chunk
+            assert after == b"", f"bytes were written into a WebSocket stream: {after[:120]!r}"
+        finally:
+            sock.close()
+
+
 # The concurrency ceiling
 
 
@@ -722,14 +1037,16 @@ def test_build_config_arms_the_documented_bounds() -> None:
 def test_the_servers_bounds_are_the_ones_it_documents() -> None:
     """The values, because the behaviour tests above pass their own in.
 
-    A head cap raised to 16 MiB, a deadline raised to ten minutes or a ceiling raised past what
-    the process can hold would leave every one of them green. These are the numbers `README.md`,
-    `CLAUDE.md` and `AGENTS.md` describe, so widening one is a change made here and in those
-    documents, on purpose.
+    A head cap raised to 16 MiB, either deadline raised to ten minutes or a ceiling raised past
+    what the process can hold would leave every one of them green. These are the numbers
+    `README.md`, `CLAUDE.md` and `AGENTS.md` describe, so widening one is a change made here and
+    in those documents, on purpose.
     """
     assert (MAX_REQUEST_HEAD_BYTES, REQUEST_TIMEOUT_S, MAX_CONNECTIONS) == (16 * 1024, 10.0, 320)
+    assert REQUEST_BODY_TIMEOUT_S == 10.0
     assert BoundedHeadH11Protocol.max_request_head_bytes == MAX_REQUEST_HEAD_BYTES
     assert BoundedHeadH11Protocol.request_timeout_s == REQUEST_TIMEOUT_S
+    assert BoundedHeadH11Protocol.request_body_timeout_s == REQUEST_BODY_TIMEOUT_S
 
 
 def test_the_two_layers_bounds_stand_in_the_right_relation() -> None:
