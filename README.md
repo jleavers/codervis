@@ -241,7 +241,7 @@ docker compose exec codervis python -m app.egress check
 [ OK ] example.com:443 unreachable directly: no route to a public address round the proxy
 ```
 
-The last line has five more forms, and the difference between the first three
+The last line has six more forms, and the difference between the first four
 is what a failed name lookup is allowed to prove. A container whose
 resolver declines public names — which is what an internal network's usually
 does — cannot look `example.com` up at all, and a lookup that failed says
@@ -251,15 +251,22 @@ default route:
 
 ```text
 [ OK ] example.com does not resolve here, and the routing table names no default route: there is no route round the proxy to take
+[ OK ] example.com could not be looked up, because the resolver did not answer inside the probe's budget, and the routing table names no default route: there is no route round the proxy to take
 [FAIL] example.com could not be looked up, and this container has a default route: it has a way off its own subnets, and whether that reaches round the proxy is unverified
 [FAIL] example.com could not be looked up and /proc/net/route could not be read, so neither way of telling whether this container has a route off it was available and the bound is unverified
 ```
 
-Only the first is a pass, and the routing table is what makes it one. The
-remaining two are both `FAIL`s: the name resolved and something answered it,
-which is a route round the proxy; or the connection never left the container
+Only the first two are passes, and the routing table is what makes them so.
+What separates those two is the resolver, not the routing: the first is a
+resolver that answered and declined the name, the second one that did not
+answer at all — a container that cannot reach its own resolver. The table
+settles both, because it says what it says either way, and the other two
+lines are `FAIL`s because of what it said: it named a default route, or it
+could not be read. The two forms not shown here are the other half of the
+line: the name resolved and something answered it, which is a route round
+the proxy; or the connection never left the container
 (`example.com:443 could not be dialled`), which is `unverified` like the two
-above — nothing was established either way.
+`FAIL`s above — nothing was established either way.
 
 The address on the on-link line is whatever the container's own routing tables
 yield — the first address of each on-link subnet, plus any gateway a route
@@ -273,7 +280,14 @@ family that is not there. The admission probes
 open a TCP connection to each host through the proxy and send nothing; the
 on-link and direct probes open one directly and send nothing either. An address
 that answers at all answers at once; it is the `OK` that costs one timeout per
-port, so that is the line that can take a few seconds to print. To change the
+port, so that is the line that can take a few seconds to print. The
+public-name line has a bound of its own, and that bound covers the name
+lookup: at most three seconds to resolve `example.com` and dial every
+address it resolves to, together. Not three seconds an address, and not a
+resolver's own budget first — `/etc/resolv.conf` gives it `timeout:`
+seconds, 5 by default, once per `attempts:` per nameserver, which is what a
+container that cannot reach its resolver would otherwise wait out before any
+of this began. To change the
 allow-list, edit `EGRESS_ALLOW` in `.env` and run `docker compose up -d egress`.
 
 The two directions are separate bounds, and the on-link line is the one an

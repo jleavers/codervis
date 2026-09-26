@@ -19,12 +19,15 @@ end, by the CI `egress` job.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import errno
 import functools
 import logging
 import re
 import socket
 import sys
+import threading
+import time
 from pathlib import Path
 from unittest import mock
 from urllib.parse import urlsplit
@@ -40,6 +43,7 @@ from app.egress import (
     DEFAULT_ALLOW,
     DIRECT_ANSWERED,
     DIRECT_NO_DNS,
+    DIRECT_NO_RESOLVER,
     DIRECT_NO_ROUTE,
     DIRECT_UNVERIFIED,
     MAX_CONNECTIONS,
@@ -689,6 +693,7 @@ def test_the_probe_outcome_vocabularies_are_the_ones_the_suite_drives() -> None:
         "DIRECT_ANSWERED",
         "DIRECT_NO_ROUTE",
         "DIRECT_NO_DNS",
+        "DIRECT_NO_RESOLVER",
         "DIRECT_UNVERIFIED",
     }
 
@@ -754,13 +759,13 @@ def test_readme_shows_the_lines_the_check_actually_prints(monkeypatch) -> None:
     # that merely contains the wording pins nothing: a README could quote both lines verbatim
     # and still call them both passes. Comparing the formatted line -- verdict prefix included
     # -- is what ties each one to the `OK` or `FAIL` README claims for it.
-    def direct_line(table: str | None) -> str:
+    def direct_line(table: str | None, outcome: str = DIRECT_NO_DNS) -> str:
         with pytest.MonkeyPatch.context() as patch:
             _pin_tables(patch, table)
             results = check(
                 {"HTTPS_PROXY": proxy},
                 direct=("example.com", 443),
-                direct_probe=lambda *_a, **_k: DIRECT_NO_DNS,
+                direct_probe=lambda *_a, _o=outcome, **_k: _o,
                 on_link=[gateway],
                 on_link_probe=lambda *_a, **_k: ON_LINK_NO_ANSWER,
                 timeout_s=1,
@@ -772,7 +777,15 @@ def test_readme_shows_the_lines_the_check_actually_prints(monkeypatch) -> None:
         r"```text\n(\[ OK \] example\.com does not resolve.*?)```", readme, re.S
     )
     assert no_dns_fence, "README no longer shows the no-DNS outcomes"
-    no_dns = [direct_line(INTERNAL_ROUTE_TABLE), direct_line(ROUTED_ROUTE_TABLE), direct_line(None)]
+    # Four, because a resolver that never answered is settled by the same tables and is not the
+    # same line: only one of the two says the name does not resolve, which is a claim about DNS
+    # the other did not establish.
+    no_dns = [
+        direct_line(INTERNAL_ROUTE_TABLE),
+        direct_line(INTERNAL_ROUTE_TABLE, DIRECT_NO_RESOLVER),
+        direct_line(ROUTED_ROUTE_TABLE),
+        direct_line(None),
+    ]
     assert [line for line in no_dns_fence.group(1).splitlines() if line.strip()] == no_dns
 
     # Pinning the two fences pins only what they quote. A second fence above them, showing the
@@ -815,7 +828,7 @@ def test_readme_shows_the_lines_the_check_actually_prints(monkeypatch) -> None:
     assert set(samples) <= producible, sorted(set(samples) - producible)
 
     # The verdicts the fences carry are also claimed in prose, which no fence comparison holds.
-    assert "Only the first is a pass, and the routing table is what makes it one." in flowed
+    assert "Only the first two are passes, and the routing table is what makes them so." in flowed
 
     # README counts the public-name line's forms for an operator checking they have seen them
     # all, so the count comes from the code rather than from whoever last edited the sentence.
@@ -856,6 +869,71 @@ def test_the_public_name_probe_reads_an_accept_as_reach() -> None:
         assert probe_direct("127.0.0.1", listener.getsockname()[1], timeout_s=2) == DIRECT_ANSWERED
 
 
+def _candidates(*addresses: str) -> list[tuple]:
+    """`getaddrinfo`'s answer for a name with these addresses, in this order.
+
+    Documentation-range literals: nothing here is dialled for real, because every case that
+    uses this replaces the socket layer under it as well. The order is the point in the cases
+    about candidates that disagree, so it is the order given.
+    """
+    return [
+        (
+            socket.AF_INET6 if ":" in address else socket.AF_INET,
+            socket.SOCK_STREAM,
+            socket.IPPROTO_TCP,
+            "",
+            (address, 443, 0, 0) if ":" in address else (address, 443),
+        )
+        for address in addresses
+    ]
+
+
+def _dialling(outcomes: dict[str, BaseException | None]):
+    """A `socket.socket` that fails the way the address being connected to says it does.
+
+    Keyed on the address, because that is what these cases are about: a name whose candidates
+    disagree cannot be expressed by a stub that answers once for the whole name. `None` is a
+    connection the address accepted. The list it returns records what was really dialled, in
+    order, so "every candidate is classified" is asserted on the dials and not only on the
+    verdict they produced.
+
+    It replaces `socket.socket` rather than `socket.create_connection`, which `probe_direct`
+    no longer calls: it resolves the name itself and dials each address, so this is the seam
+    under it.
+    """
+    dialled: list[str] = []
+
+    class FakeSocket:
+        def __init__(self, family: int, socktype: int = 0, proto: int = 0) -> None:
+            self.family = family
+
+        def settimeout(self, timeout_s: float) -> None:
+            # A non-positive timeout puts a real socket in non-blocking mode, where `connect`
+            # returns EINPROGRESS at once and a candidate reads as a local failure it never
+            # had. `probe_direct` must never hand one down, however little budget is left.
+            assert timeout_s > 0, f"a candidate was dialled with timeout_s={timeout_s}"
+
+        def connect(self, sockaddr: tuple) -> None:
+            dialled.append(sockaddr[0])
+            failure = outcomes[sockaddr[0]]
+            if failure is not None:
+                raise failure
+
+        def close(self) -> None:
+            pass
+
+    return FakeSocket, dialled
+
+
+@contextlib.contextmanager
+def _name_resolving_to(outcomes: dict[str, BaseException | None]):
+    """A name whose addresses are `outcomes`' keys, each answering the way its value says."""
+    fake, dialled = _dialling(outcomes)
+    with mock.patch.object(egress.socket, "getaddrinfo", lambda *_a, **_k: _candidates(*outcomes)):
+        with mock.patch.object(egress.socket, "socket", fake):
+            yield dialled
+
+
 def test_the_public_name_probe_tells_no_route_from_no_resolver_from_no_probe() -> None:
     """Three not-reached outcomes, and only one of them is evidence on its own.
 
@@ -864,17 +942,158 @@ def test_the_public_name_probe_tells_no_route_from_no_resolver_from_no_probe() -
     routing table, because a failed lookup says nothing about whether packets can leave. A
     connection that never left this container is a failure, for the same reason the on-link
     half fails one.
+
+    A family this container cannot open a socket in at all is classed with silence rather than
+    with the local failures, and that is deliberate: `EAFNOSUPPORT` for an AAAA candidate on a
+    kernel with no IPv6 is not a probe something got in the way of, it is an address no packet
+    of this container's could ever leave for. Reading it as a local failure would fail the
+    check on every v4-only deployment of a dual-stack name.
     """
     for failure, expected in (
-        (socket.gaierror(-2, "Name or service not known"), DIRECT_NO_DNS),
         (TimeoutError(), DIRECT_NO_ROUTE),
         (as_oserror(errno.ENETUNREACH), DIRECT_NO_ROUTE),
+        (as_oserror(errno.EHOSTUNREACH), DIRECT_NO_ROUTE),
+        (as_oserror(errno.EAFNOSUPPORT), DIRECT_NO_ROUTE),
         (as_oserror(errno.EPERM), DIRECT_UNVERIFIED),
         (as_oserror(errno.ENETDOWN), DIRECT_UNVERIFIED),
+        (as_oserror(errno.EMFILE), DIRECT_UNVERIFIED),
         (ConnectionResetError(errno.ECONNRESET, "reset"), DIRECT_ANSWERED),
+        (ConnectionRefusedError(errno.ECONNREFUSED, "refused"), DIRECT_ANSWERED),
+        (None, DIRECT_ANSWERED),
     ):
-        with mock.patch.object(egress.socket, "create_connection", side_effect=failure):
-            assert probe_direct("example.com", 443, timeout_s=0.1) == expected, failure
+        with _name_resolving_to({"192.0.2.1": failure}):
+            assert probe_direct("example.com", 443, timeout_s=0.5) == expected, failure
+
+    # The lookup's own failure is still the lookup's: it is raised by the resolver, not by a
+    # dial, so it cannot come from the table above.
+    with mock.patch.object(
+        egress.socket, "getaddrinfo", side_effect=socket.gaierror(-2, "Name or service not known")
+    ):
+        assert probe_direct("example.com", 443, timeout_s=0.5) == DIRECT_NO_DNS
+
+
+def test_a_refusal_from_any_candidate_of_the_name_reads_as_reach() -> None:
+    """#51's second half: a dual-stack name must not be able to hide a refusal.
+
+    `socket.create_connection` defaults to `all_errors=False` and raises the *last* candidate's
+    error, so a name whose first address answered with an RST -- a live host, and therefore a
+    route round the proxy -- and whose last was unreachable reported "no route", and the check
+    printed `[ OK ]` over it. That is the accept-a-refusal-as-silence conflation #37 took out
+    of this function's verdicts, in the one corner its verdicts did not cover.
+
+    Either order, because "the last one decides" is exactly the defect: reading only the first
+    would be the same bug facing the other way.
+    """
+    refused = ConnectionRefusedError(errno.ECONNREFUSED, "refused")
+    unreachable = as_oserror(errno.ENETUNREACH)
+    for outcomes in (
+        {"2001:db8::1": refused, "192.0.2.1": unreachable},
+        {"192.0.2.1": unreachable, "2001:db8::1": refused},
+    ):
+        with _name_resolving_to(outcomes):
+            assert probe_direct("example.com", 443, timeout_s=1) == DIRECT_ANSWERED, outcomes
+
+
+def test_the_public_name_probe_classifies_every_candidate_not_only_the_last() -> None:
+    """What the disagreeing candidates settle on when none of them was reached.
+
+    The least-established answer wins, which is the rule the rest of this module already
+    follows: "no route" is claimed only where every address the name has was really dialled and
+    nothing came back, and a candidate whose connection never left this container leaves the
+    whole name unverified -- a probe not made establishes nothing, and `check` fails on it
+    rather than passing.
+    """
+    unreachable = as_oserror(errno.ENETUNREACH)
+    with _name_resolving_to({"192.0.2.1": unreachable, "2001:db8::1": unreachable}) as dialled:
+        assert probe_direct("example.com", 443, timeout_s=1) == DIRECT_NO_ROUTE
+    assert dialled == ["192.0.2.1", "2001:db8::1"], "every candidate is dialled, not just one"
+
+    for outcomes in (
+        {"192.0.2.1": unreachable, "2001:db8::1": as_oserror(errno.EPERM)},
+        {"192.0.2.1": as_oserror(errno.EPERM), "2001:db8::1": unreachable},
+    ):
+        with _name_resolving_to(outcomes):
+            assert probe_direct("example.com", 443, timeout_s=1) == DIRECT_UNVERIFIED, outcomes
+
+    # A reachable candidate still wins over both of those: reach is established, and the other
+    # candidates cannot unestablish it.
+    with _name_resolving_to(
+        {"192.0.2.1": ConnectionRefusedError(errno.ECONNREFUSED, "refused"), "2001:db8::1": None}
+    ):
+        assert probe_direct("example.com", 443, timeout_s=1) == DIRECT_ANSWERED
+
+
+def test_a_resolver_that_does_not_answer_is_bounded_and_is_its_own_outcome() -> None:
+    """#51's first half: `getaddrinfo` used to run outside the probe's timeout entirely.
+
+    `socket.create_connection`'s timeout does not start until the name is resolved, so a
+    container whose resolver is unreachable spent the resolver's own budget first -- 5 s an
+    attempt by `/etc/resolv.conf`'s default, and it retries -- and `check` took far longer than
+    the bound it gives itself. The lookup is joined with a deadline now, so the whole probe
+    costs its budget.
+
+    And it is its own outcome. Folding it into "does not resolve" would have the passing line
+    claim the resolver declined the name, which nothing here established: the resolver said
+    nothing at all. `check` settles both against the routing tables, which answer either way.
+    """
+    released = threading.Event()
+
+    def resolver_that_does_not_answer(*_args: object, **_kwargs: object) -> list[tuple]:
+        # Released in the `finally` below, so a run that asserts correctly does not leave a
+        # thread sleeping out a wall-clock timeout behind it.
+        released.wait(30)
+        return _candidates("192.0.2.1")
+
+    try:
+        with mock.patch.object(egress.socket, "getaddrinfo", resolver_that_does_not_answer):
+            started = time.monotonic()
+            outcome = probe_direct("example.com", 443, timeout_s=1)
+            elapsed = time.monotonic() - started
+    finally:
+        released.set()
+
+    assert outcome == DIRECT_NO_RESOLVER
+    # Generously above the budget and far below what the resolver was going to take: the claim
+    # is that the probe stopped waiting on its own, not what it costs on a loaded runner.
+    assert elapsed < 10, f"the probe outlasted its own budget: {elapsed:.2f}s for a 1 s budget"
+
+
+def test_the_public_name_probe_costs_its_budget_once_over_all_of_a_name_s_addresses() -> None:
+    """The bound is the probe's, not the probe's times however many addresses the name has.
+
+    A name on a CDN resolves to a dozen addresses, and the old half gave each one the whole
+    timeout in turn: a `check` that says three seconds spent half a minute. They share one
+    budget now, and every one of them is still dialled.
+    """
+    silent = {f"192.0.2.{n}": TimeoutError() for n in range(1, 9)}
+
+    class SilentSocket:
+        """An address that swallows the connection: it answers when the budget runs out."""
+
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self._timeout_s = 0.0
+
+        def settimeout(self, timeout_s: float) -> None:
+            self._timeout_s = timeout_s
+
+        def connect(self, _sockaddr: tuple) -> None:
+            time.sleep(self._timeout_s)
+            raise TimeoutError
+
+        def close(self) -> None:
+            pass
+
+    with mock.patch.object(egress.socket, "getaddrinfo", lambda *_a, **_k: _candidates(*silent)):
+        with mock.patch.object(egress.socket, "socket", SilentSocket):
+            started = time.monotonic()
+            outcome = probe_direct("example.com", 443, timeout_s=1)
+            elapsed = time.monotonic() - started
+
+    assert outcome == DIRECT_NO_ROUTE, "every address was dialled and none of them answered"
+    assert elapsed < 4, (
+        f"{len(silent)} silent addresses cost {elapsed:.2f}s of a 1 s budget: they are being "
+        "given a timeout each rather than a share of one"
+    )
 
 
 ROUTE_HEADER = (

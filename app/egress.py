@@ -67,6 +67,8 @@ import signal
 import socket
 import struct
 import sys
+import threading
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from ipaddress import IPv4Network, IPv6Address, IPv6Network, ip_address
@@ -608,12 +610,112 @@ NO_ANSWER_ERRNOS = frozenset(
 )
 
 
+# Errnos that say this container cannot open a socket in the address's family at all -- a
+# kernel built without IPv6, or a container whose network namespace has no address in it. Not
+# the same as the local failures below, which stop a probe that the container could otherwise
+# have made: a family that is not there is a family no packet can leave over, so the address is
+# one this container cannot reach, which is what the direct half is asking. It reads like
+# `ENETUNREACH` from one interface further in, and is classed with it.
+UNUSABLE_FAMILY_ERRNOS = frozenset(
+    getattr(errno, name)
+    for name in ("EAFNOSUPPORT", "EPFNOSUPPORT")
+    if hasattr(errno, name)
+)
+
+
 # How the public name answered. Two of these are what an internal-only container looks like;
-# the other two are failures, and they are failures for different reasons.
+# the other three are failures, and they are failures for different reasons.
 DIRECT_ANSWERED = "answered"
 DIRECT_NO_ROUTE = "no route"
 DIRECT_NO_DNS = "does not resolve"
+DIRECT_NO_RESOLVER = "resolver did not answer"
 DIRECT_UNVERIFIED = "not probed"
+
+# How much of the direct probe's budget name resolution may have, with the dials sharing what
+# is left. Half each, because neither half can be given the whole: a resolver that never
+# answers would leave nothing to dial with, and a dial budget of zero reads as silence, which
+# is a *pass*. Both halves therefore keep a share they cannot be starved of.
+RESOLVE_BUDGET_SHARE = 0.5
+
+
+def _direct_errno_outcome(err: int | None) -> str:
+    """What one candidate's failed connection establishes, by the errno it failed with.
+
+    The same partition `probe_on_link` draws, for the same reason: silence -- a timeout, or the
+    kernel saying there is no way to the address -- is the only failure that says the container
+    could not reach it. Anything else stopped the connection inside this container (`EPERM`
+    from a local rule, `EMFILE` from running out of descriptors, `ENETDOWN` from an interface
+    that is down), so the address was not established either way and the candidate is
+    `DIRECT_UNVERIFIED`. A refusal never reaches here: it is reach, and its callers catch it
+    before this is asked.
+    """
+    if err in NO_ANSWER_ERRNOS or err in UNUSABLE_FAMILY_ERRNOS:
+        return DIRECT_NO_ROUTE
+    return DIRECT_UNVERIFIED
+
+
+def _resolve_direct(host: str, port: int, *, timeout_s: float) -> list[tuple] | None:
+    """`getaddrinfo` for `host`, under a deadline, or None where it did not answer inside one.
+
+    There is no timeout to give `socket.getaddrinfo`: it is a blocking call into the platform
+    resolver, which spends its *own* budget -- `/etc/resolv.conf`'s `timeout:` (5 s by default)
+    times `attempts:` times the nameservers listed -- and `socket.create_connection`'s timeout
+    does not start until it returns. That is why the deadline is put around it from outside,
+    by joining a thread doing the lookup (#51).
+
+    A lookup still running when the join returns is abandoned, not cancelled: there is no way
+    to cancel it, and the thread is a daemon so it cannot hold the process open. `check` is a
+    short-lived command, so at worst one resolver socket outlives the answer by the rest of the
+    run. What the caller gets is the honest one: nothing was looked up in the time it had.
+
+    The lookup's own failure is re-raised in the calling thread rather than swallowed, so a
+    name that does not resolve still reads as a name that does not resolve.
+    """
+    answer: list[tuple[str, object]] = []
+
+    def resolve() -> None:
+        try:
+            answer.append(("ok", socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)))
+        except BaseException as exc:  # re-raised below, in the thread that asked
+            answer.append(("error", exc))
+
+    # Named so that a thread dump during a hung `check` says which lookup is outstanding.
+    thread = threading.Thread(target=resolve, name=f"egress-resolve-{host}", daemon=True)
+    thread.start()
+    thread.join(timeout_s)
+    if not answer:
+        return None
+    kind, value = answer[0]
+    if kind == "error":
+        raise value  # type: ignore[misc]
+    return list(value)  # type: ignore[arg-type]
+
+
+def _dial_direct(
+    family: int, socktype: int, proto: int, sockaddr: tuple, *, timeout_s: float
+) -> str:
+    """How one resolved address of the public name answers. Nothing is sent; it closes at once.
+
+    One address, because `probe_direct` classifies every address the name has rather than
+    whichever one an error came back from last -- see there for why that matters.
+    """
+    try:
+        sock = socket.socket(family, socktype, proto)
+    except OSError as exc:
+        return _direct_errno_outcome(exc.errno)
+    try:
+        sock.settimeout(timeout_s)
+        sock.connect(sockaddr)
+    except (ConnectionRefusedError, ConnectionResetError):
+        return DIRECT_ANSWERED
+    except TimeoutError:
+        # socket.timeout, which carries no errno: the probe went out and nothing came back.
+        return DIRECT_NO_ROUTE
+    except OSError as exc:
+        return _direct_errno_outcome(exc.errno)
+    finally:
+        sock.close()
+    return DIRECT_ANSWERED
 
 
 def probe_direct(host: str, port: int = DEFAULT_TARGET_PORT, *, timeout_s: float) -> str:
@@ -632,19 +734,64 @@ def probe_direct(host: str, port: int = DEFAULT_TARGET_PORT, *, timeout_s: float
     A name that does not resolve is its own outcome rather than either verdict. An internal
     network's resolver declines public names, so it is what a confined container looks like --
     but DNS failing establishes nothing about IP routing on its own, and `check` settles it
-    against the routing table rather than inferring a route from a lookup.
+    against the routing table rather than inferring a route from a lookup. A resolver that
+    does not answer *at all* is a fifth outcome and not that one, because "the name did not
+    resolve" would be a claim about DNS nothing here established; `check` settles it against
+    the same tables, which answer whatever the resolver did.
+
+    **The name is resolved here rather than by `socket.create_connection`, and every address
+    it has is dialled.** Both halves of that are the point (#51):
+
+    * `create_connection`'s timeout starts *after* the name is resolved, so the old direct half
+      cost a resolver's own budget -- seconds, several times over, where a container's resolver
+      is unreachable -- before this one began, and nothing bounded the total. `timeout_s` is a
+      deadline over both halves now: `RESOLVE_BUDGET_SHARE` of it is what the lookup gets, and
+      the dials share what is left of it, so the whole probe costs its budget and no more.
+    * `create_connection` defaults to `all_errors=False` and raises the *last* candidate's
+      error, so a name whose first address refuses the connection -- which is reach, an RST
+      from a live host -- and whose last is unreachable reported "no route" and passed the
+      check. Every candidate is classified here, and a refusal from any of them is reach. It
+      is the same conflation #37 took out of this function's verdicts, in the corner its
+      verdicts were right about but its candidate handling was not.
+
+    Where the candidates disagree otherwise, the least-established answer wins: reach if
+    anything was reached, `DIRECT_UNVERIFIED` if any candidate's connection never left this
+    container, and "no route" only where every address of the name was really dialled and
+    nothing came back. A candidate left undialled because the budget ran out is unverified for
+    the same reason -- a probe not made establishes nothing.
     """
+    deadline = time.monotonic() + timeout_s
     try:
-        with socket.create_connection((host, port), timeout_s):
-            return DIRECT_ANSWERED
+        candidates = _resolve_direct(host, port, timeout_s=timeout_s * RESOLVE_BUDGET_SHARE)
     except socket.gaierror:
         return DIRECT_NO_DNS
-    except (ConnectionRefusedError, ConnectionResetError):
-        return DIRECT_ANSWERED
-    except TimeoutError:
-        return DIRECT_NO_ROUTE
-    except OSError as exc:
-        return DIRECT_NO_ROUTE if exc.errno in NO_ANSWER_ERRNOS else DIRECT_UNVERIFIED
+    except (OSError, UnicodeError):
+        # Not a name the resolver declined: a lookup that could not be made (an IDNA encoding
+        # it will not take, a resolver configuration that errors out). Nothing was established.
+        return DIRECT_UNVERIFIED
+    if candidates is None:
+        return DIRECT_NO_RESOLVER
+    if not candidates:
+        # getaddrinfo does not return an empty list -- it raises instead -- but a name with no
+        # address dialled nothing, and that is not silence.
+        return DIRECT_UNVERIFIED
+    outcome = DIRECT_NO_ROUTE
+    left = len(candidates)
+    for family, socktype, proto, _canonname, sockaddr in candidates:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            # Whatever the dialled ones said, the rest were not asked.
+            return DIRECT_UNVERIFIED
+        # An even share of what is left, recomputed each time: the common confined case fails
+        # instantly with ENETUNREACH on every address, so a later candidate inherits nearly the
+        # whole budget rather than the slice it would have had at the start.
+        dialled = _dial_direct(family, socktype, proto, sockaddr, timeout_s=remaining / left)
+        left -= 1
+        if dialled == DIRECT_ANSWERED:
+            return DIRECT_ANSWERED
+        if dialled == DIRECT_UNVERIFIED:
+            outcome = DIRECT_UNVERIFIED
+    return outcome
 
 
 # What an on-link probe found. Two of these mean the address is live, and the wording says
@@ -1215,6 +1362,9 @@ def check(
         )
     )
     host, port = direct
+    # The whole of what this half costs, resolution included: `probe_direct` holds the
+    # deadline over both its lookup and its dials, so three seconds here is three seconds
+    # of `check` however many addresses the name has and however slow the resolver is.
     answered = direct_probe(host, port, timeout_s=min(timeout_s, 3.0))
     if answered == DIRECT_ANSWERED:
         results.append(
@@ -1232,7 +1382,7 @@ def check(
                 "proxy",
             )
         )
-    elif answered == DIRECT_NO_DNS:
+    elif answered in (DIRECT_NO_DNS, DIRECT_NO_RESOLVER):
         # A lookup that failed is not a routing fact. What settles it is the table: a container
         # with no default route cannot reach an off-link address whether it resolved one or
         # not, and a container that has one was not established either way by a failed lookup.
@@ -1240,6 +1390,18 @@ def check(
         # subnets (#42), and a table that would not be read settles nothing. The line names one
         # file, since that is what an operator goes and looks at: the IPv4 table where it was
         # the unreadable one or both were, and the IPv6 table where that was the only one.
+        #
+        # A resolver that never answered is settled here too, and by the same tables: they say
+        # what they say whether the lookup was declined or never returned. Only the passing
+        # line tells the two apart, because that one is where "does not resolve" would be a
+        # claim about DNS the probe did not establish -- and the difference is the operator's
+        # to see, since one of the two costs their check its whole resolution budget (#51).
+        lookup = (
+            "does not resolve here"
+            if answered == DIRECT_NO_DNS
+            else "could not be looked up, because the resolver did not answer inside the "
+            "probe's budget"
+        )
         table = read_route_table()
         ipv6_table = read_ipv6_route_table()
         unread = ROUTE_TABLE_PATH if table is None else None
@@ -1258,7 +1420,7 @@ def check(
             results.append(
                 (
                     True,
-                    f"{host} does not resolve here, and the routing table names no default "
+                    f"{host} {lookup}, and the routing table names no default "
                     "route: there is no route round the proxy to take",
                 )
             )
