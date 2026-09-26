@@ -611,13 +611,21 @@ def _resolve_within(
     is the whole reason this returns None for the timeout instead of raising: a resolver that
     did not answer established nothing about the name, and a caller that cannot tell the two
     apart would report a claim about DNS that nothing here made.
+
+    **What it re-raises is any `Exception`, so a caller with a string contract catches that
+    rather than a list of types it expects.** `getaddrinfo` is a call into the platform
+    resolver through a C library, and the interesting ones are `socket.gaierror` and
+    `UnicodeError`; but `probe_proxy` promises a `(code, text)` tuple or a string and `check`
+    prints what it is handed, so a type nobody listed must not become a traceback out of the
+    command. A `BaseException` in the lookup thread is left alone deliberately: it kills that
+    thread without an answer, which the join already reports as nothing resolved in time.
     """
     answer: list[tuple[str, object]] = []
 
     def resolve() -> None:
         try:
             answer.append(("ok", socket.getaddrinfo(host, port, family, kind)))
-        except BaseException as exc:  # re-raised below, in the thread that asked
+        except Exception as exc:  # re-raised below, in the thread that asked
             answer.append(("error", exc))
 
     # Named so that a thread dump during a hung probe says which lookup is outstanding.
@@ -640,31 +648,48 @@ def _connect_within(candidates: Sequence[tuple], *, deadline: float) -> socket.s
     here was to bound the total, and handing each candidate the full budget in turn would give
     that back to however many addresses the name happens to have.
 
-    A candidate reached with no budget left is not dialled, and the `TimeoutError` returned
-    says the probe ran out of time -- which is what it did. Failures are returned rather than
-    raised because the caller words its own, and the last one is the one it words: like
-    `create_connection`, with the same shortcoming, and it costs nothing here because this
-    caller reports "did not answer" either way rather than drawing a verdict from the errno.
+    **What is left is shared between the addresses not yet tried, rather than handed to the
+    next one whole**, because the two ways of being wrong here are not symmetrical. `egress`
+    on a network with `enable_ipv6` resolves to an address per family, and giving the first
+    one the whole remainder means a first address that blackholes spends the budget the second
+    needed: a reachable proxy reported as `did not answer`, which is the direction
+    `resolved_addresses` and README both call the unsafe one -- a whole deployment failing the
+    check for nothing. A candidate that answers or refuses quickly costs its siblings nothing,
+    since the remainder is recomputed each time round; only one that goes silent spends a
+    share, and then the share is what it spends rather than everything.
+
+    `MIN_DIAL_BUDGET_S` is the floor: below it a connect is not a probe, because it would time
+    out whatever is at the other end. So a candidate gets its share or that floor, whichever
+    is larger, and the loop stops once even the floor is more than is left.
+
+    Failures are returned rather than raised because the caller words its own, and the last
+    real one is the one it words -- like `create_connection`, with the same shortcoming, and it
+    costs nothing here because this caller reports "did not answer" either way rather than
+    drawing a verdict from the errno. A real failure is preferred to the budget's own
+    `TimeoutError`: an address that refused said something about itself, while "the budget ran
+    out" only says the probe stopped asking, and that is reported when nothing was reached.
     """
-    failure: OSError = OSError("no address to dial")
-    for family, socktype, proto, _canonname, sockaddr in candidates:
+    failure: OSError | None = None
+    total = len(candidates)
+    for index, (family, socktype, proto, _canonname, sockaddr) in enumerate(candidates):
         remaining = deadline - time.monotonic()
         if remaining < MIN_DIAL_BUDGET_S:
-            return TimeoutError("the budget ran out before every address was dialled")
+            return failure or TimeoutError("the budget ran out before every address was dialled")
+        share = max(remaining / (total - index), MIN_DIAL_BUDGET_S)
         try:
             sock = socket.socket(family, socktype, proto)
         except OSError as exc:
             failure = exc
             continue
         try:
-            sock.settimeout(remaining)
+            sock.settimeout(share)
             sock.connect(sockaddr)
         except OSError as exc:
             sock.close()
             failure = exc
             continue
         return sock
-    return failure
+    return failure or OSError("no address to dial")
 
 
 def _arm_until(sock: socket.socket, deadline: float) -> None:
@@ -706,6 +731,15 @@ def probe_proxy(
     while this one is the container's resolver and is nothing to do with the proxy at all. A
     resolver that answers and *declines* the name is not this case -- that is a `gaierror`, and
     it stays in the `({ExcType})` form, because the resolver did answer.
+
+    That string is what a resolver that does not answer produces *while the lookup's share is
+    the shorter of the two budgets*, which on the default 10 s it is: the share is 5 s, and
+    `/etc/resolv.conf`'s own default is 5 s per attempt times two attempts per nameserver. A
+    container configured with `options timeout:2 attempts:1` gives up before the share does and
+    raises `EAI_AGAIN` instead, and then the same unreachable resolver reads as `(gaierror)`,
+    because that is what it handed back. Both are bounded, which is what this docstring
+    promises; which of the two strings appears depends on whose budget runs out first, and only
+    the resolver's own configuration decides that.
     """
     parts = split_proxy_url(proxy_url)
     if parts is None:
@@ -721,11 +755,14 @@ def probe_proxy(
         candidates = _resolve_within(
             proxy_host, proxy_port, timeout_s=timeout_s * RESOLVE_BUDGET_SHARE
         )
-    except (OSError, RuntimeError, UnicodeError) as exc:
+    except Exception as exc:
         # The lookup answered with something other than addresses: the resolver refusing the
         # name (`gaierror`), an IDNA encoding `getaddrinfo` will not take, or -- `RuntimeError`
         # -- no thread to run it in, from a process already at its limit. None of them is a
         # proxy this probe can reach, and the type name says which without quoting a message.
+        # Caught whole rather than as those three, because this function contracts to *return*
+        # a string or a tuple: a type nobody listed would otherwise leave `check` with a
+        # traceback instead of a failed line, which is the one thing it must not do.
         return f"{proxy_host}:{proxy_port} did not answer ({type(exc).__name__})"
     if candidates is None:
         return f"{proxy_host}:{proxy_port} did not answer (the resolver did not answer)"
@@ -1132,7 +1169,10 @@ def resolved_addresses(host: str, *, timeout_s: float = RESOLVE_TIMEOUT_S) -> fr
     """
     try:
         info = _resolve_within(host, None, timeout_s=timeout_s)
-    except (OSError, RuntimeError, UnicodeError):
+    except Exception:
+        # Whole, for the reason `probe_proxy`'s own handler says: this is best effort and its
+        # callers have no failure path, so a type nobody listed must cost a label rather than
+        # end the run. The exception is not reported anywhere, so nothing of it is quoted.
         return frozenset()
     if info is None:
         # The resolver did not answer in the time it had. Nothing was resolved, which is what

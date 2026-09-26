@@ -604,18 +604,25 @@ STALLED_RESOLVER_S = 5.0
 BOUNDED_S = 2.0
 
 
-def _stalled_resolver(recorded: list[str] | None = None):
+def _stalled_resolver(
+    recorded: list[str] | None = None, entered: threading.Event | None = None
+):
     """A `getaddrinfo` that does not answer: a container that cannot reach its resolver.
 
     It sleeps rather than blocking forever, so the daemon thread the bound abandons goes away on
     its own during the rest of the session. It raises `EAI_AGAIN` when it does wake, which is
     what a resolver that timed out really raises, so nothing here depends on the abandoned
     lookup staying silent afterwards.
+
+    `entered` is set before the sleep, for a caller that needs to know the stub was reached
+    rather than assuming the lookup thread was scheduled promptly.
     """
 
     def getaddrinfo(host, *_args: object, **_kwargs: object):
         if recorded is not None:
             recorded.append(host)
+        if entered is not None:
+            entered.set()
         time.sleep(STALLED_RESOLVER_S)
         raise socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution")
 
@@ -632,10 +639,18 @@ def test_probe_proxy_bounds_its_whole_cost_including_the_proxys_own_name_lookup(
     default configuration, so that was three unbounded waits before the direct half began.
     """
     asked: list[str] = []
-    with mock.patch.object(socket, "getaddrinfo", _stalled_resolver(asked)):
+    entered = threading.Event()
+    with mock.patch.object(socket, "getaddrinfo", _stalled_resolver(asked, entered)):
         started = time.monotonic()
         answer = probe_proxy("http://egress:3128", CLAUDE_AI_HOST, 443, timeout_s=0.5)
         elapsed = time.monotonic() - started
+        # Waited for *inside* the patch and after the measurement, so neither the clock
+        # assertion nor `asked` depends on the lookup thread having been scheduled before the
+        # join gave up on it. An oversubscribed runner would otherwise leave `asked` empty and
+        # then let the abandoned thread reach the *real* resolver for `egress` once the patch
+        # was unwound. Bounded, so a stub that is never entered fails the assertion below
+        # rather than hanging the suite.
+        entered.wait(timeout=BOUNDED_S)
 
     assert elapsed < BOUNDED_S, f"the probe spent {elapsed:.2f}s of a 0.5s budget"
     # It is the *proxy's* name that has to be resolved here, not the CONNECT target's: the
@@ -709,6 +724,111 @@ def test_probe_proxy_bounds_a_proxy_that_answers_a_byte_at_a_time() -> None:
     assert answer == f"127.0.0.1:{port} did not answer (TimeoutError)"
 
 
+def test_every_address_of_the_proxys_name_is_dialled_inside_the_one_budget() -> None:
+    """The bound may not cost a reachable proxy its verdict, which is the unsafe direction.
+
+    `socket.create_connection` gave *each* address `getaddrinfo` returned its own full timeout,
+    so an `egress` on a network with `enable_ipv6` whose first address blackholes still
+    connected over the second. Bounding the total must not give that up: handing the first
+    candidate everything up to the deadline means a blackholed first address spends the budget
+    the second needed, and a reachable proxy is reported `did not answer` -- a whole deployment
+    failing the check for nothing, which is exactly what `resolved_addresses` and README call
+    the direction to err away from.
+
+    So what is left is shared between the addresses not yet tried. Nothing is dialled here: the
+    socket is a stand-in that consumes the timeout it was given and then reports the blackhole,
+    which is what an address that swallows packets does and what no loopback address will do on
+    request -- and `tests/conftest.py` fails a test that dials anything but loopback anyway.
+    """
+    budgets: list[float] = []
+
+    class Blackholed:
+        """Consumes whatever timeout it is handed, then reports what a silent address reports."""
+
+        def __init__(self, *_args: object) -> None:
+            self._timeout = 0.0
+
+        def settimeout(self, timeout: float) -> None:
+            self._timeout = timeout
+
+        def connect(self, _sockaddr: object) -> None:
+            budgets.append(self._timeout)
+            time.sleep(self._timeout)
+            raise TimeoutError("timed out")
+
+        def close(self) -> None:
+            pass
+
+    candidates = [
+        (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2001:db8::1", 3128, 0, 0)),
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", 3128)),
+    ]
+    budget_s = 1.0
+    with mock.patch.object(socket, "socket", Blackholed):
+        started = time.monotonic()
+        answer = egress._connect_within(candidates, deadline=time.monotonic() + budget_s)
+        elapsed = time.monotonic() - started
+
+    # Both addresses were dialled, which is the regression this case exists for: on a budget
+    # handed to the first candidate whole, the first `sleep` reaches the deadline and the second
+    # address is never tried at all.
+    assert len(budgets) == 2, budgets
+    # Each got a real share, not the floor left over after the first had taken everything.
+    assert all(b >= egress.MIN_DIAL_BUDGET_S for b in budgets), budgets
+    # And the total is still the one budget, which is the whole point of sharing it.
+    assert sum(budgets) <= budget_s + 0.01, budgets
+    assert elapsed < budget_s + BOUNDED_S, f"the dial spent {elapsed:.2f}s of a {budget_s}s budget"
+    assert isinstance(answer, OSError)
+
+
+def test_a_real_failure_is_preferred_to_the_budget_running_out() -> None:
+    """An address that refused said something about itself; "the budget ran out" did not.
+
+    `probe_proxy` renders whichever comes back as `did not answer ({ExcType})`, so this is what
+    an operator reads on the failing line: `ConnectionRefusedError` sends them to a proxy that
+    is not listening, while `TimeoutError` sends them to a network that is dropping packets.
+    Reporting the second for the first would be a wrong signpost.
+    """
+
+    class Refused:
+        """Refuses, having taken long enough over it to leave the next candidate no budget."""
+
+        def __init__(self, *_args: object) -> None:
+            pass
+
+        def settimeout(self, _timeout: float) -> None:
+            pass
+
+        def connect(self, _sockaddr: object) -> None:
+            time.sleep(0.3)
+            raise ConnectionRefusedError(errno.ECONNREFUSED, "Connection refused")
+
+        def close(self) -> None:
+            pass
+
+    candidates = [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", 3128)),
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.2", 3128)),
+    ]
+    # A budget the first candidate's refusal overruns, so the second is never reached and the
+    # loop ends on its own budget check -- with a real failure in hand, which is the one to word.
+    with mock.patch.object(socket, "socket", Refused):
+        answer = egress._connect_within(candidates, deadline=time.monotonic() + 0.2)
+
+    assert isinstance(answer, ConnectionRefusedError), answer
+
+    # With nothing reached at all, the budget *is* the honest answer, and then it is what comes
+    # back rather than an errno no address actually produced.
+    with mock.patch.object(socket, "socket", Refused):
+        nothing_reached = egress._connect_within(candidates, deadline=time.monotonic() - 1.0)
+    assert isinstance(nothing_reached, TimeoutError), nothing_reached
+
+    # And an empty candidate list is neither: there was no budget problem and no address to
+    # blame, which `probe_proxy` renders as `did not answer (OSError)`.
+    empty = egress._connect_within([], deadline=time.monotonic() + 1.0)
+    assert isinstance(empty, OSError) and not isinstance(empty, TimeoutError), empty
+
+
 def test_resolved_addresses_and_own_addresses_are_bounded_too() -> None:
     """`check` labels an on-link candidate a peer through these, so the on-link half carried the
     same exposure the direct half did: `socket.getaddrinfo` with no bound at all.
@@ -745,9 +865,16 @@ def test_the_peer_labelling_bound_is_the_default_and_is_spent_per_name() -> None
         default = inspect.signature(function).parameters["timeout_s"].default
         assert default == egress.RESOLVE_TIMEOUT_S, function.__name__
 
-    budgets: list[float] = []
+    # The stub's default is a sentinel rather than `RESOLVE_TIMEOUT_S`, so that "the caller
+    # passed the bound" and "the caller passed nothing and the stub's own default was recorded"
+    # are not the same observation. `peer_addresses` does both: it forwards nothing for the
+    # proxy's name and takes `own_addresses`' forwarded value for this container's, and either
+    # way the budget a real run spends is `RESOLVE_TIMEOUT_S`, which the signature assertions
+    # above pin as the default of both functions.
+    took_the_default = "took the default"
+    budgets: list[object] = []
 
-    def resolved(host: str, *, timeout_s: float = egress.RESOLVE_TIMEOUT_S) -> frozenset[str]:
+    def resolved(host: str, *, timeout_s: object = took_the_default) -> frozenset[str]:
         budgets.append(timeout_s)
         return frozenset()
 
@@ -755,35 +882,61 @@ def test_the_peer_labelling_bound_is_the_default_and_is_spent_per_name() -> None
         with mock.patch.object(socket, "gethostname", lambda: "codervis.test"):
             egress.peer_addresses("http://egress:3128")
 
-    assert budgets == [egress.RESOLVE_TIMEOUT_S, egress.RESOLVE_TIMEOUT_S]
+    assert budgets == [egress.RESOLVE_TIMEOUT_S, took_the_default], budgets
+    # Two names, one budget each, and neither of them shares with the other -- which is the
+    # property README rests on. A `peer_addresses` that threaded one budget through both would
+    # show up here as the second call receiving what the first had left.
+    assert len(budgets) == 2
 
 
-def test_no_name_in_the_module_is_resolved_outside_the_bounded_lookup() -> None:
-    """The enforcement point for "every name this module resolves is resolved under a deadline".
+def test_a_resolver_call_in_the_module_is_made_only_from_the_bounded_lookup() -> None:
+    """The enforcement point for "a resolver call in this module goes through `_resolve_within`".
 
-    Prose is not one, and this module has had the same gap twice over: the direct probe's lookup
-    was given a deadline while `probe_proxy`'s and `resolved_addresses`' were left alone,
-    because nothing failed when they stayed. `getaddrinfo` takes no timeout and spends the
-    platform resolver's own budget, so a call to it anywhere else here is an unbounded wait by
-    construction, however carefully its caller is written -- there is nothing for a reviewer to
-    check except that the call is not there.
+    Prose is not one, and this module has had the same gap twice over: the probes were given
+    connection timeouts while the lookups in front of them -- `probe_proxy`'s and
+    `resolved_addresses`' -- were left alone, because nothing failed when they stayed.
+    `getaddrinfo` takes no timeout and spends the platform resolver's own budget, so a call to
+    it anywhere else here is an unbounded wait by construction, however carefully its caller is
+    written -- there is nothing for a reviewer to check except that the call is not there.
 
     A new caller that needs a name resolved calls `_resolve_within`; one that needs to resolve
     differently widens `_resolve_within`'s arguments. A second call site has to come through
     this test, on purpose.
 
-    `socket.create_connection` on a *name* is the same unbounded lookup wearing a timeout that
-    does not cover it, and it is not pinned here: `probe_on_link` is handed literals from the
-    routing table, where there is no lookup to bound, and the public-name probe is #51's.
+    **Be exact about what this does not cover**, because the name it used to carry claimed the
+    module resolved no name outside a deadline and that is not true. `socket.create_connection`
+    on a *name* is the same unbounded lookup wearing a timeout that does not cover it, and
+    `probe_direct` still makes one: the public name's lookup is #51's, and README says so where
+    it states what `check` costs. `probe_on_link` needs nothing, since every address it is
+    handed is a literal from the routing table. So what is pinned here is the resolver calls,
+    not every name that gets resolved.
     """
-    lookup_names = ("getaddrinfo", "gethostbyname", "gethostbyname_ex")
+    # `gethostname` is deliberately absent: it reads the name this host was given and asks no
+    # resolver, which is why `own_addresses` may call it and then pass the result through the
+    # bounded lookup. `getfqdn`, `gethostbyaddr` and `getnameinfo` are present because each is
+    # a resolver round trip with no timeout of its own, exactly like `getaddrinfo`.
+    lookup_names = frozenset(
+        {
+            "getaddrinfo",
+            "gethostbyname",
+            "gethostbyname_ex",
+            "gethostbyaddr",
+            "getnameinfo",
+            "getfqdn",
+        }
+    )
 
     def is_lookup(node: ast.AST) -> bool:
-        return (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr in lookup_names
-        )
+        if not isinstance(node, ast.Call):
+            return False
+        # Both shapes, because they are the same call: `socket.getaddrinfo(...)` is an
+        # `Attribute`, and the `getaddrinfo(...)` an import-time `from socket import
+        # getaddrinfo` binds is a `Name`. Matching only the first is what let the reader
+        # modules' own surface check be narrower than it read, and the fix there was the same.
+        called = node.func
+        if isinstance(called, ast.Attribute):
+            return called.attr in lookup_names
+        return isinstance(called, ast.Name) and called.id in lookup_names
 
     # Attributed to the *top-level* statement that holds the call, so one call site counts once
     # however deeply it is nested -- `_resolve_within` does the lookup in a nested function, and

@@ -287,10 +287,16 @@ deadlines of their own:
 - **Each proxy probe is bounded whole, at the 10 seconds it is given**, the
   lookup of the proxy's own name included — `egress`, which Docker's embedded
   DNS normally answers in under a millisecond. Half of the 10 seconds is the
-  lookup's share and the connection takes what is left. There is one probe for
-  the reserved name and one per configured upstream, so three on the default
-  configuration, and a container that cannot reach its resolver spends at most
-  30 seconds across them rather than the resolver's own budget three times over.
+  lookup's share and the connection takes what is left, shared in turn between
+  the addresses the name resolved to: a proxy with an address per family whose
+  first one is silent is still dialled on the second, inside the same 10
+  seconds. There is one probe for the reserved name and one per configured
+  upstream, so three on the default configuration. That is a ceiling of 30
+  seconds across them, and a container that cannot reach its resolver at all
+  spends about 5 of each probe's 10 — the lookup's share, after which the probe
+  gives up with nothing to dial — so about 15 seconds in total rather than the
+  resolver's own budget three times over. The full 30 is what a resolver that
+  answers just in time followed by a proxy that never answers would cost.
 - **The on-link line's peer labelling is bounded at 5 seconds a name**, which is
   one full resolver attempt, and it looks up two: this container's own name and
   the proxy's. That labelling is what decides whether an on-link address is
