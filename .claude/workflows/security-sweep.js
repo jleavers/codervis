@@ -1045,11 +1045,24 @@ covers what, because two of them cover different sets of connections:
   same 16 KiB cap and 10 s deadline on **every** head, and a ceiling of 320
   connections-or-tasks, set above the relay's 256 so the relay runs out of slots first.
 
-What nothing here times is a request **body**. Every deadline above is spent by the end of a
-head, and a body that arrives long after its head is served is bounded by nothing in this
-repository today — establish what that costs, and what holds a connection while it happens.
-Time *after* dispatch is deliberately unbounded, which is what \`/api/stream\` is: one generator
-per connection, for as long as the tab is open.
+That list is three of the four bounds \`app/server.py\` arms. The fourth is a request
+**body**, and it is the one that is *not* spent by the end of a head: #66 (closed, do not
+re-derive) added a complete body within 10 s of its head (\`REQUEST_BODY_TIMEOUT_S\`), refused
+with 408, never renewed by an arriving byte, and armed on h11's \`their_state is SEND_BODY\`
+rather than on a clock the server is running. Before it, a 40-byte body dribbled a byte at a
+time was served 59 s after its head, holding one of the 320 slots throughout. So the body is a
+bound to **probe**, not a gap to establish, and \`ingress\` still has no counterpart for it at
+all, since the relay reads a first head and then relays bytes blind.
+
+Probe it in both directions. Does it hold for the shapes you can reach — chunked as well as
+\`Content-Length\`, a body under uvicorn's 64 KiB read pause, a body on the second request of a
+kept-alive connection, a body that simply stops arriving? And does it stay *off* a response in
+flight? Time after dispatch is deliberately unbounded, which is what \`/api/stream\` is: one
+generator per connection, for as long as the tab is open. This deadline is the one bound here
+armed after dispatch, because uvicorn dispatches a request as soon as its head is parsed, so a
+\`GET\` that never enters \`SEND_BODY\` and a \`POST\` whose body finished long before its
+response does must both be clear of it — as must a WebSocket upgrade, which leaves h11 frozen
+in \`SEND_BODY\` with no body coming. Demonstrate each, rather than reading the argument back.
 
 Because those two resource bounds cover different sets of connections, your first question is
 still whether anything reaches \`codervis:8000\` **without** passing through \`ingress\`.
