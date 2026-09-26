@@ -247,12 +247,13 @@ class BoundedHeadH11Protocol(H11Protocol):
         against a transport that is now carrying an established WebSocket stream -- writing an
         HTTP 408 into the middle of it and closing it. `_upgraded` is what stops the re-arm, since
         cancelling here is not enough on its own: uvicorn's `return` lands back in the override
-        above, which reconsiders the deadlines one last time.
+        above, which reconsiders the deadlines one last time. Both happen *before* `super()`, so
+        a handover that raises part way leaves nothing armed either.
         """
         self._upgraded = True
-        super().handle_websocket_upgrade(event)
         self._cancel_head_deadline()
         self._cancel_body_deadline()
+        super().handle_websocket_upgrade(event)
 
     # The bounds' own state
 
@@ -340,7 +341,7 @@ class BoundedHeadH11Protocol(H11Protocol):
 
     def _head_timed_out(self) -> None:
         self._head_deadline = None
-        if self._awaiting_head():
+        if self._awaiting_head() and not self._upgraded:
             self._refuse(NO_REQUEST_IN_TIME)
 
     def _arm_body_deadline(self) -> None:
@@ -366,7 +367,9 @@ class BoundedHeadH11Protocol(H11Protocol):
         be told. Either way the connection goes, which is the resource at stake.
         """
         self._body_deadline = None
-        if not self._awaiting_body():
+        if self._upgraded or not self._awaiting_body():
+            # `_upgraded` cannot be true here while the cancels above hold, and is checked anyway:
+            # this is the branch that would write HTTP into a WebSocket stream if they ever did not.
             return
         cycle = self.cycle
         if cycle is not None:
