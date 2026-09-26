@@ -517,13 +517,15 @@ flags that are useful for quick diagnosis.
   head within 10 seconds with `408` — on **every** request of a connection, not
   just the first, and whichever route the connection arrived by. It holds at most
   320 connections, refusing a further one with `503` as it is accepted, and
-  answers `503` to a request that arrives once 320 connections or streaming tasks
-  are held, so at most 319 are served at a time. `ingress` is the outer layer on the published port, with the
-  same head cap and deadline and a budget of 256 connections, applied to the
-  first head of each connection before the dashboard is dialled at all. What is
-  deliberately **not** bounded is a response already under way, because an SSE
-  response lasts as long as the browser tab: every bound above is spent before a
-  request is dispatched. Every service's log is capped at 3 × 10 MB.
+  answers `503` to a request that arrives once 320 connections or running requests
+  are held, so at most 319 are served at a time. `ingress` is the outer layer on
+  the published port, with the same head budget and deadline and a budget of 256
+  connections, applied to the first head of each connection before the dashboard
+  is dialled at all. What is deliberately **not** bounded is anything after a
+  request has been dispatched — a response, because an SSE response lasts as long
+  as the browser tab, and a request body, which nothing here times. Each of those
+  costs one of the 320 connections and no more. Every service's log is capped at
+  3 × 10 MB.
 - The dashboard never logs the tokens, and never serves an exception's own
   text: a failure is reported with one of the fixed messages in
   `app/degrade.py`. A debug capture of an upstream call made with the CLI's own

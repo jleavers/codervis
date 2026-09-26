@@ -124,8 +124,10 @@ def test_the_dashboard_runs_the_image_s_own_bounded_server(config: dict) -> None
     An override is allowed only where it still launches that module."""
     service = config["services"]["codervis"]
     for key in ("entrypoint", "command"):
-        override = service.get(key)
-        assert not override or "app.server" in override, (override, key)
+        override = service.get(key) or []
+        # Joined, because a command may name the module inside a shell invocation rather than as
+        # an element of its own.
+        assert not override or "app.server" in " ".join(override), (override, key)
 
 
 def test_the_dashboard_reaches_the_proxy_through_both_spellings(config: dict) -> None:

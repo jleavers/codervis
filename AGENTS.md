@@ -119,9 +119,11 @@ directories; it must not call upstream quota endpoints or read host tokens.
   in one socket read is parsed however large it is; and uvicorn's
   `limit_concurrency` is not admission control, so it refuses a *request* on an
   over-budget connection rather than the connection (800 were held at once against
-  a ceiling of 320). Both numbers are checked at the accept and before the parser
-  as well. Keep all three spent *before* a request is dispatched — a bound that reached
-  a response in flight would cut off every SSE stream. `ingress`'s first-head cap
+  a ceiling of 320). So the head cap is checked before the parser sees the bytes,
+  and the connection count where the connection is accepted. Keep all three spent
+  *before* a request is dispatched — a bound that reached a response in flight
+  would cut off every SSE stream, and nothing times a response or a request body
+  by design. `ingress`'s first-head cap
   and deadline stay as the outer layer; they cover neither a later request on a
   kept-alive connection nor a connection opened straight to `codervis:8000` (#43).
   `tests/test_server_bounds.py` pins each bound through a real server, the values,

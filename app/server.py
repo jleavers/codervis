@@ -10,15 +10,19 @@ uvicorn's defaults bound none of it. `--http auto` prefers httptools, which caps
 nothing at all, and no ceiling and no timer is armed until a response has been sent. So this module
 names the three bounds and arms them:
 
-- **a request head of at most 16 KiB, on every request of every connection**, the same size
-  `ingress` allows. `BoundedHeadH11Protocol` below is what enforces it, and its docstring says why
-  h11's own `max_incomplete_event_size` is not enough on its own.
+- **a request head of at most 16 KiB, on every request of every connection** -- the budget
+  `ingress` reads a first head with, and never wider than it. `BoundedHeadH11Protocol` below is
+  what enforces it, and its docstring says why h11's own `max_incomplete_event_size` is not enough
+  on its own.
 - **a complete head within 10 s**, the same deadline `ingress` applies to a first head, applied
   here to every head. Without it a peer that dribbles a head, or opens a socket and says nothing at
-  all, holds a counted connection for as long as it likes -- which under the ceiling below would be
+  all, holds a counted connection for as long as it likes -- which under the budget below would be
   a way to make the server refuse everybody else.
-- **a concurrency ceiling of 320 connections-or-tasks**, above `ingress`'s 256 so the relay runs
-  out of slots before the server does and an SSE stream per browser tab is never what refuses one.
+- **at most 320 connections held at once**, above `ingress`'s 256 so the relay runs out of slots
+  before the server does and an SSE stream per browser tab is never what is refused.
+
+Choosing h11 moves parsing from httptools' C parser to pure Python. For a dashboard one browser
+polls it costs nothing worth measuring, and it is the price of a head limit that exists at all.
 
 What stays unbounded, and must: time *after* a request has been dispatched. That is what an SSE
 response is, and it lasts as long as the browser tab. Every bound above is spent before dispatch.
@@ -48,9 +52,11 @@ APP = "app.main:app"
 DEFAULT_BIND = "127.0.0.1"
 DEFAULT_PORT = 8000
 
-# The largest request head this server will parse, on every request of every connection.
-# Deliberately the same as `ingress.MAX_REQUEST_HEAD_BYTES`, so a head the relay refuses with 431
-# is one the server refuses with 431 when it never passed the relay.
+# The largest request head this server will parse, on every request of every connection. The same
+# number `ingress` reads a first head with, and the two are deliberately not *identical*: the
+# relay's `readuntil` measures the offset of the head terminator against its limit, so the relay
+# admits four bytes more (the terminator itself). The inner layer being the stricter of the two is
+# the safe direction; a head either layer refuses gets the same 431 either way.
 MAX_REQUEST_HEAD_BYTES = 16 * 1024
 # How long a connection may take over a complete request head, counted from the moment it could
 # begin one -- when it is accepted, and again when the previous response ends -- and never renewed
@@ -143,12 +149,13 @@ class BoundedHeadH11Protocol(H11Protocol):
         # the accept as well as where uvicorn checks it. `super()` has already added this
         # connection to the shared set, so this count includes it: at most the budget is held.
         held = len(self.connections)
-        if self.limit_concurrency is not None and held > self.limit_concurrency:
-            self._log_saturation(held)
-            self._refuse(TOO_MANY_CONNECTIONS)
-            return
-        if self._saturated and held <= (self.limit_concurrency or 0) * 3 // 4:
-            type(self)._saturated = False
+        if self.limit_concurrency is not None:
+            if held > self.limit_concurrency:
+                self._log_saturation(held)
+                self._refuse(TOO_MANY_CONNECTIONS)
+                return
+            if self._saturated and held <= self.limit_concurrency * 3 // 4:
+                type(self)._saturated = False
         # Armed from the moment it is accepted, not from its first byte: a socket that says nothing
         # is the cheapest way to hold a slot.
         self._arm_head_deadline()
@@ -165,27 +172,39 @@ class BoundedHeadH11Protocol(H11Protocol):
         super().connection_lost(exc)
 
     def data_received(self, data: bytes) -> None:
-        if self._awaiting_head():
-            buffered, _ = self.conn.trailing_data
-            if pending_head_length(buffered + data) > self.max_request_head_bytes:
-                # Before `super()`, so the oversized head never reaches the parser.
-                self._refuse(HEAD_TOO_LARGE)
-                return
+        if self._awaiting_head() and self._head_is_over_bound(data):
+            # Before `super()`, so the oversized head never reaches the parser.
+            self._refuse(HEAD_TOO_LARGE)
+            return
         super().data_received(data)
         self._reconsider_head_deadline()
 
     def handle_events(self) -> None:
         # The other way in: a request the client pipelined behind the last one is parsed out of
         # h11's buffer when the previous response completes, with no `data_received` to see it.
-        if self._awaiting_head():
-            buffered, _ = self.conn.trailing_data
-            if pending_head_length(buffered) > self.max_request_head_bytes:
-                self._refuse(HEAD_TOO_LARGE)
-                return
+        if self._awaiting_head() and self._head_is_over_bound():
+            self._refuse(HEAD_TOO_LARGE)
+            return
         super().handle_events()
         self._reconsider_head_deadline()
 
     # The head bound's own state
+
+    def _head_is_over_bound(self, arriving: bytes = b"") -> bool:
+        """Whether the head being received, plus ``arriving``, is over the cap.
+
+        The length is checked first and the buffer only copied and scanned when that total is over
+        the cap, because `pending_head_length` can never return more than the length it is given.
+        Scanning every read would make this bound expensive in the one way it exists to prevent:
+        a head dripped a byte at a time would be copied and re-scanned from the start each time,
+        which measured 134 MB of copying for 16 KB sent -- a peer paying nothing to make the
+        server pay.
+        With the check below, the scan runs only for a head that is already over its budget.
+        """
+        buffered, _ = self.conn.trailing_data
+        if len(buffered) + len(arriving) <= self.max_request_head_bytes:
+            return False
+        return pending_head_length(buffered + arriving) > self.max_request_head_bytes
 
     def _awaiting_head(self) -> bool:
         """Whether this connection is between requests, waiting for one to arrive.
@@ -276,6 +295,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not 0 <= args.port <= 65535:
         print("server: --port must be between 0 and 65535", file=sys.stderr)
         return 1
+    # As `app.ingress` and `app.egress` do it, and for the same reason: without it the one line
+    # that says the front door is refusing connections falls through to `logging.lastResort`, with
+    # no level, time or logger name, and the debug line below it could never be emitted at all.
+    # uvicorn's own logging config leaves existing loggers alone, so this survives its start.
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
+    )
     # A port that cannot be bound is uvicorn's own error to report: it logs the reason and exits
     # non-zero from inside `run()`, so there is nothing useful to add here.
     uvicorn.Server(build_config(bind=args.bind, port=args.port)).run()

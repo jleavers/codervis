@@ -294,8 +294,9 @@ sent. `app/server.py` is what the image's `CMD` launches, and it holds three
 bounds, every one of them spent *before* a request is dispatched:
 
 - **a head of at most 16 KiB, refused with 431**, on every request of every
-  connection. `BoundedHeadH11Protocol` is what enforces it, and the subclass is
-  not ceremony: h11's own `max_incomplete_event_size` is checked only where
+  connection — the budget `ingress` reads a first head with, and never wider than
+  it. `BoundedHeadH11Protocol` is what enforces it, and the subclass is not
+  ceremony: h11's own `max_incomplete_event_size` is checked only where
   `next_event()` has to answer `NEED_DATA`, so a head that arrives *complete*
   inside one socket read is parsed however large it is — 20, 50 and 80 KiB heads
   in one write were all served with 200 under that setting alone, and the real
@@ -326,16 +327,20 @@ bounds, every one of them spent *before* a request is dispatched:
   answers 503 to a request arriving once the count has reached 320, the arriving
   connection included, so at most 319 are served at a time.
 
-**What stays unbounded is a response already under way**, deliberately: that is
-what SSE is, and `/api/stream` lasts as long as the browser tab.
-`tests/test_server_bounds.py` pins each bound through a real server on loopback —
-each head shape and both sides of the cap to the byte, the surplus connection
-refused before it sends anything, the deadline including that a slow stream is not
-cut off, the
-ceiling's exact boundary — pins the values, asks both front doors for the same
-refusal rather than comparing two constants, and pins that the `CMD` still
-launches this module: `app/server.py` is documentation the moment the image goes
-back to `uvicorn app.main:app`. Keep `ingress`'s checks as the outer layer; do not
+**What stays unbounded is anything after a request is dispatched**: a response,
+deliberately — that is what SSE is, and `/api/stream` lasts as long as the browser
+tab — and a request *body*, which nothing here times either (uvicorn pauses reading
+at 64 KiB but arms no timer). Each costs one of the 320 connections and no more,
+which is what makes the residue affordable rather than a hole.
+`tests/test_server_bounds.py` pins each bound through a real server on loopback:
+each head shape, both sides of the cap to the byte, the surplus connection refused
+before it sends anything, the deadline (including that a slow stream is not cut
+off, and that a head inside the budget is not re-scanned on every read), and
+uvicorn's own ceiling's exact boundary. It pins the values, asks both front doors
+for the same refusal rather than comparing two constants — exact that the relay's
+own allowance is four bytes wider, because `readuntil` measures the terminator's
+offset — and pins that the `CMD` still launches this module: `app/server.py` is
+documentation the moment the image goes back to `uvicorn app.main:app`. Keep `ingress`'s checks as the outer layer; do not
 move a bound out of the server and into the relay.
 
 The front door is also bounded by who may use it, because the dashboard has no

@@ -29,6 +29,7 @@ import uvicorn
 
 from app import ingress
 from app.server import (
+    HEAD_TOO_LARGE,
     TOO_MANY_CONNECTIONS,
     APP,
     MAX_CONNECTIONS,
@@ -216,6 +217,34 @@ def test_a_dripped_oversized_head_is_refused_before_it_is_all_sent() -> None:
             sock.close()
 
 
+def test_a_legal_head_is_not_rescanned_on_every_read(monkeypatch) -> None:
+    """The cap must not be expensive to apply, or it is a cost a peer can inflict rather than one
+    it is charged. A head under the budget is never scanned at all: the length is checked first,
+    and only a head already over its budget is copied and searched. Dripping 16 KB a byte at a
+    time cost 134 MB of copying before this."""
+    from app import server as module
+
+    scans = 0
+    real = module.pending_head_length
+
+    def counting(pending: bytes) -> int:
+        nonlocal scans
+        scans += 1
+        return real(pending)
+
+    monkeypatch.setattr(module, "pending_head_length", counting)
+    head = _head_of_exactly(MAX_REQUEST_HEAD_BYTES - 10)
+    with _running() as port:
+        sock = _connect(port)
+        try:
+            for offset in range(0, len(head), 512):
+                sock.sendall(head[offset : offset + 512])
+            assert _status(sock).startswith(b"HTTP/1.1 200 ")
+        finally:
+            sock.close()
+    assert scans == 0, f"a head inside the budget was scanned {scans} times"
+
+
 def test_an_oversized_head_is_never_handed_to_the_parser() -> None:
     """Refusing early is the point, not only refusing: `data_received` checks before it lets h11
     have the bytes, so an oversized head is never buffered by the parser at all. Without that
@@ -372,6 +401,33 @@ def test_the_deadline_does_not_touch_a_response_in_flight() -> None:
             sock.close()
 
 
+def test_a_second_head_dripped_on_a_served_connection_is_timed_out() -> None:
+    """front-door-1's other shape: the issue names an oversized second head *and* a drip-fed one.
+    The size cap answers the first; this is the second, and only the deadline answers it -- the
+    connection has already been served once, so `ingress` relayed it blind and uvicorn's keep-alive
+    timer was cancelled by its first byte and never re-armed."""
+    timeout = Impatient.request_timeout_s
+    with _running(protocol=Impatient) as port:
+        sock = _connect(port)
+        try:
+            sock.sendall(HEAD)
+            assert _status(sock).startswith(b"HTTP/1.1 200 ")
+            sock.sendall(b"GET / HTTP/1.1\r\n")
+            started = time.monotonic()
+            drip_until = started + timeout * 8
+            while time.monotonic() < drip_until:
+                if select.select([sock], [], [], 0)[0]:
+                    break
+                with contextlib.suppress(OSError):
+                    sock.sendall(b"X-P: a\r\n")
+                time.sleep(timeout / 4)
+            refused_after = time.monotonic() - started
+            assert _status(sock).startswith(b"HTTP/1.1 408 ")
+            assert refused_after < timeout * 3, refused_after
+        finally:
+            sock.close()
+
+
 def test_the_deadline_refuses_only_while_a_head_is_awaited() -> None:
     """The guard at the moment the timer fires, which is what makes a stray one harmless.
 
@@ -421,6 +477,31 @@ def test_the_deadline_is_cancelled_once_a_request_is_dispatched() -> None:
             sock.close()
 
 
+def test_the_deadline_is_re_armed_when_a_response_ends() -> None:
+    """And put back afterwards, from the end of that response rather than the next head's first
+    byte: a connection that has been served once is a connection that can go quiet again, and
+    nothing else here would arm it. uvicorn's own keep-alive timeout is shorter than the shipped
+    deadline, so this is the check that would go unnoticed behind it."""
+    live: list[BoundedHeadH11Protocol] = []
+
+    class Reporting(BoundedHeadH11Protocol):
+        def connection_made(self, transport) -> None:  # type: ignore[override]
+            super().connection_made(transport)
+            live.append(self)
+
+    with _running(protocol=Reporting) as port:
+        sock = _connect(port)
+        try:
+            sock.sendall(HEAD)
+            assert _status(sock).startswith(b"HTTP/1.1 200 ")
+            (protocol,) = live
+            assert protocol._head_deadline is not None, (
+                "no head deadline is armed on a connection waiting for its next request"
+            )
+        finally:
+            sock.close()
+
+
 def test_a_second_request_after_a_long_response_is_still_served() -> None:
     """The deadline is re-armed between requests, so the arming has to be correct both ways: a
     connection that has just carried a slow response is not one that gets refused."""
@@ -450,12 +531,24 @@ def test_connections_past_the_budget_are_refused_at_the_accept() -> None:
     own 503 for the same case.
     """
     ceiling = 6
+    held: list[BoundedHeadH11Protocol] = []
+
+    class Counting(BoundedHeadH11Protocol):
+        def connection_made(self, transport) -> None:  # type: ignore[override]
+            super().connection_made(transport)
+            held.append(self)
+
     socks: list[socket.socket] = []
-    with _running(max_connections=ceiling) as port:
+    with _running(protocol=Counting, max_connections=ceiling) as port:
         try:
             for _ in range(ceiling):
                 socks.append(_connect(port))
-            time.sleep(0.2)
+            # Waited for rather than slept over: the surplus is only surplus once the server has
+            # accepted the ones before it.
+            deadline = time.monotonic() + 10
+            while len(held) < ceiling and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert len(held) == ceiling, len(held)
             surplus = _connect(port)
             socks.append(surplus)
             assert _drain(surplus) == TOO_MANY_CONNECTIONS
@@ -496,15 +589,21 @@ def test_a_closed_connection_gives_its_slot_back() -> None:
     ceiling = 4
     with _running(max_connections=ceiling) as port:
         for _ in range(ceiling * 3):
-            sock = _connect(port)
-            try:
-                sock.sendall(HEAD)
-                assert _status(sock).startswith(b"HTTP/1.1 200 ")
-            finally:
-                sock.close()
-            # The server drops the connection from its own set when the loss is delivered, which
-            # is not synchronous with our close; the next dial is what gives it a chance to.
-            time.sleep(0.02)
+            # The server drops a connection from its own set when the loss is delivered, which is
+            # not synchronous with our close, so a slot can take a moment to come back. Retried
+            # rather than slept over, so a slow machine reads as slow and not as a broken bound.
+            deadline = time.monotonic() + 10
+            while True:
+                sock = _connect(port)
+                try:
+                    sock.sendall(HEAD)
+                    status = _status(sock)
+                    if status.startswith(b"HTTP/1.1 200 ") or time.monotonic() > deadline:
+                        break
+                finally:
+                    sock.close()
+                time.sleep(0.05)
+            assert status.startswith(b"HTTP/1.1 200 "), status
 
 
 # The two layers together
@@ -513,27 +612,44 @@ def test_a_closed_connection_gives_its_slot_back() -> None:
 @asynctest
 async def test_both_front_doors_refuse_the_same_head_the_same_way() -> None:
     """The relation the numbers are chosen for, asserted by asking both doors rather than by
-    comparing two constants: the relay refuses an oversized head before it dials the dashboard,
-    the server refuses the identical head on a connection that never passed the relay, and the
-    peer cannot tell which layer it reached. An ordinary request through the relay still gets
-    through, so the outer layer is still a relay and not a second bound in the way."""
-    with _running() as server_port:
+    comparing two constants -- and exact about where they differ.
+
+    `ingress`'s `readuntil` measures the *offset* of the head terminator against its limit, so the
+    relay admits four bytes more than the server: at the cap both serve, one byte over the server
+    refuses (through the relay too, because the relay passed it on), and five over the relay
+    refuses it itself without dialling the dashboard at all. The server being the stricter of the
+    two is the safe direction for the inner layer, and the peer gets the same 431 whichever
+    answers.
+    """
+    dialled = 0
+
+    class Counting(BoundedHeadH11Protocol):
+        def connection_made(self, transport) -> None:  # type: ignore[override]
+            nonlocal dialled
+            dialled += 1
+            super().connection_made(transport)
+
+    with _running(protocol=Counting) as server_port:
         relay = await ingress.serve("127.0.0.1", server_port, bind="127.0.0.1", port=0)
         relay_port = relay.sockets[0].getsockname()[1]
         try:
-            for size, expected in (
-                (MAX_REQUEST_HEAD_BYTES, b"HTTP/1.1 200 "),
-                (MAX_REQUEST_HEAD_BYTES + 1, b"HTTP/1.1 431 "),
-            ):
-                head = _head_of_exactly(size)
+            for over, expected in ((0, b"HTTP/1.1 200 "), (1, b"HTTP/1.1 431 ")):
+                head = _head_of_exactly(MAX_REQUEST_HEAD_BYTES + over)
                 through_the_relay = await asyncio.to_thread(_exchange, relay_port, head)
                 straight_to_the_server = await asyncio.to_thread(_exchange, server_port, head)
                 assert through_the_relay.startswith(expected), through_the_relay[:80]
                 assert straight_to_the_server.startswith(expected), straight_to_the_server[:80]
-                if expected != b"HTTP/1.1 200 ":
-                    # The refused answer byte for byte; the served one carries a date and so
-                    # cannot be compared that way.
-                    assert through_the_relay == straight_to_the_server
+                if over:
+                    # The refused answer byte for byte; a served one carries a date and cannot be
+                    # compared that way.
+                    assert through_the_relay == straight_to_the_server == HEAD_TOO_LARGE
+            # Five over, and the relay answers out of its own bound: no dial at all.
+            before = dialled
+            answer = await asyncio.to_thread(
+                _exchange, relay_port, _head_of_exactly(MAX_REQUEST_HEAD_BYTES + 5)
+            )
+            assert answer == HEAD_TOO_LARGE, answer[:80]
+            assert dialled == before, "the relay dialled the dashboard for a head it refuses"
         finally:
             relay.close()
             await relay.wait_closed()

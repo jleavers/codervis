@@ -1,4 +1,7 @@
 fastapi==0.141.1
 uvicorn[standard]==0.53.0
+# Imported directly by app/server.py, which subclasses uvicorn's h11 protocol, so it is pinned
+# here rather than relied on as uvicorn's own transitive dependency.
+h11==0.16.0
 jinja2==3.1.6
 python-multipart==0.0.32
