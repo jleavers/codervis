@@ -251,7 +251,7 @@ default route:
 
 ```text
 [ OK ] example.com does not resolve here, and the routing table names no default route: there is no route round the proxy to take
-[ OK ] example.com could not be looked up, because the resolver did not answer inside the probe's budget, and the routing table names no default route: there is no route round the proxy to take
+[ OK ] example.com could not be looked up, because the resolver did not answer, and the routing table names no default route: there is no route round the proxy to take
 [FAIL] example.com could not be looked up, and this container has a default route: it has a way off its own subnets, and whether that reaches round the proxy is unverified
 [FAIL] example.com could not be looked up and /proc/net/route could not be read, so neither way of telling whether this container has a route off it was available and the bound is unverified
 ```
@@ -282,12 +282,14 @@ on-link and direct probes open one directly and send nothing either. An address
 that answers at all answers at once; it is the `OK` that costs one timeout per
 port, so that is the line that can take a few seconds to print. The
 public-name line has a bound of its own, and that bound covers the name
-lookup: at most three seconds to resolve `example.com` and dial every
-address it resolves to, together. Not three seconds an address, and not a
-resolver's own budget first — `/etc/resolv.conf` gives it `timeout:`
-seconds, 5 by default, once per `attempts:` per nameserver, which is what a
-container that cannot reach its resolver would otherwise wait out before any
-of this began. To change the
+lookup: at most ten seconds to resolve `example.com` and dial the addresses
+it resolves to, together, half of it for each. Not ten seconds an address,
+and not a resolver's own budget first — `/etc/resolv.conf` gives that
+`timeout:` seconds, 5 by default, once per `attempts:` per nameserver, which
+is what a container that cannot reach its resolver would otherwise wait out
+before any of this began. A resolver slower than the five seconds the lookup
+gets makes the line the routing-table assertion below rather than a dial, and
+says so. To change the
 allow-list, edit `EGRESS_ALLOW` in `.env` and run `docker compose up -d egress`.
 
 The two directions are separate bounds, and the on-link line is the one an

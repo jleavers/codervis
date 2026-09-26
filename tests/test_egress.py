@@ -943,17 +943,18 @@ def test_the_public_name_probe_tells_no_route_from_no_dns_from_no_probe() -> Non
     connection that never left this container is a failure, for the same reason the on-link
     half fails one.
 
-    A family this container cannot open a socket in at all is classed with silence rather than
-    with the local failures, and that is deliberate: `EAFNOSUPPORT` for an AAAA candidate on a
-    kernel with no IPv6 is not a probe something got in the way of, it is an address no packet
-    of this container's could ever leave for. Reading it as a local failure would fail the
-    check on every v4-only deployment of a dual-stack name.
+    The partition is the on-link half's, errno for errno, because one errno answered in
+    opposite directions by the two halves of one check is one of them passing on what the
+    other fails. `EAFNOSUPPORT` is a local failure in both, which would fail the check on
+    every v4-only deployment of a dual-stack name if such a candidate could arise -- and
+    `AI_ADDRCONFIG` on the lookup is what keeps it from arising, rather than an exception to
+    the partition.
     """
     for failure, expected in (
         (TimeoutError(), DIRECT_NO_ROUTE),
         (as_oserror(errno.ENETUNREACH), DIRECT_NO_ROUTE),
         (as_oserror(errno.EHOSTUNREACH), DIRECT_NO_ROUTE),
-        (as_oserror(errno.EAFNOSUPPORT), DIRECT_NO_ROUTE),
+        (as_oserror(errno.EAFNOSUPPORT), DIRECT_UNVERIFIED),
         (as_oserror(errno.EPERM), DIRECT_UNVERIFIED),
         (as_oserror(errno.ENETDOWN), DIRECT_UNVERIFIED),
         (as_oserror(errno.EMFILE), DIRECT_UNVERIFIED),
@@ -966,7 +967,7 @@ def test_the_public_name_probe_tells_no_route_from_no_dns_from_no_probe() -> Non
 
     # `EAFNOSUPPORT` really arrives from `socket.socket`, before there is anything to connect,
     # so the row above reaches that classification by the other door. Both doors, or the one a
-    # v4-only container actually comes through is the untested one.
+    # kernel with no IPv6 actually comes through is the untested one.
     def no_socket_in_that_family(*_args: object, **_kwargs: object) -> None:
         raise as_oserror(errno.EAFNOSUPPORT)
 
@@ -975,14 +976,48 @@ def test_the_public_name_probe_tells_no_route_from_no_dns_from_no_probe() -> Non
 
     with mock.patch.object(egress.socket, "getaddrinfo", v6_only):
         with mock.patch.object(egress.socket, "socket", no_socket_in_that_family):
-            assert probe_direct("example.com", 443, timeout_s=0.5) == DIRECT_NO_ROUTE
+            assert probe_direct("example.com", 443, timeout_s=0.5) == DIRECT_UNVERIFIED
 
-    # The lookup's own failure is still the lookup's: it is raised by the resolver, not by a
-    # dial, so it cannot come from the table above.
-    with mock.patch.object(
-        egress.socket, "getaddrinfo", side_effect=socket.gaierror(-2, "Name or service not known")
+
+def test_the_lookup_asks_only_for_families_this_container_holds_an_address_in() -> None:
+    """`AI_ADDRCONFIG`, which is what keeps the errno partition above from biting.
+
+    An AAAA candidate on a container with no IPv6 address fails `EAFNOSUPPORT`, which is a
+    local failure and fails the check. `socket.create_connection` did not ask for the flag and
+    got away with it by reporting only the last candidate's error; this half reads every
+    candidate, so the flag is load-bearing rather than tidy.
+    """
+    asked: dict[str, object] = {}
+
+    def record(*args: object, **kwargs: object) -> list[tuple]:
+        asked.update(kwargs)
+        return _candidates("192.0.2.1")
+
+    with mock.patch.object(egress.socket, "getaddrinfo", record):
+        with mock.patch.object(egress.socket, "socket", _dialling({"192.0.2.1": None})[0]):
+            probe_direct("example.com", 443, timeout_s=0.5)
+    assert asked.get("flags", 0) & socket.AI_ADDRCONFIG
+
+
+def test_a_lookup_that_did_not_come_back_is_told_from_a_name_that_is_not_there() -> None:
+    """Which `EAI_*` codes are the resolver answering, and which are it failing to.
+
+    The outcome must not turn on timing. A resolver configured `timeout:1 attempts:1`, a
+    forwarder that gives up, a musl image: `getaddrinfo` *returns*, inside whatever budget the
+    probe gave it, with `EAI_AGAIN`. Reading that as `DIRECT_NO_DNS` would have `check` print
+    `[ OK ] example.com does not resolve here` over a resolver that said no such thing --
+    which is the claim this module is careful everywhere else not to make.
+    """
+    for code, expected in (
+        (socket.EAI_NONAME, DIRECT_NO_DNS),
+        (getattr(socket, "EAI_NODATA", socket.EAI_NONAME), DIRECT_NO_DNS),
+        (socket.EAI_AGAIN, DIRECT_NO_RESOLVER),
+        (socket.EAI_FAIL, DIRECT_NO_RESOLVER),
+        (socket.EAI_SYSTEM, DIRECT_NO_RESOLVER),
     ):
-        assert probe_direct("example.com", 443, timeout_s=0.5) == DIRECT_NO_DNS
+        failure = socket.gaierror(code, "lookup failed")
+        with mock.patch.object(egress.socket, "getaddrinfo", side_effect=failure):
+            assert probe_direct("example.com", 443, timeout_s=0.5) == expected, code
 
 
 def test_a_refusal_from_any_candidate_of_the_name_reads_as_reach() -> None:
@@ -1071,41 +1106,99 @@ def test_a_resolver_that_does_not_answer_is_bounded_and_is_its_own_outcome() -> 
     assert elapsed < 10, f"the probe outlasted its own budget: {elapsed:.2f}s for a 1 s budget"
 
 
+class _AnsweringAfter:
+    """A socket layer where every address answers, but not before `delay_s` has passed.
+
+    Built rather than stubbed with an exception, because the cases below are about *when* an
+    address answers relative to the budget the probe gave it: a stub that raises at once
+    cannot tell a candidate that was waited for from one that was not.
+    """
+
+    def __init__(self, delay_s: float, failure: BaseException | None) -> None:
+        self.delay_s = delay_s
+        self.failure = failure
+        self.dialled: list[str] = []
+
+    def __call__(self, *_args: object, **_kwargs: object) -> object:
+        layer = self
+
+        class Socket:
+            def __init__(self) -> None:
+                self._timeout_s = 0.0
+
+            def settimeout(self, timeout_s: float) -> None:
+                self._timeout_s = timeout_s
+
+            def connect(self, sockaddr: tuple) -> None:
+                layer.dialled.append(sockaddr[0])
+                if layer.delay_s > self._timeout_s:
+                    time.sleep(self._timeout_s)
+                    raise TimeoutError
+                time.sleep(layer.delay_s)
+                if layer.failure is not None:
+                    raise layer.failure
+
+            def close(self) -> None:
+                pass
+
+        return Socket()
+
+
+def _probe_through(layer: _AnsweringAfter, addresses: list[str], *, timeout_s: float):
+    def resolves(*_args: object, **_kwargs: object) -> list[tuple]:
+        return _candidates(*addresses)
+
+    with mock.patch.object(egress.socket, "getaddrinfo", resolves):
+        with mock.patch.object(egress.socket, "socket", layer):
+            started = time.monotonic()
+            outcome = probe_direct("example.com", 443, timeout_s=timeout_s)
+            return outcome, time.monotonic() - started
+
+
+def test_an_address_that_answers_slowly_is_still_reach_when_the_name_has_many() -> None:
+    """The bound must not be bought by making each address' window too short to answer in.
+
+    This is what a share-of-the-budget-per-address implementation gets wrong, and it gets it
+    wrong in the direction that matters: `example.com` publishes a dozen addresses, so each
+    would get a twelfth of the probe's budget -- under Linux's own first SYN retransmit. A
+    live host on a slow path, or one whose first SYN was dropped, would answer after the probe
+    had already called it silence, and silence is what the check *passes* on. Each address
+    gets the whole of what is left instead, and the budget bounds how long silence may be
+    waited on in total.
+    """
+    layer = _AnsweringAfter(0.3, ConnectionRefusedError(errno.ECONNREFUSED, "refused"))
+    addresses = [f"192.0.2.{n}" for n in range(1, 13)]
+    outcome, elapsed = _probe_through(layer, addresses, timeout_s=1)
+
+    assert outcome == DIRECT_ANSWERED, (
+        f"an address that answered in 0.3s of a 1 s budget read as {outcome!r}: a name with "
+        f"{len(addresses)} addresses is dividing the answer window between them"
+    )
+    assert layer.dialled == addresses[:1], "it answered on the first address and stopped there"
+    assert elapsed < 1.5
+
+
 def test_the_public_name_probe_costs_its_budget_once_over_all_of_a_name_s_addresses() -> None:
     """The bound is the probe's, not the probe's times however many addresses the name has.
 
     A name on a CDN resolves to a dozen addresses, and the old half gave each one the whole
-    timeout in turn: a `check` that says three seconds spent half a minute. They share one
-    budget now, and every one of them is still dialled.
+    timeout in turn, with the lookup in front of them outside the timeout altogether: a
+    `check` that said three seconds spent most of a minute. One budget covers all of it now.
+
+    Silence is what spends it, so silence is what runs out of it, and a name only partly
+    asked is `DIRECT_UNVERIFIED` -- it fails the check rather than passing it, because the
+    addresses that went undialled establish nothing. A confined container never reaches this:
+    with no default route the kernel refuses every address at once, for nothing.
     """
-    silent = {f"192.0.2.{n}": TimeoutError() for n in range(1, 9)}
+    layer = _AnsweringAfter(30.0, None)  # far beyond any budget: nothing ever answers
+    addresses = [f"192.0.2.{n}" for n in range(1, 9)]
+    outcome, elapsed = _probe_through(layer, addresses, timeout_s=1)
 
-    class SilentSocket:
-        """An address that swallows the connection: it answers when the budget runs out."""
-
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            self._timeout_s = 0.0
-
-        def settimeout(self, timeout_s: float) -> None:
-            self._timeout_s = timeout_s
-
-        def connect(self, _sockaddr: tuple) -> None:
-            time.sleep(self._timeout_s)
-            raise TimeoutError
-
-        def close(self) -> None:
-            pass
-
-    with mock.patch.object(egress.socket, "getaddrinfo", lambda *_a, **_k: _candidates(*silent)):
-        with mock.patch.object(egress.socket, "socket", SilentSocket):
-            started = time.monotonic()
-            outcome = probe_direct("example.com", 443, timeout_s=1)
-            elapsed = time.monotonic() - started
-
-    assert outcome == DIRECT_NO_ROUTE, "every address was dialled and none of them answered"
+    assert outcome == DIRECT_UNVERIFIED, "the addresses after the first were never asked"
+    assert layer.dialled == addresses[:1]
     assert elapsed < 4, (
-        f"{len(silent)} silent addresses cost {elapsed:.2f}s of a 1 s budget: they are being "
-        "given a timeout each rather than a share of one"
+        f"{len(addresses)} silent addresses cost {elapsed:.2f}s of a 1 s budget: they are "
+        "being given a timeout each rather than spending one between them"
     )
 
 
