@@ -173,6 +173,11 @@ change provider error handling.
 sections sit on: the first owns *when* a source is read, the second owns *how
 much* a single read may cost. Neither knows anything about quota shapes.
 
+`app/server.py` is a third such layer, facing the other way: it owns what a
+*peer* may cost the process — the size of any request head it will parse and how
+many connections it will hold. It knows nothing about quota shapes either, and
+nothing in it reads a credential.
+
 `app/static/widget-state.js` is the pure state/presentation module for storage
 validation, effective source state, and global status. The frontend
 (`app/static/app.js`) remains the single gauge-colour and DOM-update path for
@@ -270,11 +275,35 @@ purpose.
   live clients use.
 - **`ingress`** — `app/ingress.py`, a byte relay that publishes
   `DASHBOARD_PORT` and forwards to `codervis:8000`. It is needed because Docker
-  ignores `ports:` on an internal-only container. It is also the front door's
-  resource bound: at most 256 connections, and a client must send a complete
-  first request head (at most 16 KiB) within 10 s or get 408/431 before the
-  dashboard is dialled. uvicorn itself arms no timer until it has sent a
-  response. After the head, nothing is timed, so SSE is unaffected.
+  ignores `ports:` on an internal-only container. It is the front door's **outer**
+  resource bound, and be exact about which requests it covers: at most 256
+  connections, and a client must send a complete *first* request head (at most
+  16 KiB) within 10 s or get 408/431 before the dashboard is dialled. After that
+  head it relays bytes blind, so a second or later head on a kept-alive
+  connection is not its business, and a connection made straight to
+  `codervis:8000` never reaches it at all. Nothing here is timed after the head,
+  so SSE is unaffected.
+
+**The bound itself lives in the server, in `app/server.py` (#43).** `ingress`
+parses one head per connection and only the connections that pass through it, so
+a bound that lived only there covered neither a later request on a kept-alive
+connection nor a connection opened straight to `codervis:8000` — and uvicorn's
+own defaults bound nothing: `--http auto` prefers httptools, which caps a request
+head at nothing, and no ceiling or timer is armed until a response has been sent.
+`app/server.py` is what the image's `CMD` launches, and it names three things:
+h11 (the head limit is h11's, exposed as `h11_max_incomplete_event_size`, and it
+applies to **every** request on a connection), the same 16 KiB `ingress` uses, and
+a connection-and-task ceiling of 320 — above `ingress`'s 256, so the relay runs
+out of slots before the server does and an SSE stream per tab is never what the
+server refuses. An oversized head gets 400 and the connection closed; a request
+arriving while the count is at the ceiling gets 503.
+**Time stays unbounded after a head has begun**, deliberately: a dripped head
+costs one counted slot, the same as an open tab, and at most 16 KiB of memory.
+`tests/test_server_bounds.py` pins both behaviours through a real server on
+loopback, pins the values, pins the relation between the two layers' numbers, and
+pins that the `CMD` still launches this module — `app/server.py` is documentation
+if the image goes back to `uvicorn app.main:app`. Keep `ingress`'s checks as the
+outer layer; do not move a bound out of the server and into the relay.
 
 The front door is also bounded by who may use it, because the dashboard has no
 login: `DASHBOARD_BIND` (default `127.0.0.1`) is the host address `ingress`
@@ -334,7 +363,10 @@ rather than reading as "nothing answered". `tests/test_compose_topology.py`
 pins the compose shape, gateway mode included, and CI sets `REQUIRE_DOCKER` so
 that file fails rather than skips where the Docker CLI has gone missing.
 
-**Keep the bound whole.** Do not give `codervis` a non-internal network or
+**Keep the bound whole.** Do not change the image's `CMD` back to a bare
+`uvicorn` invocation, or hand `codervis` a `command:` in the compose file that
+replaces it: that is where the head cap and the connection ceiling are armed, and
+neither has a default. Do not give `codervis` a non-internal network or
 `ports:`, and do not drop a network's gateway-mode option: an internal network
 without it puts the host back on the dashboard's bridge. A network that turns
 on `enable_ipv6` needs `gateway_mode_ipv6: isolated` too, since that is a
@@ -388,7 +420,7 @@ curl http://localhost:8765/api/usage
 # Automated tests
 python -m pip install -r requirements-dev.txt
 python -m pytest
-python -m py_compile app/main.py app/quota.py app/activity_gate.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/refresh.py app/budget.py app/egress.py app/ingress.py
+python -m py_compile app/main.py app/quota.py app/activity_gate.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/refresh.py app/budget.py app/server.py app/egress.py app/ingress.py
 
 # Egress bound, from inside the running dashboard container
 docker compose exec codervis python -m app.egress check

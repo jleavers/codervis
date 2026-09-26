@@ -22,7 +22,7 @@ docker compose down
 curl http://localhost:8765/healthz
 curl http://localhost:8765/api/usage
 python -m pytest
-python -m py_compile app/main.py app/quota.py app/activity_gate.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/refresh.py app/budget.py app/egress.py app/ingress.py
+python -m py_compile app/main.py app/quota.py app/activity_gate.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/refresh.py app/budget.py app/server.py app/egress.py app/ingress.py
 docker compose exec codervis python -m app.egress check
 ```
 
@@ -108,6 +108,17 @@ directories; it must not call upstream quota endpoints or read host tokens.
   because the dashboard sits on an internal-only network. Keep that container
   off every non-internal network and free of `ports:`, and keep the published
   port on `DASHBOARD_BIND`, which defaults to loopback.
+- `app/server.py` owns what a *peer* may cost the dashboard's own process: the
+  server configuration the image's `CMD` launches. It pins h11 with a per-head
+  size limit that applies to every request on a connection (uvicorn's `auto`
+  prefers httptools, which limits a head to nothing), the same 16 KiB cap
+  `ingress` uses, and a connection-and-task ceiling above `ingress`'s 256. This
+  is the bound; `ingress`'s first-head cap and deadline are the outer layer, and
+  they cover neither a later request on a kept-alive connection nor a connection
+  opened straight to `codervis:8000` (#43). Time after a head has begun stays
+  unbounded on purpose, because an SSE response lasts as long as the tab: a
+  dripped head costs one counted slot and 16 KiB. `tests/test_server_bounds.py`
+  pins the behaviour, the values, and that the `CMD` still launches this module.
 - `app/static/app.js` is the single source of truth for gauge color calculation
   on both initial paint and SSE updates.
 - `tests/conftest.py` owns what a pytest *session* may touch, once, for every
@@ -210,6 +221,12 @@ What the repository does control is the text itself:
   exception's text reach the payload, a log line, or a test's output, because
   the exception raised for a malformed header quotes the whole header value.
 - Preserve read-only bind mounts for `/data/claude` and `/data/codex`.
+- Preserve the front-door bound in the server that bears the cost: the image's
+  `CMD` launches `python -m app.server`, and that module's head cap and
+  connection ceiling are what apply to every request on every connection,
+  whichever route it came by. A bare `uvicorn app.main:app`, or a compose
+  `command:` that replaces the `CMD`, arms neither. `ingress`'s first-head
+  checks stay as the outer layer rather than as the bound.
 - Preserve the egress bound: the `codervis` service joins internal networks
   only, those networks keep the bridge driver's `gateway_mode_ipv4: isolated`
   so the host holds no address on them (`internal: true` alone leaves one, and
