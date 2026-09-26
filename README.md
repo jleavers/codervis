@@ -276,6 +276,36 @@ that answers at all answers at once; it is the `OK` that costs one timeout per
 port, so that is the line that can take a few seconds to print. To change the
 allow-list, edit `EGRESS_ALLOW` in `.env` and run `docker compose up -d egress`.
 
+**What a resolver that does not answer costs** is worth stating separately,
+because a name lookup is not covered by the timeout of the connection that
+follows it: `getaddrinfo` takes none of its own and spends the resolver's budget
+instead — `/etc/resolv.conf`'s `timeout:`, 5 seconds by default, once per
+`attempts:` per nameserver listed — and a connection's timeout does not start
+until the lookup has returned. So the names this command resolves carry
+deadlines of their own:
+
+- **Each proxy probe is bounded whole, at the 10 seconds it is given**, the
+  lookup of the proxy's own name included — `egress`, which Docker's embedded
+  DNS normally answers in under a millisecond. Half of the 10 seconds is the
+  lookup's share and the connection takes what is left. There is one probe for
+  the reserved name and one per configured upstream, so three on the default
+  configuration, and a container that cannot reach its resolver spends at most
+  30 seconds across them rather than the resolver's own budget three times over.
+- **The on-link line's peer labelling is bounded at 5 seconds a name**, which is
+  one full resolver attempt, and it looks up two: this container's own name and
+  the proxy's. That labelling is what decides whether an on-link address is
+  accounted for rather than dialled, so a name that does not resolve in time
+  loses its label, the address is dialled, and the line fails rather than
+  passing — the same cost a name that does not resolve at all already had. The
+  budget is per name rather than shared between them, so a slow lookup of this
+  container's own name cannot spend the proxy's.
+
+The 5 seconds is deliberately the generous end of the range. Too long and the
+command is slow, which is what the bound is for; too short and the *proxy's*
+label is lost on a resolver that was merely slow, which fails a deployment that
+is whole. The public-name probe on the last line resolves a name too, and that
+one lookup is still the resolver's own budget rather than the check's.
+
 The two directions are separate bounds, and the on-link line is the one an
 internal network does not settle on its own. `internal: true` withholds the
 default route, which is what the last line asks about. It does **not** withhold
