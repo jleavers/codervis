@@ -11,7 +11,15 @@ opened, so which account or tenant a request reaches at ``claude.ai`` or ``chatg
 anything else inside the tunnel, are outside what this can see or limit. Code running in the
 dashboard's container can still use a token it holds against the hosts the clients use (#45).
 
-Two halves, and neither is sufficient alone:
+**The other axis of that container's budget is not here at all**, and this is where to look for
+it: what code running there may *read* is what docker-compose.yml bind-mounts, which is the
+whole of both agent home trees rather than the seven paths the app reads inside them -- each
+credential file sits at its tree's root, and a bind mount of a file follows the inode it was made
+from, so it would pin the file a ``logout``/``login``, or a token refresh that renames a new file
+over the old one, replaces. README's "How it works" states
+both halves together, and its Caveats name what the whole-tree mounts leave readable.
+
+Two halves make that destination bound true, and neither is sufficient alone:
 
 * **The network** makes the proxy unavoidable: docker-compose.yml puts the dashboard on an
   ``internal`` network only, which has no default route, and sets that network's gateway mode to

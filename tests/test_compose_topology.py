@@ -3,7 +3,9 @@
 An allow-list bounds egress only while there is no route around it, so these assert the shape
 of the rendered compose file: the dashboard's container joins internal networks alone, those
 networks give the host no address on their bridge, the proxy is the one service with a leg on
-each kind, and only the ingress relay publishes a port.
+each kind, and only the ingress relay publishes a port. The same file grants the other axis of
+that container's budget, so what it may read is pinned here too (#45): the two agent data roots,
+read-only, and nothing else.
 Rendering needs the Docker CLI but no daemon; the test is skipped where Docker is not installed,
 unless `REQUIRE_DOCKER` says it must not be -- CI sets that, because a pin that skips silently
 where the CLI has gone missing is a pin that disappears with a green build.
@@ -116,6 +118,48 @@ def test_the_dashboard_container_publishes_nothing_itself(config: dict) -> None:
     """Docker ignores a published port on an internal-only container, so the port lives on
     the relay, and a `ports:` line here would be a silent no-op."""
     assert not config["services"]["codervis"].get("ports")
+
+
+DATA_MOUNTS = {
+    "/data/claude": ".claude",
+    "/data/codex": ".codex",
+}
+
+
+def _mounts(config: dict, service: str) -> dict[str, dict]:
+    return {
+        entry["target"]: entry for entry in config["services"][service].get("volumes") or []
+    }
+
+
+@pytest.mark.parametrize("rendered", ["config", "bare_config"])
+def test_the_dashboard_mounts_the_two_agent_trees_read_only_and_nothing_more(
+    request, rendered: str
+) -> None:
+    """This list is the read half of the container's budget, and the only place it is set (#45).
+
+    Each mount is a whole home tree rather than the seven paths the app reads, because a
+    credential file sits at each tree's root and a bind mount of a file follows the inode it was
+    made from -- the container would keep reading the file its CLI replaced on the next token
+    refresh. So the budget is "these two trees, read-only", which makes a third entry, a source
+    that is not one of those trees, or a mount that drops `:ro` a widening someone has to make
+    on purpose. Checked with no `.env` too, because the compose file's own defaults are the ones
+    nothing else would catch: a default widened from `~/.claude` to `~` would hand this
+    container the whole home directory.
+    """
+    config = request.getfixturevalue(rendered)
+    entries = config["services"]["codervis"].get("volumes") or []
+    mounts = _mounts(config, "codervis")
+    # The list's length as well as the set of targets: two entries sharing a target would
+    # otherwise collapse into one key and read as the budget.
+    assert len(entries) == len(DATA_MOUNTS), entries
+    assert set(mounts) == set(DATA_MOUNTS), sorted(mounts)
+    for target, entry in mounts.items():
+        # Compose renders the short `source:target:ro` syntax as a long-form bind, which is
+        # where each of these three lives.
+        assert entry.get("type") == "bind", (target, entry)
+        assert entry.get("read_only") is True, (target, entry)
+        assert Path(str(entry.get("source"))).name == DATA_MOUNTS[target], (target, entry)
 
 
 def test_the_dashboard_runs_the_image_s_own_bounded_server(config: dict) -> None:

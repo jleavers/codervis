@@ -161,8 +161,10 @@ Live-only by design.
   `session_index.jsonl`, and files under `sessions/` and
   `archived_sessions/`. That list is its gate's allow-list
   (`app/activity_gate.py`, below), and the gate grants it `stat` alone, so
-  `auth.json` and session *contents* are out of its reach rather than merely
-  out of its habits. It does not influence quota.
+  `auth.json` and session *contents* are out of *this reader's* reach rather
+  than merely out of its habits. That is a bound on this reader's own calls and
+  not on everything running in the container, which "Network boundary" below is
+  exact about. It does not influence quota.
 
 `CLAUDE_ENABLED` and `CODEX_ENABLED` are first-visit browser defaults only.
 All live clients are constructed unconditionally. Browser-local choices live
@@ -242,6 +244,24 @@ gate, not to itself; adding it to the reader has to go through that file, on
 purpose.
 
 ## Network boundary
+
+**This section is one axis of the `codervis` container's budget, not the whole of
+it.** The principal it is written against is a compromised dependency in the
+image, which holds both tokens whatever the network does, and what such code is
+allowed is two things. It can **connect** to the hosts on the egress allow-list
+and to no others, which is what the rest of this section is about. And it can
+**read** the whole of both bind-mounted agent home trees, which
+`docker-compose.yml`'s `volumes` for `codervis` is where it is granted: the trees
+rather than the seven paths the app reads inside them, because each credential
+file sits at its tree's root and a bind mount of a file follows the inode it was
+made from, so it would pin the file a `logout`/`login` -- or a token refresh that
+renames a new file over the old one -- replaces.
+`tests/test_compose_topology.py` pins that list, README's "How it works" states
+both halves for operators, and its Caveats name what the whole-tree mounts leave
+readable. Neither half is containment of the process, and text that reads as if
+one were is the defect #45 is about — "out of its reach rather than merely out of
+its habits" above is about the activity readers' gate, which bounds those two
+readers' own calls and nothing else running in the image.
 
 `docker-compose.yml` runs three services from one image:
 

@@ -34,6 +34,33 @@ directories read-only**, reads the tokens, and polls the endpoints. The browser
 gets live updates via Server-Sent Events; CSS animates the meter fill and the
 colour shifts as the percentage rises.
 
+**What code in this container is allowed is two things, and this is both of
+them.** The principal to read that against is a dependency of the app that has
+been compromised: it runs with everything the app has, and both tokens are in
+the container by design. So what it is allowed is written down here, once, with
+each half no wider than the truth:
+
+- **It can read both agent home trees, read-only, and no other file of yours.**
+  The app itself reads seven paths inside them — two under `~/.claude`
+  (`.credentials.json`, `projects/`) and five under `~/.codex` (`auth.json`,
+  `history.jsonl`, `session_index.jsonl`, `sessions/`, `archived_sessions/`),
+  and it stats each root besides, which is what `/healthz` reports. The mounts
+  are the whole trees rather than those paths, because each credential file
+  sits at its tree's root and a mount of a file follows the inode it was made
+  from: a CLI that refreshes a token by writing a new file and renaming it over
+  the old one — and a logout and login, which replaces the file for certain —
+  would leave this container reading what was replaced. Everything else in both
+  trees is therefore readable by code in that container too, and
+  [Caveats](#caveats) names what that is.
+- **It can reach the hosts on the egress allow-list, and no host off this
+  project's own network.** That bounds the destination host and nothing inside
+  the connection: the proxy relays the TLS session without opening it, so which
+  account or tenant a token is used against at an allowed host — and anything
+  else inside the tunnel — is not bounded by anything here.
+
+Neither half contains a compromise of the image; what they do is keep
+everything outside those two budgets out of a compromised dependency's reach.
+
 **Outbound traffic is allow-listed.** The dashboard's container sits on an
 internal Docker network that gives it no default route and leaves the host no
 address on the network's bridge, so every peer it can dial is another
@@ -41,10 +68,7 @@ container in this project. Its only way out is the `egress` service, a
 CONNECT-only proxy that admits `claude.ai` and `chatgpt.com` and nothing else.
 A redirect, a host override or a compromised dependency therefore cannot send
 a token to a host that is not on that list, and plain `http://` is refused
-outright. What that does **not** bound is what happens inside an allowed
-tunnel: the proxy relays the TLS session without opening it, so the account or
-tenant a request reaches at an allowed host is not something it can see, let
-alone limit. Both halves of the network bound are asserted by probing, not by
+outright. Both halves of the network bound are asserted by probing, not by
 assumption: `python -m app.egress check` dials what the container can actually
 reach ([below](#check-the-egress-bound)), and it needs Docker Engine 28.0+ to
 be true — an engine from before then either refuses the option that keeps the
@@ -103,7 +127,20 @@ link out of them.
   or `~/.codex`, that provider's footer reads "no recent activity" however
   recently you used it. Quota gauges are unaffected. `find ~/.claude/projects
   -type f -links +1` lists what is being skipped.
-- Read-only bind mounts: codervis never writes to `~/.claude` or `~/.codex`.
+- **Both bind mounts are whole home trees, and read-only.** codervis never
+  writes to `~/.claude` or `~/.codex`, but any code in its container can read
+  all of both — settings and config files, and any third-party secret an env
+  block in one of them holds, alongside the transcripts, session files and
+  history the activity readers use. They are not narrowed to the seven paths it
+  reads inside them ([How it works](#how-it-works)) because each credential
+  file sits at the root of its tree, and a bind mount of a single file follows
+  the inode it was made from rather than the name: if a CLI refreshes its token
+  by writing a new file and renaming it over the old one, or when you log out
+  and back in, the container would go on reading the file that was replaced and
+  that card would read `unavailable` until the next `docker compose up`.
+  (Compose's short volume syntax also *creates* a source path that is missing,
+  as a directory.) Narrowing the mounts yourself means taking that failure
+  instead, which is why this repository does not.
 - The `*_ENABLED` variables only choose the initial toggle state for a browser
   with no saved preference. All provider clients are still constructed and
   polled, so these variables do not suppress credential reads or upstream
@@ -467,7 +504,11 @@ flags that are useful for quick diagnosis.
 ## Security notes
 
 - `~/.claude/.credentials.json` and `~/.codex/auth.json` both contain
-  long-lived session tokens. Both bind mounts are read-only.
+  long-lived session tokens. Both bind mounts are read-only, and each is a
+  whole home tree rather than the files the dashboard reads: [How it
+  works](#how-it-works) states what code in that container is allowed, on both
+  axes, and [Caveats](#caveats) says what the whole-tree mounts leave readable
+  and why they stay whole.
 - **The dashboard has no login, so reachability is the whole of its access
   control, and you set it.** `DASHBOARD_BIND` publishes the port on
   `127.0.0.1` by default, and `DASHBOARD_ALLOWED_HOSTS` names the hosts the

@@ -343,6 +343,28 @@ MUTATIONS: tuple[Mutation, ...] = (
             f"{COMPOSE_TESTS}::test_only_the_relay_publishes_a_port_and_it_targets_the_dashboard",
         ),
     ),
+    Mutation(
+        key="compose-dashboard-mount-writable",
+        area=COMPOSE,
+        rule="the dashboard's view of both agent trees is read-only",
+        path="docker-compose.yml",
+        before='      - "${CLAUDE_HOME:-~/.claude}:/data/claude:ro"\n',
+        after='      - "${CLAUDE_HOME:-~/.claude}:/data/claude"\n',
+        caught_by=(
+            f"{COMPOSE_TESTS}::test_the_dashboard_mounts_the_two_agent_trees_read_only_and_nothing_more",
+        ),
+    ),
+    Mutation(
+        key="compose-dashboard-mounts-a-third-tree",
+        area=COMPOSE,
+        rule="the dashboard mounts the two agent data roots and nothing else",
+        path="docker-compose.yml",
+        before='      - "${CODEX_HOME:-~/.codex}:/data/codex:ro"\n',
+        after='      - "${CODEX_HOME:-~/.codex}:/data/codex:ro"\n      - "${USERPROFILE:-~}:/data/home:ro"\n',
+        caught_by=(
+            f"{COMPOSE_TESTS}::test_the_dashboard_mounts_the_two_agent_trees_read_only_and_nothing_more",
+        ),
+    ),
     # ----------------------------------------------------------------- the host allow-list
     Mutation(
         key="host-allowlist-not-armed",
