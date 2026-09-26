@@ -665,31 +665,51 @@ def _connect_within(candidates: Sequence[tuple], *, deadline: float) -> socket.s
     Failures are returned rather than raised because the caller words its own, and the last
     real one is the one it words -- like `create_connection`, with the same shortcoming, and it
     costs nothing here because this caller reports "did not answer" either way rather than
-    drawing a verdict from the errno. A real failure is preferred to the budget's own
-    `TimeoutError`: an address that refused said something about itself, while "the budget ran
-    out" only says the probe stopped asking, and that is reported when nothing was reached.
+    drawing a verdict from the errno.
+
+    **Three kinds of failure, reported in the order of what they establish**, because the caller
+    renders whichever comes back as the reason an operator goes and looks at something:
+
+    - a **dial** that failed says something about the address, so it wins: a refusal sends an
+      operator to a proxy that is not listening, and reporting the budget instead would send
+      them to a network that is dropping packets;
+    - the **budget** running out says only that the probe stopped asking, which is the honest
+      answer when no dial got far enough to say anything;
+    - a **socket that could not be created** -- `EAFNOSUPPORT` for an `AF_INET6` candidate on a
+      host without IPv6, `EMFILE` from this process -- is last, because no packet was sent and
+      the module's own errno note below says such a failure is not evidence about the address.
+      It is still reported where it is all there is, since "no address to dial" would be false.
     """
-    failure: OSError | None = None
+    dial_failure: OSError | None = None
+    setup_failure: OSError | None = None
     total = len(candidates)
     for index, (family, socktype, proto, _canonname, sockaddr) in enumerate(candidates):
         remaining = deadline - time.monotonic()
         if remaining < MIN_DIAL_BUDGET_S:
-            return failure or TimeoutError("the budget ran out before every address was dialled")
+            if dial_failure is not None:
+                return dial_failure
+            return TimeoutError("the budget ran out before every address was dialled")
         share = max(remaining / (total - index), MIN_DIAL_BUDGET_S)
         try:
             sock = socket.socket(family, socktype, proto)
         except OSError as exc:
-            failure = exc
+            setup_failure = exc
             continue
         try:
             sock.settimeout(share)
             sock.connect(sockaddr)
         except OSError as exc:
             sock.close()
-            failure = exc
+            dial_failure = exc
             continue
         return sock
-    return failure or OSError("no address to dial")
+    # Every candidate was tried. Checked against None rather than for truthiness, because an
+    # exception class is free to define `__bool__` and a falsy failure is still a failure.
+    if dial_failure is not None:
+        return dial_failure
+    if setup_failure is not None:
+        return setup_failure
+    return OSError("no address to dial")
 
 
 def _arm_until(sock: socket.socket, deadline: float) -> None:
@@ -724,17 +744,18 @@ def probe_proxy(
     the status line is read against the same deadline rather than against a per-operation
     timeout a trickling sender could renew 512 times over.
 
-    **A resolver that did not answer produces one failure string**, and it is
-    ``{proxy_host}:{proxy_port} did not answer (the resolver did not answer)``. It is worded
+    **A resolver that did not answer produces its own failure string**, and it is
+    ``{proxy_host}:{proxy_port} did not answer (the resolver did not answer)`` whenever the
+    lookup's share is the shorter of the two budgets, which on the default it is. It is worded
     apart from the `({ExcType})` form deliberately: everything else that reaches that form is
     the proxy's own address failing to answer, which is a proxy an operator goes and looks at,
     while this one is the container's resolver and is nothing to do with the proxy at all. A
     resolver that answers and *declines* the name is not this case -- that is a `gaierror`, and
     it stays in the `({ExcType})` form, because the resolver did answer.
 
-    That string is what a resolver that does not answer produces *while the lookup's share is
-    the shorter of the two budgets*, which on the default 10 s it is: the share is 5 s, and
-    `/etc/resolv.conf`'s own default is 5 s per attempt times two attempts per nameserver. A
+    That qualification is load-bearing rather than decorative. On the default 10 s the share is
+    5 s, and `/etc/resolv.conf`'s own default is 5 s per attempt times two attempts per
+    nameserver, so the share is the shorter and the string above is what appears. A
     container configured with `options timeout:2 attempts:1` gives up before the share does and
     raises `EAI_AGAIN` instead, and then the same unreachable resolver reads as `(gaierror)`,
     because that is what it handed back. Both are bounded, which is what this docstring

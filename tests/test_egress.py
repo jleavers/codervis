@@ -773,11 +773,15 @@ def test_every_address_of_the_proxys_name_is_dialled_inside_the_one_budget() -> 
     # handed to the first candidate whole, the first `sleep` reaches the deadline and the second
     # address is never tried at all.
     assert len(budgets) == 2, budgets
-    # Each got a real share, not the floor left over after the first had taken everything.
-    assert all(b >= egress.MIN_DIAL_BUDGET_S for b in budgets), budgets
+    # Each got a real share of the budget, not the `MIN_DIAL_BUDGET_S` floor left over after the
+    # first had taken everything. The threshold sits between the two on purpose: `share` is never
+    # below the floor by construction, so an assertion about the floor would hold on the
+    # regression too and would say nothing, while an even share here is 0.5 s -- so 0.3 s tells
+    # the two apart with room for a `sleep` that overruns on a loaded runner.
+    assert all(b >= budget_s * 0.3 for b in budgets), budgets
     # And the total is still the one budget, which is the whole point of sharing it.
     assert sum(budgets) <= budget_s + 0.01, budgets
-    assert elapsed < budget_s + BOUNDED_S, f"the dial spent {elapsed:.2f}s of a {budget_s}s budget"
+    assert elapsed < budget_s + 0.5, f"the dial spent {elapsed:.2f}s of a {budget_s}s budget"
     assert isinstance(answer, OSError)
 
 
@@ -800,7 +804,7 @@ def test_a_real_failure_is_preferred_to_the_budget_running_out() -> None:
             pass
 
         def connect(self, _sockaddr: object) -> None:
-            time.sleep(0.3)
+            time.sleep(0.6)
             raise ConnectionRefusedError(errno.ECONNREFUSED, "Connection refused")
 
         def close(self) -> None:
@@ -810,10 +814,13 @@ def test_a_real_failure_is_preferred_to_the_budget_running_out() -> None:
         (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", 3128)),
         (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.2", 3128)),
     ]
-    # A budget the first candidate's refusal overruns, so the second is never reached and the
-    # loop ends on its own budget check -- with a real failure in hand, which is the one to word.
+    # The first candidate's refusal overruns the whole budget on its own, so the second is never
+    # reached and the loop ends on its own budget check -- with a real failure in hand, which is
+    # the one to word. The budget is comfortably above `MIN_DIAL_BUDGET_S` rather than just
+    # above it, so a runner that stalls between the deadline being set and the loop reading the
+    # clock cannot leave the first candidate undialled and fail this on the wrong type.
     with mock.patch.object(socket, "socket", Refused):
-        answer = egress._connect_within(candidates, deadline=time.monotonic() + 0.2)
+        answer = egress._connect_within(candidates, deadline=time.monotonic() + 0.5)
 
     assert isinstance(answer, ConnectionRefusedError), answer
 
@@ -827,6 +834,32 @@ def test_a_real_failure_is_preferred_to_the_budget_running_out() -> None:
     # blame, which `probe_proxy` renders as `did not answer (OSError)`.
     empty = egress._connect_within([], deadline=time.monotonic() + 1.0)
     assert isinstance(empty, OSError) and not isinstance(empty, TimeoutError), empty
+
+    # A socket that could not be created at all is reported *last*, since no packet was sent and
+    # the module's errno note says such a failure is not evidence about the address -- but it is
+    # reported where it is all there is, because "no address to dial" would be untrue.
+    def unavailable_family(*_args: object) -> object:
+        raise OSError(errno.EAFNOSUPPORT, "Address family not supported by protocol")
+
+    with mock.patch.object(socket, "socket", unavailable_family):
+        only_setup_failed = egress._connect_within(candidates, deadline=time.monotonic() + 1.0)
+    assert isinstance(only_setup_failed, OSError), only_setup_failed
+    assert only_setup_failed.errno == errno.EAFNOSUPPORT, only_setup_failed
+
+    # With a dial failure beside it, the dial is what gets worded: it is the one that established
+    # something about an address.
+    def refuse_second(family: int, *_args: object) -> object:
+        if family == socket.AF_INET6:
+            raise OSError(errno.EAFNOSUPPORT, "Address family not supported by protocol")
+        return Refused()
+
+    mixed = [
+        (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2001:db8::1", 3128, 0, 0)),
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", 3128)),
+    ]
+    with mock.patch.object(socket, "socket", refuse_second):
+        both = egress._connect_within(mixed, deadline=time.monotonic() + 1.0)
+    assert isinstance(both, ConnectionRefusedError), both
 
 
 def test_resolved_addresses_and_own_addresses_are_bounded_too() -> None:
