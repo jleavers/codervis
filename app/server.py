@@ -193,17 +193,24 @@ class BoundedHeadH11Protocol(H11Protocol):
     def _head_is_over_bound(self, arriving: bytes = b"") -> bool:
         """Whether the head being received, plus ``arriving``, is over the cap.
 
-        The length is checked first and the buffer only copied and scanned when that total is over
-        the cap, because `pending_head_length` can never return more than the length it is given.
-        Scanning every read would make this bound expensive in the one way it exists to prevent:
-        a head dripped a byte at a time would be copied and re-scanned from the start each time,
-        which measured 134 MB of copying for 16 KB sent -- a peer paying nothing to make the
-        server pay.
-        With the check below, the scan runs only for a head that is already over its budget.
+        The length is measured first, and the buffer is only copied and scanned when that total is
+        over the cap -- `pending_head_length` can never return more than the length it is given, so
+        the two agree on everything under it.
+
+        Measuring it without copying is the point, and is why h11's buffer is reached for directly
+        rather than through `trailing_data`: that property is `bytes(self._receive_buffer)`, a copy
+        of the whole buffer, on every call. Copying it on every read is the cost this bound exists
+        to prevent, pushed onto the server instead of the peer -- a 16 KiB head dripped a byte at a
+        time measured 134 MB copied, for 16 KB sent, and a peer may repeat it on every request of a
+        kept-alive connection. `HEAD_END` above already follows h11's own internals for the same
+        reason, and `requirements.txt` pins the version; the fallback keeps a version without that
+        attribute correct, merely slower.
         """
-        buffered, _ = self.conn.trailing_data
-        if len(buffered) + len(arriving) <= self.max_request_head_bytes:
+        buffer = getattr(self.conn, "_receive_buffer", None)
+        held = len(buffer) if buffer is not None else len(self.conn.trailing_data[0])
+        if held + len(arriving) <= self.max_request_head_bytes:
             return False
+        buffered, _ = self.conn.trailing_data
         return pending_head_length(buffered + arriving) > self.max_request_head_bytes
 
     def _awaiting_head(self) -> bool:
@@ -297,8 +304,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     # As `app.ingress` and `app.egress` do it, and for the same reason: without it the one line
     # that says the front door is refusing connections falls through to `logging.lastResort`, with
-    # no level, time or logger name, and the debug line below it could never be emitted at all.
-    # uvicorn's own logging config leaves existing loggers alone, so this survives its start.
+    # no level, time or logger name. uvicorn's own logging config leaves existing loggers alone and
+    # does not touch the root, so this survives its start without doubling any line. The per-refusal
+    # line stays below this level, for whoever turns the root logger down to DEBUG.
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
     )

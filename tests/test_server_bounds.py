@@ -217,32 +217,47 @@ def test_a_dripped_oversized_head_is_refused_before_it_is_all_sent() -> None:
             sock.close()
 
 
-def test_a_legal_head_is_not_rescanned_on_every_read(monkeypatch) -> None:
+def test_a_legal_head_is_neither_rescanned_nor_recopied_on_every_read(monkeypatch) -> None:
     """The cap must not be expensive to apply, or it is a cost a peer can inflict rather than one
-    it is charged. A head under the budget is never scanned at all: the length is checked first,
-    and only a head already over its budget is copied and searched. Dripping 16 KB a byte at a
-    time cost 134 MB of copying before this."""
+    it is charged. A head inside the budget is neither scanned nor copied: the length is measured
+    off h11's buffer without materialising it, and only a head already over its budget is copied
+    and searched. Both halves are asserted, because fixing only the scan left the copying --
+    `trailing_data` is `bytes(self._receive_buffer)` -- and that was all 134 MB of it.
+    """
     from app import server as module
 
     scans = 0
-    real = module.pending_head_length
+    real_scan = module.pending_head_length
 
-    def counting(pending: bytes) -> int:
+    def counting_scan(pending: bytes) -> int:
         nonlocal scans
         scans += 1
-        return real(pending)
+        return real_scan(pending)
 
-    monkeypatch.setattr(module, "pending_head_length", counting)
+    copied = 0
+    real_property = h11.Connection.trailing_data
+
+    def counting_copy(self):
+        nonlocal copied
+        data, closed = real_property.fget(self)
+        copied += len(data)
+        return data, closed
+
+    monkeypatch.setattr(module, "pending_head_length", counting_scan)
+    monkeypatch.setattr(h11.Connection, "trailing_data", property(counting_copy))
     head = _head_of_exactly(MAX_REQUEST_HEAD_BYTES - 10)
     with _running() as port:
         sock = _connect(port)
         try:
-            for offset in range(0, len(head), 512):
-                sock.sendall(head[offset : offset + 512])
+            for offset in range(0, len(head), 256):
+                sock.sendall(head[offset : offset + 256])
             assert _status(sock).startswith(b"HTTP/1.1 200 ")
         finally:
             sock.close()
     assert scans == 0, f"a head inside the budget was scanned {scans} times"
+    assert copied <= MAX_REQUEST_HEAD_BYTES, (
+        f"{copied} bytes of h11's buffer were copied for a {len(head)}-byte head"
+    )
 
 
 def test_an_oversized_head_is_never_handed_to_the_parser() -> None:
@@ -495,6 +510,11 @@ def test_the_deadline_is_re_armed_when_a_response_ends() -> None:
             sock.sendall(HEAD)
             assert _status(sock).startswith(b"HTTP/1.1 200 ")
             (protocol,) = live
+            # The re-arm happens in the server's own loop after the response is written, so it is
+            # waited for rather than assumed to have happened by the time the status line arrives.
+            deadline = time.monotonic() + 10
+            while protocol._head_deadline is None and time.monotonic() < deadline:
+                time.sleep(0.01)
             assert protocol._head_deadline is not None, (
                 "no head deadline is armed on a connection waiting for its next request"
             )
