@@ -840,13 +840,14 @@ Go fix by fix, reading the code rather than the commit messages:
   - the filesystem-call watcher \`tests/test_activity_readers.py\` asserts on. It no longer
     monkeypatches \`os.stat\`, \`lstat\`, \`scandir\`, \`open\`, \`listdir\`, \`io.open\` and
     \`builtins.open\` by name: #38 (closed, do not re-derive) replaced those seven with the
-    session audit hook in \`tests/conftest.py\`, keyed on the resource, so a name bound at
-    import time, \`posix.*\` and \`io.FileIO(path)\` are in its record too. Establish what it
-    still cannot see -- its own docstring enumerates a stat, a \`dir_fd\`-relative path, a link
-    planted mid-path and anything a child process does -- and whether
-    \`tests/test_reader_filesystem_surface.py\`, which carries the stat half by pinning that
-    neither reader module names a filesystem API, reaches every form of that. A regression that
-    goes through something neither half sees passes the suite, and that is a vacuous-test
+    session audit hook in \`tests/conftest.py\`, keyed on the resource, so an \`open\`, an
+    \`os.listdir\` or an \`os.scandir\` is in its record whatever name reached it --
+    \`posix.*\` and \`io.FileIO(path)\` included. Establish what it still cannot see: its own
+    docstring enumerates a stat, a \`dir_fd\`-relative path, a link planted mid-path and
+    anything a child process does. Then establish whether the structural test that carries the
+    stat half, \`tests/test_reader_filesystem_surface.py\`, reaches every form of it, since
+    "neither reader module names a filesystem API" is a claim about source text. A regression
+    that goes through something neither half sees passes the suite, and that is a vacuous-test
     finding in scope for this lane.
 - **#20, the front door** (\`app/ingress.py\`, and the \`x-logging\` anchor in
   \`docker-compose.yml\`). Check the request deadline and the head cap against a client that
@@ -995,12 +996,17 @@ Cover:
   and what does the dashboard then report? Establish it with \`docker compose config\` against
   a copy in a temporary directory, never \`up\`.
 - **The test suite run in a developer's shell.** The repository does not confine a developer's
-  shell (#34), so \`python -m pytest\` runs with the ambient environment. \`app.main\` builds its live clients
-  from \`CLAUDE_DATA_DIR\`, \`CODEX_DATA_DIR\`, \`CLAUDE_AI_HOST\` and \`CHATGPT_HOST\` at import,
-  and starts refreshers in its lifespan. For each test module, establish *by reading* when the
-  stubs go in and whether a real client could read a real file or call a real endpoint first.
-  Run the suite only sealed: \`HOME\` and both data directories set to empty temporary
-  directories, and both host variables set to \`http://127.0.0.1:9\`.
+  shell (#34), and \`app.main\` builds its live clients from \`CLAUDE_DATA_DIR\`,
+  \`CODEX_DATA_DIR\`, \`CLAUDE_AI_HOST\` and \`CHATGPT_HOST\` at import, then starts refreshers
+  in its lifespan. What bounds a \`python -m pytest\` of *this* suite is \`tests/conftest.py\`
+  (#38, closed, do not re-derive): it points those four at scratch trees and a dead loopback
+  port before collection, and fails whichever test reaches a host agent data root or dials
+  off-box, so when each module's stubs go in is hygiene rather than the bound. What is still
+  ambient is everything outside that file's reach -- \`HOME\`, an entry point that loads no
+  \`conftest.py\`, an import of \`app.main\` from a script or \`python -c\`, and a child process
+  it spawns. Establish those. Run anything you run only sealed: \`HOME\` and both data
+  directories set to empty temporary directories, and both host variables set to
+  \`http://127.0.0.1:9\`.
 - **Drift between the deployed image and the tree.** Read the built image's own files and
   metadata, never the running container's environment or mounts. Say whether the image
   matches the tree it claims to come from, and which dependency versions differ from a fresh
