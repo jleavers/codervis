@@ -359,6 +359,16 @@ python -m py_compile app/main.py app/quota.py app/activity_gate.py app/claude_ac
 The tests use temporary directories and stubbed upstream clients. They do not
 read your real credential files and do not call the live quota endpoints. The
 proxy and relay tests use loopback sockets only.
+
+That is enforced for the whole session by `tests/conftest.py`, not left to each
+test remembering to stub what it uses. Before anything is collected it points
+`CLAUDE_DATA_DIR` and `CODEX_DATA_DIR` at empty scratch directories and
+`CLAUDE_AI_HOST` and `CHATGPT_HOST` at a loopback port nothing listens on, and
+for the rest of the run an audit hook fails any test that opens a path under a
+host agent data directory or dials a non-loopback address. So running
+`python -m pytest` in a shell where those variables point at your real `~/.claude`
+and `~/.codex` reads neither. **It affects `pytest` and nothing else** — no
+agent, editor or shell configuration is installed or changed.
 `tests/test_compose_topology.py` renders `docker-compose.yml` with
 `docker compose config`, which needs the Docker CLI but no daemon. It is skipped
 where Docker is not installed, unless `REQUIRE_DOCKER=1` says it must not be —
