@@ -242,6 +242,23 @@ purpose.
 
 ## Network boundary
 
+**This section is one axis of the `codervis` container's budget, not the whole of
+it.** The principal it is written against is a compromised dependency in the
+image, which holds both tokens whatever the network does, and what such code is
+allowed is two things. It can **connect** to the hosts on the egress allow-list
+and to no others, which is what the rest of this section is about. And it can
+**read** the whole of both bind-mounted agent home trees, which
+`docker-compose.yml`'s `volumes` for `codervis` is where it is granted: the trees
+rather than the seven paths the app uses, because each credential file sits at
+its tree's root and a bind mount of a file follows the inode it was made from,
+so it would pin the file the CLI replaces on the next token refresh.
+`tests/test_compose_topology.py` pins that list, README's "How it works" states
+both halves for operators, and its Caveats name what the whole-tree mounts leave
+readable. Neither half is containment of the process, and text that reads as if
+one were is the defect #45 is about — "out of its reach rather than merely out of
+its habits" above is about the activity readers' gate, which bounds those two
+readers' own calls and nothing else running in the image.
+
 `docker-compose.yml` runs three services from one image:
 
 - **`codervis`** — the dashboard. It joins the `inside` network only, which is
