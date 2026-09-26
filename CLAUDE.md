@@ -174,9 +174,10 @@ sections sit on: the first owns *when* a source is read, the second owns *how
 much* a single read may cost. Neither knows anything about quota shapes.
 
 `app/server.py` is a third such layer, facing the other way: it owns what a
-*peer* may cost the process — the size of any request head it will parse and how
-many connections it will hold. It knows nothing about quota shapes either, and
-nothing in it reads a credential.
+*peer* may cost the process — the size of any request head it will parse, how
+long it will wait for a head and for a body, and how many connections it will
+hold. It knows nothing about quota shapes either, and nothing in it reads a
+credential.
 
 `app/static/widget-state.js` is the pure state/presentation module for storage
 validation, effective source state, and global status. The frontend
@@ -281,8 +282,9 @@ purpose.
   16 KiB) within 10 s or get 408/431 before the dashboard is dialled. After that
   head it relays bytes blind, so a second or later head on a kept-alive
   connection is not its business, and a connection made straight to
-  `codervis:8000` never reaches it at all. Nothing here is timed after the head,
-  so SSE is unaffected.
+  `codervis:8000` never reaches it at all. Nothing here is timed after the head
+  — a request body included, which is the server's own bound (#66) — so SSE is
+  unaffected.
 
 **The bound itself lives in the server, in `app/server.py` (#43).** `ingress`
 parses one head per connection and only the connections that pass through it, so
@@ -290,8 +292,10 @@ a bound that lived only there covered neither a later request on a kept-alive
 connection nor a connection opened straight to `codervis:8000` — and uvicorn's
 own defaults bound nothing: `--http auto` prefers httptools, which caps a request
 head at nothing, and no ceiling and no timer is armed until a response has been
-sent. `app/server.py` is what the image's `CMD` launches, and it holds three
-bounds, every one of them spent *before* a request is dispatched:
+sent. `app/server.py` is what the image's `CMD` launches, and it holds four bounds.
+The first three are spent *before* a request is dispatched; the fourth, the
+body deadline, is the one that is not, and it is kept off a response by being
+bounded on h11's own state rather than on a clock the server is running (#66):
 
 - **a head of at most 16 KiB, refused with 431**, on every request of every
   connection — the budget `ingress` reads a first head with, and never wider than
@@ -326,18 +330,34 @@ bounds, every one of them spent *before* a request is dispatched:
   and uvicorn's own check stays as the layer that also counts running tasks — it
   answers 503 to a request arriving once the count has reached 320, the arriving
   connection included, so at most 319 are served at a time.
+- **a complete request body within 10 s of its head, refused with 408** (#66),
+  and never renewed by an arriving byte either. uvicorn pauses reading a body
+  at 64 KiB, so a body could never grow memory without bound, but nothing timed
+  one: measured against this configuration, a 40-byte body dribbled a byte at a
+  time was served 59 s after its head, holding one of the 320 slots throughout.
+  **This is the one bound here armed after dispatch**, because uvicorn
+  dispatches a request as soon as its head is parsed and the body arrives
+  underneath the running application. So it is armed on the question of whether
+  the *client* is still sending — h11's `their_state` is `SEND_BODY` — and
+  cancelled the moment it stops, never on how long the server has been
+  answering. A request with no body never enters that state at all, so no `GET`
+  is ever under it for an instant, `/api/stream` included; where a body and a
+  long response do overlap, the deadline ends with the body. It is also the one
+  bound `ingress` has no counterpart for, since the relay reads a first head
+  and then relays bytes blind. A refusal is only *written* where uvicorn has
+  not begun a response; where it has, the connection is dropped rather than a
+  second response written over the first.
 
-**What stays unbounded is anything after a request is dispatched**: a response,
-deliberately — that is what SSE is, and `/api/stream` lasts as long as the browser
-tab — and a request *body*, which nothing here times either (uvicorn pauses reading
-at 64 KiB but arms no timer). Each costs one of the 320 connections and no more,
-which is what makes the residue affordable rather than a hole.
-`tests/test_server_bounds.py` pins each bound through a real server on loopback:
-each head shape, both sides of the cap to the byte, the surplus connection refused
-before it sends anything, the deadline (including that a slow stream is not cut
-off, and that a head inside the budget is not re-scanned on every read), and
-uvicorn's own ceiling's exact boundary. It pins the values, asks both front doors
-for the same refusal rather than comparing two constants — exact that the relay's
+**What stays unbounded is a response**, deliberately — that is what SSE is, and
+`/api/stream` lasts as long as the browser tab. It costs one of the 320
+connections and no more, which is what makes the residue affordable rather than
+a hole. `tests/test_server_bounds.py` pins each bound through a real server on
+loopback: each head shape, both sides of the cap to the byte, the surplus
+connection refused before it sends anything, each deadline (including that a
+slow stream is not cut off, that a head inside the budget is not re-scanned on
+every read, and that a prompt `POST` body is still served), and uvicorn's own
+ceiling's exact boundary. It pins the values, asks both front doors for the same
+refusal rather than comparing two constants — exact that the relay's
 own allowance is four bytes wider, because `readuntil` measures the terminator's
 offset — and pins that the `CMD` still launches this module: `app/server.py` is
 documentation the moment the image goes back to `uvicorn app.main:app`. Keep `ingress`'s checks as the outer layer; do not

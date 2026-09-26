@@ -109,21 +109,29 @@ directories; it must not call upstream quota endpoints or read host tokens.
   off every non-internal network and free of `ports:`, and keep the published
   port on `DASHBOARD_BIND`, which defaults to loopback.
 - `app/server.py` owns what a *peer* may cost the dashboard's own process: the
-  server configuration the image's `CMD` launches, and the three bounds it arms —
-  a request head of at most 16 KiB (431), a complete head within 10 s (408), and at
-  most 320 connections held at once (503), the first two being `ingress`'s own
-  numbers applied to every request of every connection rather than the first, and
-  the third above `ingress`'s 256. `BoundedHeadH11Protocol` enforces all three, and
+  server configuration the image's `CMD` launches, and the four bounds it arms —
+  a request head of at most 16 KiB (431), a complete head within 10 s (408), at
+  most 320 connections held at once (503), and a complete request body within
+  10 s of its head (408). The first two are `ingress`'s own
+  numbers applied to every request of every connection rather than the first,
+  the third is above `ingress`'s 256, and the fourth the relay has no
+  counterpart for at all, since it relays bytes blind once it has read a first
+  head (#66). `BoundedHeadH11Protocol` enforces all four, and
   the subclass is load-bearing twice over: h11's own `max_incomplete_event_size` is
   checked only where its parser asks for more data, so a head that arrives complete
   in one socket read is parsed however large it is; and uvicorn's
   `limit_concurrency` is not admission control, so it refuses a *request* on an
   over-budget connection rather than the connection (800 were held at once against
   a ceiling of 320). So the head cap is checked before the parser sees the bytes,
-  and the connection count where the connection is accepted. Keep all three spent
-  *before* a request is dispatched — a bound that reached a response in flight
-  would cut off every SSE stream, and nothing times a response or a request body
-  by design. `ingress`'s first-head cap
+  and the connection count where the connection is accepted. Neither deadline is
+  renewed by an arriving byte, which is the whole of what they bound. Keep the
+  first three spent *before* a request is dispatched. The body deadline cannot
+  be — uvicorn dispatches a request as soon as its head is parsed — so keep it
+  armed on h11's `their_state is SEND_BODY` and on nothing else: that is what
+  makes it a bound on the client's own sending rather than on a response, and a
+  bound that reached a response in flight would cut off every SSE stream. A
+  request with no body never enters that state, so no `GET` is ever under it.
+  Nothing times a *response*, by design. `ingress`'s first-head cap
   and deadline stay as the outer layer; they cover neither a later request on a
   kept-alive connection nor a connection opened straight to `codervis:8000` (#43).
   `tests/test_server_bounds.py` pins each bound through a real server, the values,
@@ -247,13 +255,15 @@ What the repository does control is the text itself:
 - Preserve read-only bind mounts for `/data/claude` and `/data/codex`.
 - Preserve the front-door bound in the server that bears the cost: the image's
   `CMD` launches `python -m app.server`, and that module's head cap, head
-  deadline and connection budget are what apply to every request on every
-  connection, whichever route it came by. A bare `uvicorn app.main:app`, or a
+  deadline, body deadline and connection budget are what apply to every request
+  on every connection, whichever route it came by. A bare `uvicorn app.main:app`, or a
   compose `command:` that replaces the `CMD`, arms none of them, and neither does
   `http="h11"` on its own — the protocol subclass is what makes the head cap true
-  for a head that arrives in one read. Every one of those bounds is spent before a
-  request is dispatched, and none may reach a response in flight, because that is
-  what SSE is. `ingress`'s first-head checks stay as the outer layer rather than
+  for a head that arrives in one read. The first three of those bounds are spent
+  before a request is dispatched; the body deadline is armed after it, and is
+  kept off a response by being armed only while h11 says the client is still
+  sending a body. Not one of them may bound a response in flight, because that
+  is what SSE is. `ingress`'s first-head checks stay as the outer layer rather than
   as the bound.
 - Preserve the egress bound: the `codervis` service joins internal networks
   only, those networks keep the bridge driver's `gateway_mode_ipv4: isolated`

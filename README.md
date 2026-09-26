@@ -513,19 +513,22 @@ flags that are useful for quick diagnosis.
 - Whoever reaches the dashboard is bounded in what they can cost, by the server
   that bears the cost and not only by the relay in front of it. The dashboard's
   own process (`app/server.py`, which is what the image launches) refuses a
-  request head over 16 KiB with `431`, and a connection that has not completed a
-  head within 10 seconds with `408` — on **every** request of a connection, not
-  just the first, and whichever route the connection arrived by. It holds at most
-  320 connections, refusing a further one with `503` as it is accepted, and
-  answers `503` to a request that arrives once 320 connections or running requests
-  are held, so at most 319 are served at a time. `ingress` is the outer layer on
-  the published port, with the same head budget and deadline and a budget of 256
-  connections, applied to the first head of each connection before the dashboard
-  is dialled at all. What is deliberately **not** bounded is anything after a
-  request has been dispatched — a response, because an SSE response lasts as long
-  as the browser tab, and a request body, which nothing here times. Each of those
-  costs one of the 320 connections and no more. Every service's log is capped at
-  3 × 10 MB.
+  request head over 16 KiB with `431`, and a connection that has not completed
+  a head within 10 seconds with `408` — on **every** request of a connection,
+  not just the first, and whichever route the connection arrived by. A request
+  **body** that has not arrived in full within 10 seconds of its head gets
+  `408` too, and neither deadline is renewed by an arriving byte, so a peer
+  cannot hold a connection by dribbling either half of a request. It holds at
+  most 320 connections, refusing a further one with `503` as it is accepted,
+  and answers `503` to a request that arrives once 320 connections or running
+  requests are held, so at most 319 are served at a time. `ingress` is the
+  outer layer on the published port, with the same head budget and deadline and
+  a budget of 256 connections, applied to the first head of each connection
+  before the dashboard is dialled at all; it bounds no body, because it relays
+  bytes blind once it has read that first head. What is deliberately **not**
+  bounded is a **response**: an SSE response lasts as long as the browser tab,
+  and it costs one of the 320 connections and no more. Every service's log is
+  capped at 3 × 10 MB.
 - The dashboard never logs the tokens, and never serves an exception's own
   text: a failure is reported with one of the fixed messages in
   `app/degrade.py`. A debug capture of an upstream call made with the CLI's own
