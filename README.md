@@ -516,9 +516,12 @@ flags that are useful for quick diagnosis.
   request head over 16 KiB with `431`, and a connection that has not completed
   a head within 10 seconds with `408` — on **every** request of a connection,
   not just the first, and whichever route the connection arrived by. A request
-  **body** that has not arrived in full within 10 seconds of its head gets
-  `408` too, and neither deadline is renewed by an arriving byte, so a peer
-  cannot hold a connection by dribbling either half of a request. It holds at
+  **body** that has not arrived in full within 10 seconds of its head is
+  refused too — with `408` where the dashboard has not answered yet, and by
+  simply dropping the connection where it has, which is the case for every route
+  it actually has, since none of them reads a body. Neither deadline is renewed
+  by an arriving byte, so a peer cannot hold a connection by dribbling either
+  half of a request. It holds at
   most 320 connections, refusing a further one with `503` as it is accepted,
   and answers `503` to a request that arrives once 320 connections or running
   requests are held, so at most 319 are served at a time. `ingress` is the

@@ -36,7 +36,8 @@ deadline is the one that is not, because uvicorn dispatches a request as soon as
 parsed and the body arrives underneath the running application. So it is armed on h11's own
 question -- whether the *client* is still sending -- and never on how long the server has been
 answering: it is armed only while `their_state` is `SEND_BODY`, which a request with no body
-(every route this dashboard serves, `/api/stream` included) never enters at all.
+(every route this dashboard serves, `/api/stream` included) never enters at all. A WebSocket
+upgrade is the one thing that sits in that state with no body coming, and is cancelled there.
 """
 
 from __future__ import annotations
@@ -166,7 +167,9 @@ class BoundedHeadH11Protocol(H11Protocol):
     parsed, so this is the one bound here that is armed *after* dispatch -- but a request with no
     body never enters `SEND_BODY` at all, and every route this dashboard serves is a `GET`, so
     `/api/stream` is never under it for an instant. Where a body and a long response do overlap,
-    the deadline ends with the body and the response runs on untouched.
+    the deadline ends with the body and the response runs on untouched. A WebSocket upgrade is the
+    one place h11 sits in `SEND_BODY` with no body coming; `handle_websocket_upgrade` below is
+    what keeps a deadline off it.
     """
 
     # The bounds, as class attributes: uvicorn instantiates the protocol itself, with a fixed
@@ -177,6 +180,9 @@ class BoundedHeadH11Protocol(H11Protocol):
     request_body_timeout_s = REQUEST_BODY_TIMEOUT_S
     _head_deadline: asyncio.TimerHandle | None = None
     _body_deadline: asyncio.TimerHandle | None = None
+    # Set once this connection has been handed to the WebSocket protocol; see
+    # `handle_websocket_upgrade` for why a deadline must never outlive that.
+    _upgraded = False
     # Shared by every connection this class serves, like uvicorn's own `connections` set, and only
     # so that a flood is one log line rather than one per socket. `ingress` keeps the same pair.
     _saturated = False
@@ -229,6 +235,25 @@ class BoundedHeadH11Protocol(H11Protocol):
         super().handle_events()
         self._reconsider_deadlines()
 
+    def handle_websocket_upgrade(self, event: h11.Request) -> None:  # type: ignore[override]
+        """Hand the connection on, with nothing of this protocol's left armed against it.
+
+        This is the one place `their_state is SEND_BODY` and "the client is sending a body" come
+        apart, and both halves of the gap are uvicorn's: it calls this from `handle_events` and
+        `return`s straight afterwards, *before* the `EndOfMessage` that would take h11 out of
+        `SEND_BODY`, and the last thing it does here is `transport.set_protocol()`, after which
+        this object's `connection_lost` is never called again. So a body deadline armed on the way
+        out of that `handle_events` would never be cancelled, and would fire ten seconds later
+        against a transport that is now carrying an established WebSocket stream -- writing an
+        HTTP 408 into the middle of it and closing it. `_upgraded` is what stops the re-arm, since
+        cancelling here is not enough on its own: uvicorn's `return` lands back in the override
+        above, which reconsiders the deadlines one last time.
+        """
+        self._upgraded = True
+        super().handle_websocket_upgrade(event)
+        self._cancel_head_deadline()
+        self._cancel_body_deadline()
+
     # The bounds' own state
 
     def _head_is_over_bound(self, arriving: bytes = b"") -> bool:
@@ -270,7 +295,9 @@ class BoundedHeadH11Protocol(H11Protocol):
         h11's `their_state` is `SEND_BODY` from the moment a `Request` event with a body is parsed
         until its `EndOfMessage`, and a request with no body goes straight from `IDLE` to `DONE`
         without passing through it. So this is true for exactly the span the body deadline exists
-        to bound, and false for every request this dashboard actually serves.
+        to bound, and false for every request this dashboard actually serves. The one shape where
+        it is true and no body is coming is a WebSocket upgrade, which freezes h11 here and hands
+        the transport away; `handle_websocket_upgrade` is where that is accounted for.
         """
         return self.conn.their_state is h11.SEND_BODY
 
@@ -282,6 +309,12 @@ class BoundedHeadH11Protocol(H11Protocol):
         here may bound. Each arm is a no-op while its own timer is already running, which is what
         keeps a deadline from being renewed by the bytes it is meant to be bounding.
         """
+        if self._upgraded:
+            # The transport belongs to another protocol now, and h11's state is frozen where the
+            # upgrade left it. Nothing of this connection's may be armed; see the override above.
+            self._cancel_head_deadline()
+            self._cancel_body_deadline()
+            return
         if self._awaiting_head():
             self._cancel_body_deadline()
             self._arm_head_deadline()
@@ -336,10 +369,16 @@ class BoundedHeadH11Protocol(H11Protocol):
         if not self._awaiting_body():
             return
         cycle = self.cycle
-        if cycle is not None and cycle.response_started:
-            log.debug("server_dropped reason=slow_body_under_a_begun_response")
-            self._close()
-            return
+        if cycle is not None:
+            # Before anything is written: `RequestResponseCycle.send()` returns early once this is
+            # set, so the application cannot append a response behind the refusal below. Closing
+            # the transport alone does not guarantee that -- asyncio drops later writes on a
+            # counter it only increments when the buffer was already empty.
+            cycle.disconnected = True
+            if cycle.response_started:
+                log.debug("server_dropped reason=slow_body_under_a_begun_response")
+                self._close()
+                return
         self._refuse(NO_BODY_IN_TIME)
 
     def _refuse(self, payload: bytes) -> None:

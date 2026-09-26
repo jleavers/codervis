@@ -116,6 +116,21 @@ async def _body_reader(scope: dict, receive, send) -> None:
     await send({"type": "http.response.body", "body": payload})
 
 
+async def _websocket(scope: dict, receive, send) -> None:
+    """Accepts an upgrade and holds it open for longer than any deadline here.
+
+    `requirements.txt` pins `uvicorn[standard]`, so the image has a WebSocket library and this
+    branch of uvicorn's `handle_events` is live whether or not the dashboard routes to it.
+    """
+    if scope["type"] != "websocket":
+        await _stub(scope, receive, send)
+        return
+    await receive()
+    await send({"type": "websocket.accept"})
+    await asyncio.sleep(Impatient.request_body_timeout_s * 5)
+    await send({"type": "websocket.close", "code": 1000})
+
+
 async def _slow_stream_after_a_body(scope: dict, receive, send) -> None:
     """Reads a whole request body, then streams for far longer than the body deadline: the shape
     that proves the deadline ends with the body rather than running on into the response."""
@@ -619,7 +634,7 @@ def test_a_dribbled_request_body_is_refused_before_it_finishes(chunked: bool) ->
     with _running(_body_reader, protocol=Impatient) as port:
         sock = _connect(port)
         try:
-            sock.sendall(_post_head(4096, chunked=chunked))
+            sock.sendall(_post_head(chunked=True) if chunked else _post_head(4096))
             ran_for = _dribble_body(sock, body, timeout=timeout)
             assert _status(sock).startswith(b"HTTP/1.1 408 ")
             assert ran_for < timeout * 3, (
@@ -791,6 +806,49 @@ def test_the_body_deadline_refuses_only_while_a_body_is_awaited() -> None:
     protocol.cycle = type("Cycle", (), {"response_started": True})()  # type: ignore[assignment]
     protocol._body_timed_out()
     assert (refused, closed) == ([], [True])
+
+
+def test_no_deadline_survives_a_websocket_upgrade() -> None:
+    """The one place h11's `SEND_BODY` does not mean "a body is coming".
+
+    uvicorn hands the connection to the WebSocket protocol from inside `handle_events` and
+    `return`s *before* the `EndOfMessage` that would leave `SEND_BODY`, then calls
+    `transport.set_protocol()`, after which this protocol's `connection_lost` never runs. A body
+    deadline armed on the way out of that call would therefore never be cancelled, and would fire
+    into an established WebSocket stream: an HTTP 408 written mid-frame, and the connection closed
+    under a peer that had done nothing wrong.
+
+    So the assertion is on the wire and not on an attribute: nothing arrives after the handshake,
+    and the connection is still open well past the deadline.
+    """
+    timeout = Impatient.request_body_timeout_s
+    handshake = (
+        b"GET /ws HTTP/1.1\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Upgrade: websocket\r\n"
+        b"Connection: Upgrade\r\n"
+        b"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+        b"Sec-WebSocket-Version: 13\r\n"
+        b"\r\n"
+    )
+    with _running(_websocket, protocol=Impatient) as port:
+        sock = _connect(port)
+        try:
+            sock.sendall(handshake)
+            assert _status(sock).startswith(b"HTTP/1.1 101 "), "the upgrade was not accepted"
+            after = b""
+            until = time.monotonic() + timeout * 3
+            while time.monotonic() < until:
+                if not select.select([sock], [], [], 0.05)[0]:
+                    continue
+                chunk = sock.recv(65536)
+                assert chunk, (
+                    f"the upgraded connection was closed within {timeout * 3}s of its handshake"
+                )
+                after += chunk
+            assert after == b"", f"bytes were written into a WebSocket stream: {after[:120]!r}"
+        finally:
+            sock.close()
 
 
 # The concurrency ceiling

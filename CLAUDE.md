@@ -342,7 +342,14 @@ bounded on h11's own state rather than on a clock the server is running (#66):
   cancelled the moment it stops, never on how long the server has been
   answering. A request with no body never enters that state at all, so no `GET`
   is ever under it for an instant, `/api/stream` included; where a body and a
-  long response do overlap, the deadline ends with the body. It is also the one
+  long response do overlap, the deadline ends with the body. The one shape where
+  `SEND_BODY` does *not* mean a body is coming is a **WebSocket upgrade**:
+  uvicorn returns out of `handle_events` before the `EndOfMessage` and then hands
+  the transport to another protocol, so h11 stays frozen there and this object's
+  `connection_lost` never runs. `handle_websocket_upgrade` cancels both deadlines
+  and latches `_upgraded` so the re-arm on the way out does not put one back —
+  without it a 408 is written into an established WebSocket stream ten seconds
+  later. It is also the one
   bound `ingress` has no counterpart for, since the relay reads a first head
   and then relays bytes blind. A refusal is only *written* where uvicorn has
   not begun a response; where it has, the connection is dropped rather than a

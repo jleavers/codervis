@@ -130,7 +130,13 @@ directories; it must not call upstream quota endpoints or read host tokens.
   armed on h11's `their_state is SEND_BODY` and on nothing else: that is what
   makes it a bound on the client's own sending rather than on a response, and a
   bound that reached a response in flight would cut off every SSE stream. A
-  request with no body never enters that state, so no `GET` is ever under it.
+  request with no body never enters that state, so no `GET` is ever under it —
+  with one exception any change here has to keep honouring, a **WebSocket
+  upgrade**, which leaves h11 frozen in `SEND_BODY` and hands the transport to
+  another protocol whose `connection_lost` is not this one's.
+  `handle_websocket_upgrade` cancels both deadlines and latches `_upgraded` so
+  nothing re-arms; a deadline that outlives an upgrade writes HTTP into a
+  WebSocket stream.
   Nothing times a *response*, by design. `ingress`'s first-head cap
   and deadline stay as the outer layer; they cover neither a later request on a
   kept-alive connection nor a connection opened straight to `codervis:8000` (#43).
