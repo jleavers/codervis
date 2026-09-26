@@ -118,6 +118,21 @@ def test_the_dashboard_container_publishes_nothing_itself(config: dict) -> None:
     assert not config["services"]["codervis"].get("ports")
 
 
+def test_the_dashboard_runs_the_image_s_own_bounded_server(config: dict) -> None:
+    """The head cap and the connection ceiling are armed by the command the image starts (#43),
+    so a `command:` here that replaced it would disarm both while every other pin stayed green.
+    An override is allowed only where it still launches that module."""
+    service = config["services"]["codervis"]
+    for key in ("entrypoint", "command"):
+        override = service.get(key)
+        if not override:
+            continue
+        # Compose accepts both forms, and a list is joined rather than searched element by element,
+        # because a command may name the module inside a shell invocation of its own.
+        text = override if isinstance(override, str) else " ".join(override)
+        assert "app.server" in text, (override, key)
+
+
 def test_the_dashboard_reaches_the_proxy_through_both_spellings(config: dict) -> None:
     environment = config["services"]["codervis"]["environment"]
     for name in PROXY_ENV_NAMES:

@@ -361,7 +361,7 @@ Install development dependencies, then run the suite:
 ```bash
 python -m pip install -r requirements-dev.txt
 python -m pytest
-python -m py_compile app/main.py app/quota.py app/activity_gate.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/refresh.py app/budget.py app/egress.py app/ingress.py
+python -m py_compile app/main.py app/quota.py app/activity_gate.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/refresh.py app/budget.py app/server.py app/egress.py app/ingress.py
 ```
 
 The tests use temporary directories and stubbed upstream clients. They do not
@@ -416,6 +416,7 @@ browser-disabled cards are dimmed.
 │   ├── codex_activity.py # Codex local activity metadata reader
 │   ├── refresh.py       # One background refresher per source: when a source is read
 │   ├── budget.py        # What a single payload-feeding read may cost
+│   ├── server.py        # The server the image launches, and its request/connection bound
 │   ├── egress.py        # Allow-listing CONNECT proxy: the dashboard's only route out
 │   ├── ingress.py       # Relay that publishes the dashboard's port
 │   ├── templates/
@@ -509,9 +510,22 @@ flags that are useful for quick diagnosis.
   either refuses the option (27.x) or ignores it without saying so (26.x and
   older), and there a host firewall rule that drops new inbound connections
   arriving on that bridge's interface is what closes it.
-- Whoever can reach the port is bounded in what they can cost: `ingress` holds
-  at most 256 connections, and it drops a client that has not sent a complete
-  request within 10 seconds. Every service's log is capped at 3 × 10 MB.
+- Whoever reaches the dashboard is bounded in what they can cost, by the server
+  that bears the cost and not only by the relay in front of it. The dashboard's
+  own process (`app/server.py`, which is what the image launches) refuses a
+  request head over 16 KiB with `431`, and a connection that has not completed a
+  head within 10 seconds with `408` — on **every** request of a connection, not
+  just the first, and whichever route the connection arrived by. It holds at most
+  320 connections, refusing a further one with `503` as it is accepted, and
+  answers `503` to a request that arrives once 320 connections or running requests
+  are held, so at most 319 are served at a time. `ingress` is the outer layer on
+  the published port, with the same head budget and deadline and a budget of 256
+  connections, applied to the first head of each connection before the dashboard
+  is dialled at all. What is deliberately **not** bounded is anything after a
+  request has been dispatched — a response, because an SSE response lasts as long
+  as the browser tab, and a request body, which nothing here times. Each of those
+  costs one of the 320 connections and no more. Every service's log is capped at
+  3 × 10 MB.
 - The dashboard never logs the tokens, and never serves an exception's own
   text: a failure is reported with one of the fixed messages in
   `app/degrade.py`. A debug capture of an upstream call made with the CLI's own

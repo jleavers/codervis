@@ -173,6 +173,11 @@ change provider error handling.
 sections sit on: the first owns *when* a source is read, the second owns *how
 much* a single read may cost. Neither knows anything about quota shapes.
 
+`app/server.py` is a third such layer, facing the other way: it owns what a
+*peer* may cost the process — the size of any request head it will parse and how
+many connections it will hold. It knows nothing about quota shapes either, and
+nothing in it reads a credential.
+
 `app/static/widget-state.js` is the pure state/presentation module for storage
 validation, effective source state, and global status. The frontend
 (`app/static/app.js`) remains the single gauge-colour and DOM-update path for
@@ -270,11 +275,73 @@ purpose.
   live clients use.
 - **`ingress`** — `app/ingress.py`, a byte relay that publishes
   `DASHBOARD_PORT` and forwards to `codervis:8000`. It is needed because Docker
-  ignores `ports:` on an internal-only container. It is also the front door's
-  resource bound: at most 256 connections, and a client must send a complete
-  first request head (at most 16 KiB) within 10 s or get 408/431 before the
-  dashboard is dialled. uvicorn itself arms no timer until it has sent a
-  response. After the head, nothing is timed, so SSE is unaffected.
+  ignores `ports:` on an internal-only container. It is the front door's **outer**
+  resource bound, and be exact about which requests it covers: at most 256
+  connections, and a client must send a complete *first* request head (at most
+  16 KiB) within 10 s or get 408/431 before the dashboard is dialled. After that
+  head it relays bytes blind, so a second or later head on a kept-alive
+  connection is not its business, and a connection made straight to
+  `codervis:8000` never reaches it at all. Nothing here is timed after the head,
+  so SSE is unaffected.
+
+**The bound itself lives in the server, in `app/server.py` (#43).** `ingress`
+parses one head per connection and only the connections that pass through it, so
+a bound that lived only there covered neither a later request on a kept-alive
+connection nor a connection opened straight to `codervis:8000` — and uvicorn's
+own defaults bound nothing: `--http auto` prefers httptools, which caps a request
+head at nothing, and no ceiling and no timer is armed until a response has been
+sent. `app/server.py` is what the image's `CMD` launches, and it holds three
+bounds, every one of them spent *before* a request is dispatched:
+
+- **a head of at most 16 KiB, refused with 431**, on every request of every
+  connection — the budget `ingress` reads a first head with, and never wider than
+  it. `BoundedHeadH11Protocol` is what enforces it, and the subclass is not
+  ceremony: h11's own `max_incomplete_event_size` is checked only where
+  `next_event()` has to answer `NEED_DATA`, so a head that arrives *complete*
+  inside one socket read is parsed however large it is — 20, 50 and 80 KiB heads
+  in one write were all served with 200 under that setting alone, and the real
+  bound was the kernel's read size. A head sent in one write, or dripped, is
+  checked before h11 is handed the bytes. One **pipelined** behind a request that
+  is fine cannot be — the bytes in front of it have to reach the parser for that
+  request to be served — so it is checked when h11's buffer is next parsed, by
+  which time h11 holds one socket read of it rather than as much as the peer
+  cares to send. All three shapes are refused; be exact about which two are
+  refused before the parser sees anything.
+- **a complete head within 10 s, refused with 408** — `ingress`'s deadline, on
+  every head rather than the first, and never renewed by an arriving byte. It is
+  what stops a socket that says nothing, or dribbles, from holding a counted
+  connection: with the ceiling below armed, enough of those would make the server
+  answer 503 to everyone, which is a worse outage than the unbounded head it
+  replaced.
+- **at most 320 connections held at once, refused with 503**, above `ingress`'s
+  256, so the relay runs out of slots before the server does and an SSE stream per
+  tab is never what the server refuses. Two checks against the one number, because
+  uvicorn's `limit_concurrency` is **not** admission control: it is checked where a
+  `Request` event is parsed, so an over-budget connection is accepted and counted
+  and only its *request* is answered 503. With 320 configured and nothing else,
+  800 connections were held at once — the head deadline reclaimed each one in
+  turn, but nothing bounded how many there were, and the peer with no relay in
+  front of it is exactly the one that route matters for. So the protocol class
+  refuses a connection over the budget at the accept, with the relay's own 503,
+  and uvicorn's own check stays as the layer that also counts running tasks — it
+  answers 503 to a request arriving once the count has reached 320, the arriving
+  connection included, so at most 319 are served at a time.
+
+**What stays unbounded is anything after a request is dispatched**: a response,
+deliberately — that is what SSE is, and `/api/stream` lasts as long as the browser
+tab — and a request *body*, which nothing here times either (uvicorn pauses reading
+at 64 KiB but arms no timer). Each costs one of the 320 connections and no more,
+which is what makes the residue affordable rather than a hole.
+`tests/test_server_bounds.py` pins each bound through a real server on loopback:
+each head shape, both sides of the cap to the byte, the surplus connection refused
+before it sends anything, the deadline (including that a slow stream is not cut
+off, and that a head inside the budget is not re-scanned on every read), and
+uvicorn's own ceiling's exact boundary. It pins the values, asks both front doors
+for the same refusal rather than comparing two constants — exact that the relay's
+own allowance is four bytes wider, because `readuntil` measures the terminator's
+offset — and pins that the `CMD` still launches this module: `app/server.py` is
+documentation the moment the image goes back to `uvicorn app.main:app`. Keep `ingress`'s checks as the outer layer; do not
+move a bound out of the server and into the relay.
 
 The front door is also bounded by who may use it, because the dashboard has no
 login: `DASHBOARD_BIND` (default `127.0.0.1`) is the host address `ingress`
@@ -334,7 +401,10 @@ rather than reading as "nothing answered". `tests/test_compose_topology.py`
 pins the compose shape, gateway mode included, and CI sets `REQUIRE_DOCKER` so
 that file fails rather than skips where the Docker CLI has gone missing.
 
-**Keep the bound whole.** Do not give `codervis` a non-internal network or
+**Keep the bound whole.** Do not change the image's `CMD` back to a bare
+`uvicorn` invocation, or hand `codervis` a `command:` in the compose file that
+replaces it: that is where the head cap and the connection ceiling are armed, and
+neither has a default. Do not give `codervis` a non-internal network or
 `ports:`, and do not drop a network's gateway-mode option: an internal network
 without it puts the host back on the dashboard's bridge. A network that turns
 on `enable_ipv6` needs `gateway_mode_ipv6: isolated` too, since that is a
@@ -388,7 +458,7 @@ curl http://localhost:8765/api/usage
 # Automated tests
 python -m pip install -r requirements-dev.txt
 python -m pytest
-python -m py_compile app/main.py app/quota.py app/activity_gate.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/refresh.py app/budget.py app/egress.py app/ingress.py
+python -m py_compile app/main.py app/quota.py app/activity_gate.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/refresh.py app/budget.py app/server.py app/egress.py app/ingress.py
 
 # Egress bound, from inside the running dashboard container
 docker compose exec codervis python -m app.egress check
