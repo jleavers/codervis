@@ -8,7 +8,7 @@ accepts; it can bound nothing after that, and nothing at all on a connection mad
 
 uvicorn's defaults bound none of it. `--http auto` prefers httptools, which caps a request head at
 nothing at all, and no ceiling and no timer is armed until a response has been sent. So this module
-names the three bounds and arms them:
+names the four bounds and arms them:
 
 - **a request head of at most 16 KiB, on every request of every connection** -- the budget
   `ingress` reads a first head with, and never wider than it. `BoundedHeadH11Protocol` below is
@@ -20,12 +20,23 @@ names the three bounds and arms them:
   a way to make the server refuse everybody else.
 - **at most 320 connections held at once**, above `ingress`'s 256 so the relay runs out of slots
   before the server does and an SSE stream per browser tab is never what is refused.
+- **a complete request body within 10 s of its head**, refused with 408 (#66). uvicorn pauses
+  reading a body at 64 KiB, so a body cannot grow memory without bound, but nothing timed one: a
+  peer that dribbled a `Content-Length` body it never finished held a counted connection for as
+  long as it liked, exactly as a dribbled head did before the deadline above. Measured against
+  this configuration before it was armed: a 40-byte body sent a byte at a time was served, 59 s
+  after its head.
 
 Choosing h11 moves parsing from httptools' C parser to pure Python. For a dashboard one browser
 polls it costs nothing worth measuring, and it is the price of a head limit that exists at all.
 
-What stays unbounded, and must: time *after* a request has been dispatched. That is what an SSE
-response is, and it lasts as long as the browser tab. Every bound above is spent before dispatch.
+What stays unbounded, and must: a **response**. That is what an SSE response is, and it lasts as
+long as the browser tab. The first three bounds are spent before a request is dispatched; the body
+deadline is the one that is not, because uvicorn dispatches a request as soon as its head is
+parsed and the body arrives underneath the running application. So it is armed on h11's own
+question -- whether the *client* is still sending -- and never on how long the server has been
+answering: it is armed only while `their_state` is `SEND_BODY`, which a request with no body
+(every route this dashboard serves, `/api/stream` included) never enters at all.
 """
 
 from __future__ import annotations
@@ -64,6 +75,15 @@ MAX_REQUEST_HEAD_BYTES = 16 * 1024
 # uvicorn's own `timeout_keep_alive` (5 s) closes an idle kept-alive connection sooner than this,
 # so in practice this is what bounds a head that has begun, and the accept of a silent socket.
 REQUEST_TIMEOUT_S = 10.0
+# How long a request body may take to arrive in full, counted from the moment its head was parsed
+# and never renewed by an arriving byte, on the same reasoning as the head deadline above and with
+# the same value: a peer that dribbles is a peer holding one of the connections below, and which
+# half of its request it dribbles makes no difference to what that costs (#66). `ingress` has no
+# counterpart -- it relays bytes blind once it has read a first head -- so this is the one bound
+# here that only the server holds. No route in this app takes a body at all, so the value is
+# generous for every request the dashboard has a use for, and a body still arriving ten seconds
+# after its head is traffic it has none for.
+REQUEST_BODY_TIMEOUT_S = 10.0
 # The most connections this server holds at once. Above `ingress.MAX_CONNECTIONS` (256), so a peer
 # at the published port runs the relay out of slots first and each open browser tab -- one
 # connection and one streaming task -- is never what is refused. It is handed to uvicorn's
@@ -76,6 +96,11 @@ MAX_CONNECTIONS = 320
 HEAD_TOO_LARGE = response(431, "Request Header Fields Too Large", "request head too large\n")
 NO_REQUEST_IN_TIME = response(408, "Request Timeout", "no request in time\n")
 TOO_MANY_CONNECTIONS = response(503, "Service Unavailable", "too many connections\n")
+# The exception, and it has to be: the relay bounds no body, so there is no refusal of its own to
+# be identical to, and a peer that got this one has reached the server whatever it is told. It is
+# a separate string rather than `NO_REQUEST_IN_TIME` because the two say different things to
+# whoever reads a capture -- one request never arrived, the other arrived and stopped half way.
+NO_BODY_IN_TIME = response(408, "Request Timeout", "no request body in time\n")
 
 # Where a request head ends -- h11's own rule (`h11._receivebuffer`), not an approximation of it,
 # so this never counts less head than h11 will parse and never counts a body as head. It covers
@@ -96,7 +121,7 @@ def pending_head_length(pending: bytes) -> int:
 
 
 class BoundedHeadH11Protocol(H11Protocol):
-    """uvicorn's h11 protocol, plus the two bounds on a request head that it does not hold.
+    """uvicorn's h11 protocol, plus the bounds on what one peer may cost that it does not hold.
 
     **The size.** h11 has a limit of its own, which uvicorn exposes as
     `h11_max_incomplete_event_size`, but it is checked in only one place: `h11.Connection`'s
@@ -125,10 +150,23 @@ class BoundedHeadH11Protocol(H11Protocol):
     at once, refused nothing, and were reclaimed only as each one's own head deadline expired. So
     the count is checked here too, where the connection is accepted, as `ingress` does.
 
-    All three are bounds `ingress` already applies at its own door -- to a first head, and to a
+    Those three are bounds `ingress` already applies at its own door -- to a first head, and to a
     connection -- applied here to every head and every route, with the relay's own refusals.
     A subclass is the least the job takes: `h11_max_incomplete_event_size` is still passed (it
     bounds h11's own buffer in the incomplete case), but on its own it is a document, not a bound.
+
+    **The body** (#66) is the fourth, and the only one with no counterpart in the relay, which
+    relays bytes blind once it has read a first head. uvicorn pauses reading a body at 64 KiB, so
+    the memory is bounded; the *time* was not, and a peer that dribbled a `Content-Length` body it
+    never finished held a counted connection for as long as it liked. Its deadline is armed when
+    h11 says the client is still sending one (`their_state` is `SEND_BODY`) and cancelled the
+    moment it stops, so it measures the peer's half of the exchange and never the server's.
+
+    That distinction is what keeps it off SSE. uvicorn dispatches a request as soon as its head is
+    parsed, so this is the one bound here that is armed *after* dispatch -- but a request with no
+    body never enters `SEND_BODY` at all, and every route this dashboard serves is a `GET`, so
+    `/api/stream` is never under it for an instant. Where a body and a long response do overlap,
+    the deadline ends with the body and the response runs on untouched.
     """
 
     # The bounds, as class attributes: uvicorn instantiates the protocol itself, with a fixed
@@ -136,7 +174,9 @@ class BoundedHeadH11Protocol(H11Protocol):
     # into an instance. `build_config()` is handed the class, and its default is this one.
     max_request_head_bytes = MAX_REQUEST_HEAD_BYTES
     request_timeout_s = REQUEST_TIMEOUT_S
+    request_body_timeout_s = REQUEST_BODY_TIMEOUT_S
     _head_deadline: asyncio.TimerHandle | None = None
+    _body_deadline: asyncio.TimerHandle | None = None
     # Shared by every connection this class serves, like uvicorn's own `connections` set, and only
     # so that a flood is one log line rather than one per socket. `ingress` keeps the same pair.
     _saturated = False
@@ -169,6 +209,7 @@ class BoundedHeadH11Protocol(H11Protocol):
 
     def connection_lost(self, exc: Exception | None) -> None:
         self._cancel_head_deadline()
+        self._cancel_body_deadline()
         super().connection_lost(exc)
 
     def data_received(self, data: bytes) -> None:
@@ -177,7 +218,7 @@ class BoundedHeadH11Protocol(H11Protocol):
             self._refuse(HEAD_TOO_LARGE)
             return
         super().data_received(data)
-        self._reconsider_head_deadline()
+        self._reconsider_deadlines()
 
     def handle_events(self) -> None:
         # The other way in: a request the client pipelined behind the last one is parsed out of
@@ -186,9 +227,9 @@ class BoundedHeadH11Protocol(H11Protocol):
             self._refuse(HEAD_TOO_LARGE)
             return
         super().handle_events()
-        self._reconsider_head_deadline()
+        self._reconsider_deadlines()
 
-    # The head bound's own state
+    # The bounds' own state
 
     def _head_is_over_bound(self, arriving: bytes = b"") -> bool:
         """Whether the head being received, plus ``arriving``, is over the cap.
@@ -218,15 +259,38 @@ class BoundedHeadH11Protocol(H11Protocol):
 
         h11's `their_state` leaves `IDLE` when a `Request` event is parsed, and returns to it when
         the cycle after that response starts, so this is false for exactly as long as a request is
-        being received or served -- which is the part that must not be bounded.
+        being received or served. The body deadline below takes the first half of that span; the
+        second -- a response in flight -- is the part nothing here may bound.
         """
         return self.conn.their_state is h11.IDLE
 
-    def _reconsider_head_deadline(self) -> None:
+    def _awaiting_body(self) -> bool:
+        """Whether the client is part way through sending a request body.
+
+        h11's `their_state` is `SEND_BODY` from the moment a `Request` event with a body is parsed
+        until its `EndOfMessage`, and a request with no body goes straight from `IDLE` to `DONE`
+        without passing through it. So this is true for exactly the span the body deadline exists
+        to bound, and false for every request this dashboard actually serves.
+        """
+        return self.conn.their_state is h11.SEND_BODY
+
+    def _reconsider_deadlines(self) -> None:
+        """Arm whichever deadline this connection's h11 state calls for, and cancel the other.
+
+        The three states are exclusive by construction: waiting for a head, receiving a body, or
+        neither -- the last being a request in flight or a response being written, which nothing
+        here may bound. Each arm is a no-op while its own timer is already running, which is what
+        keeps a deadline from being renewed by the bytes it is meant to be bounding.
+        """
         if self._awaiting_head():
+            self._cancel_body_deadline()
             self._arm_head_deadline()
+        elif self._awaiting_body():
+            self._cancel_head_deadline()
+            self._arm_body_deadline()
         else:
             self._cancel_head_deadline()
+            self._cancel_body_deadline()
 
     def _arm_head_deadline(self) -> None:
         # Never renewed while one is armed. A deadline that each arriving byte pushed out would
@@ -246,22 +310,60 @@ class BoundedHeadH11Protocol(H11Protocol):
         if self._awaiting_head():
             self._refuse(NO_REQUEST_IN_TIME)
 
+    def _arm_body_deadline(self) -> None:
+        # Never renewed while one is armed, for the same reason as the head's: a deadline each
+        # arriving byte pushed out is what a dribbling peer would be renewing.
+        if self._body_deadline is None:
+            self._body_deadline = self.loop.call_later(
+                self.request_body_timeout_s, self._body_timed_out
+            )
+
+    def _cancel_body_deadline(self) -> None:
+        if self._body_deadline is not None:
+            self._body_deadline.cancel()
+            self._body_deadline = None
+
+    def _body_timed_out(self) -> None:
+        """Refuse a body that has not finished arriving, if one still has not.
+
+        The guard is the same backstop the head deadline has, and it carries more here: this timer
+        is armed while an application is running, so a stray firing has a response to collide with.
+        A refusal is only *written* where uvicorn has not begun one -- two responses on one
+        connection is worse than none, and an application that has already answered has nothing to
+        be told. Either way the connection goes, which is the resource at stake.
+        """
+        self._body_deadline = None
+        if not self._awaiting_body():
+            return
+        cycle = self.cycle
+        if cycle is not None and cycle.response_started:
+            log.debug("server_dropped reason=slow_body_under_a_begun_response")
+            self._close()
+            return
+        self._refuse(NO_BODY_IN_TIME)
+
     def _refuse(self, payload: bytes) -> None:
         """Answer a raw response and close, without h11.
 
-        h11 will not let a server send a response before it has received a request, and none of
-        the three refusals here has one; these are the bytes `ingress` sends for the same cases,
-        so a peer over a bound both layers hold cannot tell which one it reached.
+        h11 will not let a server send a response before it has received a request, and three of
+        the four refusals here are sent before one has arrived; those three are byte for byte the
+        ones `ingress` sends for the same cases, so a peer over a bound both layers hold cannot
+        tell which one it reached. The fourth, a body that stopped half way, goes the same way for
+        consistency and because h11's cycle is about to be abandoned with the connection anyway.
 
         The status alone is logged, never anything a peer sent: the exception raised for a
         malformed head quotes the head, and a head carries whatever the peer put in it.
         """
+        if not self.transport.is_closing():
+            log.debug("server_refused status=%s", payload[9:12].decode("ascii", "replace"))
+            with contextlib.suppress(OSError):
+                self.transport.write(payload)
+        self._close()
+
+    def _close(self) -> None:
+        """Drop the connection, with no deadline of this connection's left to fire against it."""
         self._cancel_head_deadline()
-        if self.transport.is_closing():
-            return
-        log.debug("server_refused status=%s", payload[9:12].decode("ascii", "replace"))
-        with contextlib.suppress(OSError):
-            self.transport.write(payload)
+        self._cancel_body_deadline()
         self.transport.close()
 
 
