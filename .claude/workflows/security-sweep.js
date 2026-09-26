@@ -1024,11 +1024,13 @@ whether anything reaches \`codervis:8000\` **without** passing through \`ingress
   - a LAN peer that routes to either bridge subnet
 
   #37 (closed, do not re-derive) was the *outbound* half: \`codervis\` reaching the host
-  through the gateway, closed by \`gateway_mode_ipv4: isolated\` on \`inside\`, which leaves
-  the host no address on that bridge, and established by \`python -m app.egress check\`. You
-  own the *inbound* half, and that change bears on your first candidate without settling it:
-  whether a host holding no address on the bridge can still reach its subnet is yours to
-  establish, not #37's record to quote. Establish what Docker's own rules for an
+  through the gateway, closed by \`gateway_mode_ipv4: isolated\` on \`inside\`, which on
+  Docker Engine 28.0+ leaves the host no address on that bridge. An older engine does not:
+  27.x refuses to create the network, and 26.x and older ignore the option and leave the host
+  its address. \`python -m app.egress check\` is what says which you are on. You own the
+  *inbound* half, and that change bears on your first candidate without settling it: whether
+  a host is on that bridge at all, and whether one that is not can still reach its subnet, is
+  yours to establish, not #37's record to quote. Establish what Docker's own rules for an
   \`internal\` network admit, from its documentation and source; you cannot read the host
   firewall without root. Then demonstrate on a throwaway stack, and say which of \`ingress\`'s
   bounds a route round it skips.
@@ -1064,11 +1066,13 @@ dependency, which is the principal the egress proxy exists to confine. It runs a
 Docker's default capabilities, holds both bearer tokens in memory, and can read everything the
 container mounts. #37 (closed, do not re-derive) was its TCP route to the host through the
 \`inside\` bridge gateway, and it is closed rather than merely traced: the network asks the
-bridge driver for \`gateway_mode_ipv4: isolated\`, so the host holds no address on that
-bridge, and \`python -m app.egress check\` dials the on-link addresses of both families to
-establish it. Only Docker Engine 28.0+ honours the option; where \`check\` says an older one
-did not, README's network section carries the operator's own remedy, which is advice to them
-and not a finding here. Go past it:
+bridge driver for \`gateway_mode_ipv4: isolated\`, so on Docker Engine 28.0+ the host holds no
+address on that bridge, and \`python -m app.egress check\` dials the on-link addresses of both
+families, with \`egress\` holding the subnet's first address as the evidence the option took
+effect. The one case where the route is not closed is an older engine: 27.x refuses to create
+the network at all, and 26.x and older ignore the option and leave the host its address, which
+\`check\` reports. README carries the operator's own remedy there, and that remedy is advice
+to them rather than a finding here. Go past it:
 
 - **The allowed names as exfiltration sinks** (the third critic's gap 2). The proxy filters by
   the CONNECT target and never sees inside the tunnel. Inside a tunnel to \`claude.ai:443\` or
