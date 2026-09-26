@@ -945,10 +945,9 @@ def test_the_public_name_probe_tells_no_route_from_no_dns_from_no_probe() -> Non
 
     The partition is the on-link half's, errno for errno, because one errno answered in
     opposite directions by the two halves of one check is one of them passing on what the
-    other fails. `EAFNOSUPPORT` is a local failure in both, which would fail the check on
-    every v4-only deployment of a dual-stack name if such a candidate could arise -- and
-    `AI_ADDRCONFIG` on the lookup is what keeps it from arising, rather than an exception to
-    the partition.
+    other fails. `EAFNOSUPPORT` is a local failure in both, which would fail the check on a
+    container with IPv6 off kernel-wide if such a candidate could arise -- and `AI_ADDRCONFIG`
+    on the lookup is what keeps it from arising, rather than an exception to the partition.
     """
     for failure, expected in (
         (TimeoutError(), DIRECT_NO_ROUTE),
@@ -982,10 +981,12 @@ def test_the_public_name_probe_tells_no_route_from_no_dns_from_no_probe() -> Non
 def test_the_lookup_asks_only_for_families_this_container_holds_an_address_in() -> None:
     """`AI_ADDRCONFIG`, which is what keeps the errno partition above from biting.
 
-    An AAAA candidate on a container with no IPv6 address fails `EAFNOSUPPORT`, which is a
-    local failure and fails the check. `socket.create_connection` did not ask for the flag and
-    got away with it by reporting only the last candidate's error; this half reads every
-    candidate, so the flag is load-bearing rather than tidy.
+    An AAAA candidate on a container with IPv6 off kernel-wide fails `EAFNOSUPPORT` at the
+    socket, which is a local failure and fails the check -- where the same candidate on a
+    container that merely holds no v6 address fails `ENETUNREACH`, which is no route and
+    harmless. `socket.create_connection` did not ask for the flag and got away with it by
+    reporting only the last candidate's error; this half reads every candidate, so the flag
+    is load-bearing rather than tidy.
     """
     asked: dict[str, object] = {}
 
@@ -1101,9 +1102,51 @@ def test_a_resolver_that_does_not_answer_is_bounded_and_is_its_own_outcome() -> 
         released.set()
 
     assert outcome == DIRECT_NO_RESOLVER
-    # Generously above the budget and far below what the resolver was going to take: the claim
-    # is that the probe stopped waiting on its own, not what it costs on a loaded runner.
-    assert elapsed < 10, f"the probe outlasted its own budget: {elapsed:.2f}s for a 1 s budget"
+    # Above the budget with room for a loaded runner, and far below the thirty seconds the
+    # resolver was going to take: the claim is that the probe stopped waiting on its own.
+    assert elapsed < 4, f"the probe outlasted its own budget: {elapsed:.2f}s for a 1 s budget"
+
+
+def test_the_lookup_gets_a_share_of_the_budget_rather_than_all_of_it() -> None:
+    """What `RESOLVE_BUDGET_SHARE` is for, which nothing else here would notice was gone.
+
+    The dials are what establish the thing this half asserts, so a resolver that is merely
+    slow must not be able to spend their budget. Hand the lookup the whole window and it can:
+    it comes back with the deadline behind it, nothing is dialled, and the probe fails the
+    check with `DIRECT_UNVERIFIED` over a resolver that worked. Cut at its share instead, the
+    same lookup is reported for what it was -- a resolver that did not answer in the time it
+    had -- which `check` settles against the routing tables like any other.
+
+    Driven on the outcome *and* the clock, because the two implementations differ in both: a
+    lookup cut at its share returns at the share, and one given the whole window returns when
+    the resolver finally does.
+    """
+    def slower_than_its_share(*_args: object, **_kwargs: object) -> list[tuple]:
+        time.sleep(1.8)
+        return _candidates("192.0.2.1")
+
+    refused = ConnectionRefusedError(errno.ECONNREFUSED, "refused")
+    with mock.patch.object(egress.socket, "getaddrinfo", slower_than_its_share):
+        with mock.patch.object(egress.socket, "socket", _dialling({"192.0.2.1": refused})[0]):
+            started = time.monotonic()
+            outcome = probe_direct("example.com", 443, timeout_s=2)
+            elapsed = time.monotonic() - started
+
+    assert outcome == DIRECT_NO_RESOLVER, (
+        f"a lookup taking 1.8s of a 2 s budget read as {outcome!r}: it is being given the "
+        "whole window rather than RESOLVE_BUDGET_SHARE of it, and the dials got what was left"
+    )
+    assert elapsed < 1.5, f"the lookup was waited on for {elapsed:.2f}s of its 1 s share"
+
+    # The other side of the same number: a lookup inside its share leaves the dials the rest
+    # of the budget, which is what makes a name that resolves slowly still get dialled.
+    def inside_its_share(*_args: object, **_kwargs: object) -> list[tuple]:
+        time.sleep(0.4)
+        return _candidates("192.0.2.1")
+
+    with mock.patch.object(egress.socket, "getaddrinfo", inside_its_share):
+        with mock.patch.object(egress.socket, "socket", _dialling({"192.0.2.1": refused})[0]):
+            assert probe_direct("example.com", 443, timeout_s=2) == DIRECT_ANSWERED
 
 
 class _AnsweringAfter:

@@ -31,9 +31,10 @@ Two halves, and neither is sufficient alone:
 ``check`` asserts the whole bound from inside the dashboard's container, and asserts it by
 probing what is reachable rather than by restating the design: the proxy filters by name and
 admits the configured upstreams, the on-link addresses it derives are each either a peer in
-this compose project or answer nothing, and a public name does not resolve-and-connect -- or,
-where the lookup gave nothing to connect to, whether the resolver declined the name or never
-answered, the routing tables name no default route in either family for it to have used. A refusal on an on-link address is a failure like an accept, because an RST
+this compose project or answer nothing, and a public name does not resolve-and-connect
+-- or, where the lookup gave nothing to connect to, whether the resolver declined the name or
+never answered, the routing tables name no default route in either family for it to have
+used. A refusal on an on-link address is a failure like an accept, because an RST
 comes from a live host. Silence is the weaker half of that: it means nothing answered the ports
 asked, which a host behind a default-drop rule also produces, so the on-link half is one of
 three assertions rather than the only one.
@@ -630,11 +631,17 @@ DIRECT_NO_RESOLVER = "resolver did not answer"
 DIRECT_UNVERIFIED = "not probed"
 
 # How much of the direct probe's budget name resolution may have, with the dials taking what
-# is left. Half each, because neither half can be given the whole: a resolver that never
-# answers would leave nothing to dial with, and a dial budget of zero reads as silence, which
-# is a *pass*. Both halves therefore keep a share they cannot be starved of, and `check` sizes
-# the budget it passes so that half of it is a share worth having on each side.
+# is left. A share rather than the whole, because a resolver that is merely slow would
+# otherwise spend the budget the dials need and leave the probe unable to settle the name at
+# all -- `DIRECT_UNVERIFIED`, which fails the check. It is the dials that establish the thing
+# being asserted, so what they are guaranteed is what this number is for. `check` sizes the
+# budget it passes so that half of it is a share worth having on each side.
 RESOLVE_BUDGET_SHARE = 0.5
+# The least a candidate may be dialled with. Below this a connect is not a probe -- it would
+# time out whatever is at the other end, and a timeout here reads as silence, which is the
+# *pass*. So a candidate whose window has fallen this low is reported unasked instead, making
+# that a property of the loop rather than of how the arithmetic happened to land.
+MIN_DIAL_BUDGET_S = 0.1
 
 
 def _direct_errno_outcome(err: int | None) -> str:
@@ -648,9 +655,10 @@ def _direct_errno_outcome(err: int | None) -> str:
     and the candidate is `DIRECT_UNVERIFIED`. The two halves must not answer one errno in
     opposite directions, since one of those directions is a pass.
 
-    `EAFNOSUPPORT` is `DIRECT_UNVERIFIED` here like everywhere else, and `AI_ADDRCONFIG` on the
-    lookup is what keeps that from failing a v4-only container on a dual-stack name: an address
-    in a family this container holds no address in is never a candidate to begin with.
+    `EAFNOSUPPORT` is `DIRECT_UNVERIFIED` here like everywhere else, and `AI_ADDRCONFIG` on
+    the lookup is what keeps that from failing a container with IPv6 off kernel-wide on a
+    dual-stack name: an address in a family this container holds no address in is never a
+    candidate to begin with.
 
     A refusal never reaches here: it is reach, and its callers catch it before this is asked.
     """
@@ -675,10 +683,13 @@ def _resolve_direct(host: str, port: int, *, timeout_s: float) -> list[tuple] | 
     name that does not resolve still reads as a name that does not resolve.
 
     `AI_ADDRCONFIG` because a candidate in a family this container holds no address in is not
-    an address it could ever have reached: leaving it in would have the dial fail
-    `EAFNOSUPPORT`, which is a local failure and fails the check, on every v4-only deployment
-    of a dual-stack name. `socket.create_connection` did not ask for the flag, and got away
-    with it by reporting only the last candidate's error.
+    an address it could ever have reached, so asking about it can only cost the probe an
+    answer. What it costs depends on how the family is missing, and only one of the two is
+    harmless: with the IPv6 module loaded but no address in it, `connect` fails `ENETUNREACH`,
+    which this half already reads as no route; with IPv6 off kernel-wide (`ipv6.disable=1`, or
+    the module absent) the socket cannot be opened at all and the dial fails `EAFNOSUPPORT`,
+    which is a local failure and fails the whole check. `socket.create_connection` did not ask
+    for the flag, and got away with it by reporting only the last candidate's error.
     """
     answer: list[tuple[str, object]] = []
 
@@ -785,8 +796,12 @@ def probe_direct(host: str, port: int = DEFAULT_TARGET_PORT, *, timeout_s: float
     waited on in total instead. What that costs is the other end of it: where the addresses
     really are silent, the budget goes on the first of them and the rest go undialled, which
     is `DIRECT_UNVERIFIED` and fails the check rather than passing it on a name only partly
-    asked. A confined container does not reach that case -- with no default route the kernel
-    refuses every address at once, for nothing.
+    asked. The container this project ships does not reach that case: `internal: true`
+    withholds the default route, so the kernel refuses every address at once and for nothing.
+    A deployment confined by *dropping* egress rather than by withholding the route does reach
+    it, and it is the one configuration this change moves from a pass to a failure -- before,
+    each address got the whole timeout in turn and the last one's `TimeoutError` read as "no
+    route". It fails closed, and README says what an operator there reads the line as.
     """
     deadline = time.monotonic() + timeout_s
     try:
@@ -809,7 +824,7 @@ def probe_direct(host: str, port: int = DEFAULT_TARGET_PORT, *, timeout_s: float
     outcome = DIRECT_NO_ROUTE
     for family, socktype, proto, _canonname, sockaddr in candidates:
         remaining = deadline - time.monotonic()
-        if remaining <= 0:
+        if remaining < MIN_DIAL_BUDGET_S:
             # The budget went on the addresses before this one. Whatever they said, the rest
             # were not asked, and the name was not settled.
             return DIRECT_UNVERIFIED
@@ -1468,8 +1483,10 @@ def check(
         results.append(
             (
                 False,
-                f"{host}:{port} could not be dialled: the connection never left this container, "
-                "so whether a public name routes round the proxy is unverified",
+                f"{host}:{port} was not settled: a connection never left this container, "
+                f"the lookup could not be made, or the budget ran out with addresses of "
+                f"{host} still undialled -- so whether a public name routes round the proxy "
+                "is unverified",
             )
         )
     return results

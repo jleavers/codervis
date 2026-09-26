@@ -264,8 +264,8 @@ settles both, because it says what it says either way, and the other two
 lines are `FAIL`s because of what it said: it named a default route, or it
 could not be read. The two forms not shown here are the other half of the
 line: the name resolved and something answered it, which is a route round
-the proxy; or the connection never left the container
-(`example.com:443 could not be dialled`), which is `unverified` like the two
+the proxy; or the probe could not be made
+(`example.com:443 was not settled`), which is `unverified` like the two
 `FAIL`s above — nothing was established either way.
 
 The address on the on-link line is whatever the container's own routing tables
@@ -283,7 +283,9 @@ that answers at all answers at once; it is the `OK` that costs one timeout per
 port, so that is the line that can take a few seconds to print. The
 public-name line has a bound of its own, and that bound covers the name
 lookup: at most ten seconds to resolve `example.com` and dial the addresses
-it resolves to, together, half of it for each. Not ten seconds an address,
+it resolves to, together. The lookup is guaranteed half of it and cut off
+there; the dials get the rest, which after a quick lookup is nearly all of
+it. Not ten seconds an address,
 and not a resolver's own budget first — `/etc/resolv.conf` gives that
 `timeout:` seconds, 5 by default, once per `attempts:` per nameserver, which
 is what a container that cannot reach its resolver would otherwise wait out
@@ -345,17 +347,27 @@ How to read the on-link line, in the order the cases are worth knowing:
 - A `FAIL` that says **unverified** — on this line or on the public-name one —
   is not a reachable host: it means the check could not ask. The causes, all of
   the ones a run of this command can print: the container's routing table was
-  unreadable; its IPv6 routing table was there and unreadable, which leaves that
-  one family unknown while the addresses of the other are still dialled; it
-  yielded no address to
-  dial; it yielded more than the check will dial, and the rest are named on that
-  line; a connection never left the container (a local reject rule, a descriptor
-  limit); or the public name could not be looked up, and the container either
-  has a default route in either family or has a routing table that could not be
-  read, so neither way of telling whether it can reach off its own subnets was
-  available. An
-  unasked question is reported as a failure rather than passed over, because
-  that is the defect these lines exist to prevent.
+  unreadable; its IPv6 routing table was there and unreadable, which leaves
+  that one family unknown while the addresses of the other are still dialled;
+  it yielded no address to dial; it yielded more than the check will dial, and
+  the rest are named on that line; a connection never left the container (a
+  local reject rule, a descriptor limit); the public name's lookup could not be
+  made at all, which is not the same as a resolver declining it; the
+  public-name probe ran out of budget with addresses of the name still
+  undialled, so the name was only partly asked; or the public name could not be
+  looked up, and the container either has a default route in either family or
+  has a routing table that could not be read, so neither way of telling whether
+  it can reach off its own subnets was available. An unasked question is
+  reported as a failure rather than passed over, because that is the defect
+  these lines exist to prevent.
+- The budget cause above is the one an egress **firewall** can produce where
+  `internal: true` cannot. With no default route the kernel refuses every
+  address of `example.com` at once, so all of them are dialled for nothing and
+  the line passes. Where egress is bounded by *dropping* packets instead, the
+  first address is silent for the whole budget and the rest go unasked —
+  which
+  is a `FAIL` saying so, not a pass. Read it as "several addresses were silent
+  and I ran out of time"; the check errs towards saying it does not know.
 
 **If you cannot upgrade to 28.0+**, add a host firewall rule that drops new
 inbound connections arriving on that bridge's interface; nothing in the stack
