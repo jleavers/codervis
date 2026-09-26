@@ -3,7 +3,9 @@
 An allow-list bounds egress only while there is no route around it, so these assert the shape
 of the rendered compose file: the dashboard's container joins internal networks alone, those
 networks give the host no address on their bridge, the proxy is the one service with a leg on
-each kind, and only the ingress relay publishes a port.
+each kind, and only the ingress relay publishes a port. The same file grants the other axis of
+that container's budget, so what it may read is pinned here too (#45): the two agent data roots,
+read-only, and nothing else.
 Rendering needs the Docker CLI but no daemon; the test is skipped where Docker is not installed,
 unless `REQUIRE_DOCKER` says it must not be -- CI sets that, because a pin that skips silently
 where the CLI has gone missing is a pin that disappears with a green build.
@@ -145,15 +147,18 @@ def test_the_dashboard_mounts_the_two_agent_trees_read_only_and_nothing_more(
     nothing else would catch: a default widened from `~/.claude` to `~` would hand this
     container the whole home directory.
     """
-    mounts = _mounts(request.getfixturevalue(rendered), "codervis")
+    config = request.getfixturevalue(rendered)
+    entries = config["services"]["codervis"].get("volumes") or []
+    mounts = _mounts(config, "codervis")
+    # The list's length as well as the set of targets: two entries sharing a target would
+    # otherwise collapse into one key and read as the budget.
+    assert len(entries) == len(DATA_MOUNTS), entries
     assert set(mounts) == set(DATA_MOUNTS), sorted(mounts)
     for target, entry in mounts.items():
+        # Compose renders the short `source:target:ro` syntax as a long-form bind, which is
+        # where each of these three lives.
         assert entry.get("type") == "bind", (target, entry)
-        # Compose renders the short `source:target:ro` syntax as a long-form bind; the mode
-        # spelling is accepted as well, so that this pin asserts read-only rather than one
-        # CLI's rendering of it.
-        read_only = entry.get("read_only") is True or entry.get("mode") in ("ro", "readonly")
-        assert read_only, (target, entry)
+        assert entry.get("read_only") is True, (target, entry)
         assert Path(str(entry.get("source"))).name == DATA_MOUNTS[target], (target, entry)
 
 

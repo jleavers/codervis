@@ -13,9 +13,10 @@ dashboard's container can still use a token it holds against the hosts the clien
 
 **The other axis of that container's budget is not here at all**, and this is where to look for
 it: what code running there may *read* is what docker-compose.yml bind-mounts, which is the
-whole of both agent home trees rather than the seven paths the app uses -- each credential file
-sits at its tree's root, and a bind mount of a file follows the inode it was made from, so it
-would pin the file the CLI replaces on the next token refresh. README's "How it works" states
+whole of both agent home trees rather than the seven paths the app reads inside them -- each
+credential file sits at its tree's root, and a bind mount of a file follows the inode it was made
+from, so it would pin the file a ``logout``/``login``, or a token refresh that renames a new file
+over the old one, replaces. README's "How it works" states
 both halves together, and its Caveats name what the whole-tree mounts leave readable.
 
 Two halves make that destination bound true, and neither is sufficient alone:

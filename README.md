@@ -41,17 +41,20 @@ the container by design. So what it is allowed is written down here, once, with
 each half no wider than the truth:
 
 - **It can read both agent home trees, read-only, and no other file of yours.**
-  The app itself uses two paths under `~/.claude` (`.credentials.json`,
-  `projects/`) and five under `~/.codex` (`auth.json`, `history.jsonl`,
-  `session_index.jsonl`, `sessions/`, `archived_sessions/`) — but the mounts are
-  the trees rather than those paths, because each credential file sits at its
-  tree's root and the CLI that owns it replaces the file when it refreshes the
-  token, which a mount of the file alone would not follow. Everything else in
-  both trees is therefore readable by code in that container too, and
+  The app itself reads seven paths inside them — two under `~/.claude`
+  (`.credentials.json`, `projects/`) and five under `~/.codex` (`auth.json`,
+  `history.jsonl`, `session_index.jsonl`, `sessions/`, `archived_sessions/`),
+  and it stats each root besides, which is what `/healthz` reports. The mounts
+  are the whole trees rather than those paths, because each credential file
+  sits at its tree's root and a mount of a file follows the inode it was made
+  from: a CLI that refreshes a token by writing a new file and renaming it over
+  the old one — and a logout and login, which replaces the file for certain —
+  would leave this container reading what was replaced. Everything else in both
+  trees is therefore readable by code in that container too, and
   [Caveats](#caveats) names what that is.
-- **It can connect to the hosts on the egress allow-list, over HTTPS, and to no
-  other host.** That bounds the destination host and nothing inside the
-  connection: the proxy relays the TLS session without opening it, so which
+- **It can reach the hosts on the egress allow-list, and no host off this
+  project's own network.** That bounds the destination host and nothing inside
+  the connection: the proxy relays the TLS session without opening it, so which
   account or tenant a token is used against at an allowed host — and anything
   else inside the tunnel — is not bounded by anything here.
 
@@ -128,10 +131,10 @@ link out of them.
   writes to `~/.claude` or `~/.codex`, but any code in its container can read
   all of both — settings and config files, and any third-party secret an env
   block in one of them holds, alongside the transcripts, session files and
-  history the activity readers use. They are not narrowed to the seven paths
-  the app reads ([How it works](#how-it-works)) because each credential file
-  sits at the root of its tree, and a bind mount of a single file follows the
-  inode it was made from rather than the name: when a CLI refreshes its token
+  history the activity readers use. They are not narrowed to the seven paths it
+  reads inside them ([How it works](#how-it-works)) because each credential
+  file sits at the root of its tree, and a bind mount of a single file follows
+  the inode it was made from rather than the name: if a CLI refreshes its token
   by writing a new file and renaming it over the old one, or when you log out
   and back in, the container would go on reading the file that was replaced and
   that card would read `unavailable` until the next `docker compose up`.

@@ -59,12 +59,13 @@ services:
       NO_PROXY: localhost,127.0.0.1,::1
       no_proxy: localhost,127.0.0.1,::1
     # This list is the read half of the container's budget, and this is where that half is
-    # granted (#45). The app uses seven paths: .credentials.json and projects/ in the first
-    # tree, auth.json, history.jsonl, session_index.jsonl, sessions/ and archived_sessions/ in
-    # the second. The mounts are the trees instead, on purpose: each credential file sits at
-    # its tree's root, and a bind mount of a file follows the inode it was made from rather
-    # than the name, so the CLI writing a fresh token and renaming it over the old file -- or
-    # an operator's logout and login -- would leave this container reading the file that was
+    # granted (#45). The app reads seven paths inside these trees -- .credentials.json and
+    # projects/ in the first, auth.json, history.jsonl, session_index.jsonl, sessions/ and
+    # archived_sessions/ in the second -- and stats each root besides, for /healthz. The mounts
+    # are the whole trees instead, on purpose: each credential file sits at its tree's root, and
+    # a bind mount of a file follows the inode it was made from rather than the name, so a CLI
+    # writing a fresh token and renaming it over the old file -- or an operator's logout and
+    # login, which replaces it for certain -- would leave this container reading the file that was
     # replaced, with no error to show for it (and the short syntax below would create a source
     # path that is missing, as a directory). So both roots stay, read-only, and anything
     # running in this container can read the rest of both trees: README's "How it works" says
