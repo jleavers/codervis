@@ -278,7 +278,7 @@ docker compose exec codervis python -m app.egress check
 [ OK ] example.com:443 unreachable directly: no route to a public address round the proxy
 ```
 
-The last line has five more forms, and the difference between the first three
+The last line has six more forms, and the difference between the first four
 is what a failed name lookup is allowed to prove. A container whose
 resolver declines public names — which is what an internal network's usually
 does — cannot look `example.com` up at all, and a lookup that failed says
@@ -288,15 +288,22 @@ default route:
 
 ```text
 [ OK ] example.com does not resolve here, and the routing table names no default route: there is no route round the proxy to take
+[ OK ] example.com could not be looked up, because the resolver did not answer, and the routing table names no default route: there is no route round the proxy to take
 [FAIL] example.com could not be looked up, and this container has a default route: it has a way off its own subnets, and whether that reaches round the proxy is unverified
 [FAIL] example.com could not be looked up and /proc/net/route could not be read, so neither way of telling whether this container has a route off it was available and the bound is unverified
 ```
 
-Only the first is a pass, and the routing table is what makes it one. The
-remaining two are both `FAIL`s: the name resolved and something answered it,
-which is a route round the proxy; or the connection never left the container
-(`example.com:443 could not be dialled`), which is `unverified` like the two
-above — nothing was established either way.
+Only the first two are passes, and the routing table is what makes them so.
+What separates those two is the resolver, not the routing: the first is a
+resolver that answered and declined the name, the second one that did not
+answer at all — a container that cannot reach its own resolver. The table
+settles both, because it says what it says either way, and the other two
+lines are `FAIL`s because of what it said: it named a default route, or it
+could not be read. The two forms not shown here are the other half of the
+line: the name resolved and something answered it, which is a route round
+the proxy; or the probe could not be made
+(`example.com:443 was not settled`), which is `unverified` like the two
+`FAIL`s above — nothing was established either way.
 
 The address on the on-link line is whatever the container's own routing tables
 yield — the first address of each on-link subnet, plus any gateway a route
@@ -310,8 +317,18 @@ family that is not there. The admission probes
 open a TCP connection to each host through the proxy and send nothing; the
 on-link and direct probes open one directly and send nothing either. An address
 that answers at all answers at once; it is the `OK` that costs one timeout per
-port, so that is the line that can take a few seconds to print. To change the
-allow-list, edit `EGRESS_ALLOW` in `.env` and run `docker compose up -d egress`.
+port, so that is the line that can take a few seconds to print. The
+public-name line has a bound of its own, and that bound covers the name
+lookup: at most ten seconds to resolve `example.com` and dial the addresses
+it resolves to, together. The lookup is guaranteed half of it and cut off
+there; the dials get the rest, which after a quick lookup is nearly all of
+it. Not ten seconds an address, and not a resolver's own budget first —
+`/etc/resolv.conf` gives that `timeout:` seconds, 5 by default, once per
+`attempts:` per nameserver, which is what a container that cannot reach its
+resolver would otherwise wait out before any of this began. A resolver slower
+than the five seconds the lookup gets makes the line the routing-table
+assertion below rather than a dial, and says so. To change the allow-list,
+edit `EGRESS_ALLOW` in `.env` and run `docker compose up -d egress`.
 
 The two directions are separate bounds, and the on-link line is the one an
 internal network does not settle on its own. `internal: true` withholds the
@@ -366,17 +383,28 @@ How to read the on-link line, in the order the cases are worth knowing:
 - A `FAIL` that says **unverified** — on this line or on the public-name one —
   is not a reachable host: it means the check could not ask. The causes, all of
   the ones a run of this command can print: the container's routing table was
-  unreadable; its IPv6 routing table was there and unreadable, which leaves that
-  one family unknown while the addresses of the other are still dialled; it
-  yielded no address to
-  dial; it yielded more than the check will dial, and the rest are named on that
-  line; a connection never left the container (a local reject rule, a descriptor
-  limit); or the public name could not be looked up, and the container either
-  has a default route in either family or has a routing table that could not be
-  read, so neither way of telling whether it can reach off its own subnets was
-  available. An
-  unasked question is reported as a failure rather than passed over, because
-  that is the defect these lines exist to prevent.
+  unreadable; its IPv6 routing table was there and unreadable, which leaves
+  that one family unknown while the addresses of the other are still dialled;
+  it yielded no address to dial; it yielded more than the check will dial, and
+  the rest are named on that line; a connection never left the container (a
+  local reject rule, a descriptor limit); the public name's lookup could not be
+  made at all, which is not the same as a resolver declining it; the
+  public-name probe ran out of budget with addresses of the name still
+  undialled, so the name was only partly asked; or the public name could not be
+  looked up, and the container either has a default route in either family or
+  has a routing table that could not be read, so neither way of telling whether
+  it can reach off its own subnets was available. An unasked question is
+  reported as a failure rather than passed over, because that is the defect
+  these lines exist to prevent.
+- The budget cause above is the one an egress **firewall** can produce where
+  `internal: true` cannot, and only where the name has more than one address.
+  With no default route the kernel rejects each connect immediately — no
+  route — so every address of `example.com` is dialled for nothing and the
+  line passes. Where egress is bounded by *dropping* packets instead, the
+  first address is silent for the whole budget and the rest go unasked, which
+  is a `FAIL` saying so rather than a pass. Read it as "several addresses were
+  silent and I ran out of time"; the check errs towards saying it does not
+  know.
 
 **If you cannot upgrade to 28.0+**, add a host firewall rule that drops new
 inbound connections arriving on that bridge's interface; nothing in the stack
