@@ -1012,11 +1012,30 @@ const UNOWNED_LANES = [
     web: true,
     title: 'every route into codervis:8000, and everything it serves back',
     brief: `Your attacker is anyone who can send the dashboard a request: a LAN peer, a
-process on the host, another container, or a web page in the operator's browser. #15 and #20
-bound the front door, but both fixes live in \`ingress\`: the \`Host\` allow-list, the 10 s
-head deadline, the 16 KiB head cap and the 256-connection budget. uvicorn arms no timer of its
-own, and \`/api/stream\` holds one generator per connection. So your first question is
-whether anything reaches \`codervis:8000\` **without** passing through \`ingress\`.
+process on the host, another container, or a web page in the operator's browser. #15, #20 and
+#43 bound the front door, and they did it in three modules, not one. Be exact about which
+covers what, because two of them cover different sets of connections:
+
+- \`app/main.py\` holds the \`Host\` allow-list (#15) — a pure-ASGI \`HostAllowlist\` wrapped
+  round the whole app at construction, so it covers \`/static\` and \`/healthz\` too. It is not
+  in the relay; a lane looking for it there looks in the wrong module.
+- \`app/ingress.py\` holds the outer resource bound (#20), and only for connections that arrive
+  at the published port: at most 256 of them, and a complete **first** request head, at most
+  16 KiB, within 10 s or 408/431 before the dashboard is dialled. It can bound nothing after
+  that first head, and nothing at all on a connection made to \`codervis:8000\` directly.
+- \`app/server.py\` holds the inner one (#43), in the process the image's \`CMD\` launches. It
+  applies to every request of every connection, whichever route that connection arrived by: the
+  same 16 KiB cap and 10 s deadline on **every** head, and a ceiling of 320
+  connections-or-tasks, set above the relay's 256 so the relay runs out of slots first.
+
+What nothing here times is a request **body**. Every deadline above is spent by the end of a
+head, and a body that arrives long after its head is served is bounded by nothing in this
+repository today — establish what that costs, and what holds a connection while it happens.
+Time *after* dispatch is deliberately unbounded, which is what \`/api/stream\` is: one generator
+per connection, for as long as the tab is open.
+
+Because those two resource bounds cover different sets of connections, your first question is
+still whether anything reaches \`codervis:8000\` **without** passing through \`ingress\`.
 
 - **Routes round \`ingress\`** (the third critic's gap 1). Candidates:
   - a host-local process using the dashboard's address on the \`inside\` bridge
