@@ -29,8 +29,9 @@ import uvicorn
 
 from app import ingress
 from app.server import (
+    TOO_MANY_CONNECTIONS,
     APP,
-    MAX_CONCURRENCY,
+    MAX_CONNECTIONS,
     MAX_REQUEST_HEAD_BYTES,
     NO_REQUEST_IN_TIME,
     REQUEST_TIMEOUT_S,
@@ -273,16 +274,27 @@ def test_an_oversized_head_pipelined_behind_a_good_one_is_never_served() -> None
     assert served == ["/"], f"the oversized pipelined head reached the app: {served}"
 
 
-def test_a_head_inside_the_cap_is_served() -> None:
-    """The bound has to let ordinary requests through, including a large-but-legal head."""
-    padding = b"a" * (MAX_REQUEST_HEAD_BYTES - 200)
-    head = b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Pad: " + padding + b"\r\n\r\n"
-    assert len(head) < MAX_REQUEST_HEAD_BYTES
+def _head_of_exactly(size: int) -> bytes:
+    """A complete, valid request head of exactly ``size`` bytes."""
+    stem = b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Pad: " + b"\r\n\r\n"
+    head = stem[:-4] + b"a" * (size - len(stem)) + b"\r\n\r\n"
+    assert len(head) == size
+    return head
+
+
+@pytest.mark.parametrize(
+    ("size", "expected"),
+    [(MAX_REQUEST_HEAD_BYTES, b"HTTP/1.1 200 "), (MAX_REQUEST_HEAD_BYTES + 1, b"HTTP/1.1 431 ")],
+)
+def test_the_cap_is_the_boundary_it_says_it_is(size: int, expected: bytes) -> None:
+    """Both sides of it, to the byte. A cap that refused at exactly 16 KiB instead of over it
+    would pass every other test here while putting the two front doors one byte apart -- and
+    `test_both_front_doors_refuse_the_same_head_the_same_way` is the property that breaks."""
     with _running() as port:
         sock = _connect(port)
         try:
-            sock.sendall(head)
-            assert _status(sock).startswith(b"HTTP/1.1 200 ")
+            sock.sendall(_head_of_exactly(size))
+            assert _status(sock).startswith(expected)
         finally:
             sock.close()
 
@@ -292,6 +304,9 @@ def test_pipelined_bytes_are_not_charged_to_the_head_in_front_of_them() -> None:
     a second request, in the same write as a small head is not refused for the total."""
     assert pending_head_length(b"GET / HTTP/1.1\r\n\r\n" + b"x" * 10_000) == 18
     assert pending_head_length(b"GET / HTTP/1.1\n\n" + b"x" * 10_000) == 16
+    # h11 ends a head on `\n\r?\n`, so `\n\r\n` is a third spelling: missing it charged a whole
+    # body to the head in front of it and refused traffic h11 would have served.
+    assert pending_head_length(b"GET / HTTP/1.1\n\r\n" + b"x" * 10_000) == 17
     assert pending_head_length(b"GET / HTTP/1.1\r\nHost: x\r\n") == 25
 
 
@@ -423,18 +438,42 @@ def test_a_second_request_after_a_long_response_is_still_served() -> None:
 # The concurrency ceiling
 
 
-def test_requests_past_the_concurrency_ceiling_are_refused_by_the_server_itself() -> None:
-    """front-door-2's cost: a connection that skipped the relay is still counted and still capped.
+def test_connections_past_the_budget_are_refused_at_the_accept() -> None:
+    """front-door-2: the budget has to bound how many connections are *held*, not just how many
+    requests are served, because the peer that skipped the relay is the one with no accept-time
+    budget in front of it.
 
-    Be exact about what uvicorn does, because the ceiling is not an admission control: the
-    connection is accepted, and the *request* is answered 503 once the count has reached the
-    ceiling -- the arriving connection included. So the most that is served at once is one short
-    of the ceiling, and that is what is asserted rather than a range that would hide an off-by-one.
-    The ceiling is overridden to something a test can open; the shipped 320 is pinned below.
+    `limit_concurrency` alone does not do this: it is checked where a request is parsed, so an
+    over-budget connection is admitted and counted and only its request is refused. Measured
+    before this was added: 800 connections held at once against a ceiling of 320. So this asserts
+    the surplus is refused *without sending a request at all*, and that the refusal is the relay's
+    own 503 for the same case.
     """
     ceiling = 6
     socks: list[socket.socket] = []
-    with _running(max_concurrency=ceiling) as port:
+    with _running(max_connections=ceiling) as port:
+        try:
+            for _ in range(ceiling):
+                socks.append(_connect(port))
+            time.sleep(0.2)
+            surplus = _connect(port)
+            socks.append(surplus)
+            assert _drain(surplus) == TOO_MANY_CONNECTIONS
+        finally:
+            for sock in socks:
+                sock.close()
+
+
+def test_requests_past_the_concurrency_ceiling_are_refused_by_the_server_itself() -> None:
+    """The other half of the same number, which is uvicorn's own and has its own semantics: the
+    *request* is answered 503 once the count has reached the ceiling -- the arriving connection
+    included. So the most that is served at once is one short of the ceiling, and that is what is
+    asserted rather than a range that would hide an off-by-one. The ceiling is overridden to
+    something a test can open; the shipped 320 is pinned below.
+    """
+    ceiling = 6
+    socks: list[socket.socket] = []
+    with _running(max_connections=ceiling) as port:
         try:
             statuses = []
             for _ in range(ceiling + 3):
@@ -455,7 +494,7 @@ def test_requests_past_the_concurrency_ceiling_are_refused_by_the_server_itself(
 def test_a_closed_connection_gives_its_slot_back() -> None:
     """The ceiling counts what is open, so an ordinary browsing session does not exhaust it."""
     ceiling = 4
-    with _running(max_concurrency=ceiling) as port:
+    with _running(max_connections=ceiling) as port:
         for _ in range(ceiling * 3):
             sock = _connect(port)
             try:
@@ -478,20 +517,47 @@ async def test_both_front_doors_refuse_the_same_head_the_same_way() -> None:
     the server refuses the identical head on a connection that never passed the relay, and the
     peer cannot tell which layer it reached. An ordinary request through the relay still gets
     through, so the outer layer is still a relay and not a second bound in the way."""
-    head = oversized_head()
     with _running() as server_port:
         relay = await ingress.serve("127.0.0.1", server_port, bind="127.0.0.1", port=0)
         relay_port = relay.sockets[0].getsockname()[1]
         try:
-            through_the_relay = await asyncio.to_thread(_exchange, relay_port, head)
-            straight_to_the_server = await asyncio.to_thread(_exchange, server_port, head)
-            assert through_the_relay.startswith(b"HTTP/1.1 431 "), through_the_relay[:80]
-            assert through_the_relay == straight_to_the_server
-            served = await asyncio.to_thread(_exchange, relay_port, HEAD)
-            assert served.startswith(b"HTTP/1.1 200 "), served[:80]
+            for size, expected in (
+                (MAX_REQUEST_HEAD_BYTES, b"HTTP/1.1 200 "),
+                (MAX_REQUEST_HEAD_BYTES + 1, b"HTTP/1.1 431 "),
+            ):
+                head = _head_of_exactly(size)
+                through_the_relay = await asyncio.to_thread(_exchange, relay_port, head)
+                straight_to_the_server = await asyncio.to_thread(_exchange, server_port, head)
+                assert through_the_relay.startswith(expected), through_the_relay[:80]
+                assert straight_to_the_server.startswith(expected), straight_to_the_server[:80]
+                if expected != b"HTTP/1.1 200 ":
+                    # The refused answer byte for byte; the served one carries a date and so
+                    # cannot be compared that way.
+                    assert through_the_relay == straight_to_the_server
         finally:
             relay.close()
             await relay.wait_closed()
+
+
+@asynctest
+async def test_both_front_doors_time_out_a_silent_peer_the_same_way() -> None:
+    """The deadline half of the same property, with both doors' own deadline shortened so the test
+    is not ten seconds long: a peer that says nothing gets the identical 408 either way."""
+    timeout = Impatient.request_timeout_s
+    with _running(protocol=Impatient) as server_port:
+        relay = ingress.Relay("127.0.0.1", server_port, request_timeout_s=timeout)
+        server = await asyncio.start_server(
+            relay.handle, "127.0.0.1", 0, limit=ingress.MAX_REQUEST_HEAD_BYTES
+        )
+        relay_port = server.sockets[0].getsockname()[1]
+        try:
+            through_the_relay = await asyncio.to_thread(_exchange, relay_port, b"")
+            straight_to_the_server = await asyncio.to_thread(_exchange, server_port, b"")
+            assert through_the_relay.startswith(b"HTTP/1.1 408 "), through_the_relay[:80]
+            assert through_the_relay == straight_to_the_server == NO_REQUEST_IN_TIME
+        finally:
+            server.close()
+            await server.wait_closed()
 
 
 def _exchange(port: int, payload: bytes) -> bytes:
@@ -512,7 +578,7 @@ def test_build_config_arms_the_documented_bounds() -> None:
     config = build_config()
     assert config.app == APP
     assert config.http is BoundedHeadH11Protocol
-    assert config.limit_concurrency == MAX_CONCURRENCY
+    assert config.limit_concurrency == MAX_CONNECTIONS
     # Under the protocol class, for the incomplete head it does cover.
     assert config.h11_max_incomplete_event_size == MAX_REQUEST_HEAD_BYTES
 
@@ -525,7 +591,7 @@ def test_the_servers_bounds_are_the_ones_it_documents() -> None:
     `CLAUDE.md` and `AGENTS.md` describe, so widening one is a change made here and in those
     documents, on purpose.
     """
-    assert (MAX_REQUEST_HEAD_BYTES, REQUEST_TIMEOUT_S, MAX_CONCURRENCY) == (16 * 1024, 10.0, 320)
+    assert (MAX_REQUEST_HEAD_BYTES, REQUEST_TIMEOUT_S, MAX_CONNECTIONS) == (16 * 1024, 10.0, 320)
     assert BoundedHeadH11Protocol.max_request_head_bytes == MAX_REQUEST_HEAD_BYTES
     assert BoundedHeadH11Protocol.request_timeout_s == REQUEST_TIMEOUT_S
 
@@ -541,7 +607,7 @@ def test_the_two_layers_bounds_stand_in_the_right_relation() -> None:
     """
     assert MAX_REQUEST_HEAD_BYTES == ingress.MAX_REQUEST_HEAD_BYTES
     assert REQUEST_TIMEOUT_S == ingress.REQUEST_TIMEOUT_S
-    assert MAX_CONCURRENCY > ingress.MAX_CONNECTIONS
+    assert MAX_CONNECTIONS > ingress.MAX_CONNECTIONS
 
 
 def _dockerfile_cmd() -> list[str]:
@@ -585,7 +651,7 @@ def test_main_serves_with_those_bounds(monkeypatch, argv: list[str], bind: str, 
     assert (config.host, config.port) == (bind, port)
     assert config.app == APP
     assert config.http is BoundedHeadH11Protocol
-    assert config.limit_concurrency == MAX_CONCURRENCY
+    assert config.limit_concurrency == MAX_CONNECTIONS
 
 
 def test_main_refuses_a_port_out_of_range(capsys) -> None:

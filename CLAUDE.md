@@ -299,25 +299,39 @@ bounds, every one of them spent *before* a request is dispatched:
   `next_event()` has to answer `NEED_DATA`, so a head that arrives *complete*
   inside one socket read is parsed however large it is — 20, 50 and 80 KiB heads
   in one write were all served with 200 under that setting alone, and the real
-  bound was the kernel's read size. The class checks the pending head before h11
-  sees the bytes, in all three shapes a head can arrive in: one write, dripped,
-  and pipelined behind a request that is fine.
+  bound was the kernel's read size. A head sent in one write, or dripped, is
+  checked before h11 is handed the bytes. One **pipelined** behind a request that
+  is fine cannot be — the bytes in front of it have to reach the parser for that
+  request to be served — so it is checked when h11's buffer is next parsed, by
+  which time h11 holds one socket read of it rather than as much as the peer
+  cares to send. All three shapes are refused; be exact about which two are
+  refused before the parser sees anything.
 - **a complete head within 10 s, refused with 408** — `ingress`'s deadline, on
   every head rather than the first, and never renewed by an arriving byte. It is
   what stops a socket that says nothing, or dribbles, from holding a counted
   connection: with the ceiling below armed, enough of those would make the server
   answer 503 to everyone, which is a worse outage than the unbounded head it
   replaced.
-- **a concurrency ceiling of 320**, above `ingress`'s 256, so the relay runs out
-  of slots before the server does and an SSE stream per tab is never what the
-  server refuses. It is not admission control: uvicorn accepts the connection and
-  answers the *request* 503 once 320 connections or tasks are held, the arriving
-  one included, so at most 319 are served at a time.
+- **at most 320 connections held at once, refused with 503**, above `ingress`'s
+  256, so the relay runs out of slots before the server does and an SSE stream per
+  tab is never what the server refuses. Two checks against the one number, because
+  uvicorn's `limit_concurrency` is **not** admission control: it is checked where a
+  `Request` event is parsed, so an over-budget connection is accepted and counted
+  and only its *request* is answered 503. With 320 configured and nothing else,
+  800 connections were held at once — the head deadline reclaimed each one in
+  turn, but nothing bounded how many there were, and the peer with no relay in
+  front of it is exactly the one that route matters for. So the protocol class
+  refuses a connection over the budget at the accept, with the relay's own 503,
+  and uvicorn's own check stays as the layer that also counts running tasks — it
+  answers 503 to a request arriving once the count has reached 320, the arriving
+  connection included, so at most 319 are served at a time.
 
 **What stays unbounded is a response already under way**, deliberately: that is
 what SSE is, and `/api/stream` lasts as long as the browser tab.
 `tests/test_server_bounds.py` pins each bound through a real server on loopback —
-each head shape, the deadline including that a slow stream is not cut off, the
+each head shape and both sides of the cap to the byte, the surplus connection
+refused before it sends anything, the deadline including that a slow stream is not
+cut off, the
 ceiling's exact boundary — pins the values, asks both front doors for the same
 refusal rather than comparing two constants, and pins that the `CMD` still
 launches this module: `app/server.py` is documentation the moment the image goes

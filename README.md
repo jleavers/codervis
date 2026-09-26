@@ -515,9 +515,10 @@ flags that are useful for quick diagnosis.
   own process (`app/server.py`, which is what the image launches) refuses a
   request head over 16 KiB with `431`, and a connection that has not completed a
   head within 10 seconds with `408` — on **every** request of a connection, not
-  just the first, and whichever route the connection arrived by. Once 320
-  connections or streaming tasks are held it answers `503`, so at most 319 are
-  served at a time. `ingress` is the outer layer on the published port, with the
+  just the first, and whichever route the connection arrived by. It holds at most
+  320 connections, refusing a further one with `503` as it is accepted, and
+  answers `503` to a request that arrives once 320 connections or streaming tasks
+  are held, so at most 319 are served at a time. `ingress` is the outer layer on the published port, with the
   same head cap and deadline and a budget of 256 connections, applied to the
   first head of each connection before the dashboard is dialled at all. What is
   deliberately **not** bounded is a response already under way, because an SSE

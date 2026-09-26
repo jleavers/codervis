@@ -29,6 +29,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import logging
+import re
 import sys
 from collections.abc import Sequence
 
@@ -37,6 +39,8 @@ import uvicorn
 from uvicorn.protocols.http.h11_impl import H11Protocol
 
 from .egress import response
+
+log = logging.getLogger("app.server")
 
 APP = "app.main:app"
 # Loopback, like `app/ingress.py`'s own default: the image's CMD passes `--bind 0.0.0.0` on
@@ -48,36 +52,41 @@ DEFAULT_PORT = 8000
 # Deliberately the same as `ingress.MAX_REQUEST_HEAD_BYTES`, so a head the relay refuses with 431
 # is one the server refuses with 431 when it never passed the relay.
 MAX_REQUEST_HEAD_BYTES = 16 * 1024
-# How long a connection may take over a complete request head, counted from the first byte of that
-# head rather than renewed by each one -- the same deadline, and the same reason, as
-# `ingress.REQUEST_TIMEOUT_S`.
+# How long a connection may take over a complete request head, counted from the moment it could
+# begin one -- when it is accepted, and again when the previous response ends -- and never renewed
+# by an arriving byte. The same deadline, and the same reason, as `ingress.REQUEST_TIMEOUT_S`.
+# uvicorn's own `timeout_keep_alive` (5 s) closes an idle kept-alive connection sooner than this,
+# so in practice this is what bounds a head that has begun, and the accept of a silent socket.
 REQUEST_TIMEOUT_S = 10.0
-# Connections *or* running tasks. Above `ingress.MAX_CONNECTIONS` (256), so a peer at the published
-# port cannot reach it and each open browser tab -- one connection and one streaming task -- is
-# never what is refused. uvicorn answers 503 to a request that arrives once the count is here, so
-# the most it serves at once is one short of this.
-MAX_CONCURRENCY = 320
+# The most connections this server holds at once. Above `ingress.MAX_CONNECTIONS` (256), so a peer
+# at the published port runs the relay out of slots first and each open browser tab -- one
+# connection and one streaming task -- is never what is refused. It is handed to uvicorn's
+# `limit_concurrency` as well, which counts running tasks too and answers 503 to a request arriving
+# once the count has reached it, so the most served at once is one short of this.
+MAX_CONNECTIONS = 320
 
 # Refusals byte-identical to the relay's, from the one helper that builds them, because a peer that
 # is over the same bound should not be able to tell which layer it reached.
 HEAD_TOO_LARGE = response(431, "Request Header Fields Too Large", "request head too large\n")
 NO_REQUEST_IN_TIME = response(408, "Request Timeout", "no request in time\n")
+TOO_MANY_CONNECTIONS = response(503, "Service Unavailable", "too many connections\n")
 
-# Where a request head ends. Both spellings, because h11 accepts a bare LF as a line ending and
-# the shorter match is the safe one to bound: it can only make the head this counts smaller.
-HEAD_TERMINATORS = (b"\r\n\r\n", b"\n\n")
+# Where a request head ends -- h11's own rule (`h11._receivebuffer`), not an approximation of it,
+# so this never counts less head than h11 will parse and never counts a body as head. It covers
+# all three spellings h11 accepts: `\r\n\r\n`, a bare `\n\n`, and the mixed `\n\r\n`.
+HEAD_END = re.compile(b"\n\r?\n")
 
 
 def pending_head_length(pending: bytes) -> int:
     """How much of ``pending`` belongs to a request head that has not been parsed yet.
 
     Up to and including the terminator where there is one, so bytes a client pipelined behind the
-    head are not charged to it; the whole of it where there is not, because then all of it is head
-    so far. This is `asyncio.StreamReader.readuntil`'s accounting, which is what `ingress` bounds
-    with, rather than "everything that has arrived".
+    head, or sent as its body, are not charged to it; the whole of it where there is not, because
+    then all of it is head so far. This is `asyncio.StreamReader.readuntil`'s accounting, which is
+    what `ingress` bounds with, rather than "everything that has arrived".
     """
-    ends = [found + len(sep) for sep in HEAD_TERMINATORS if (found := pending.find(sep)) != -1]
-    return min(ends) if ends else len(pending)
+    end = HEAD_END.search(pending)
+    return end.end() if end else len(pending)
 
 
 class BoundedHeadH11Protocol(H11Protocol):
@@ -91,22 +100,29 @@ class BoundedHeadH11Protocol(H11Protocol):
     before this class existed, with the 16 KiB limit set: a 20 KiB head in one write got 200, and
     so did 50 KiB and 80 KiB; the first refusal was at 200 KiB, where the kernel split the write.
     So the real bound was one read of the socket -- non-deterministic, and several times the figure
-    every document here states. This class checks the head before handing the bytes to h11 at all,
-    so the bound is the stated one whatever shape the traffic arrives in.
+    every document here states. A head sent in one write, or dripped, is checked here *before* h11
+    is handed the bytes. A head **pipelined** behind a request that is fine cannot be: the bytes in
+    front of it have to reach the parser for that request to be served, so it is checked when h11's
+    buffer is next parsed, by which time h11 holds one socket read of it (`flow.pause_reading()`
+    stops a second) rather than as much as the peer cares to send.
 
     **The time.** uvicorn arms no timer until it has sent a response, and its keep-alive timer is
-    cancelled by the first byte of the next request and not re-armed. So a peer could hold a
-    connection open indefinitely without ever completing a head. That costs one counted connection
-    -- and with `limit_concurrency` armed above, connections are what the ceiling counts, so enough
-    silent sockets would make the server answer 503 to everybody else. The deadline here is armed
-    while a connection is waiting for a complete head and cancelled once a request has been
-    dispatched, so it never touches a response in flight: an SSE stream is dispatched long before
-    it is slow.
+    cancelled by the first byte of the next request and not re-armed, so a peer could hold a
+    connection open indefinitely without ever completing a head. The deadline here is armed while a
+    connection is waiting for a complete head -- from when it is accepted, and again when the
+    previous response ends -- and cancelled once a request has been dispatched, so it never touches
+    a response in flight: an SSE stream is dispatched long before it is slow.
 
-    Both are the bounds `ingress` already applies to a first head, applied to every head, with the
-    relay's own refusals. A subclass is the least the job takes: `h11_max_incomplete_event_size` is
-    still passed (it bounds h11's own buffer in the incomplete case), but on its own it is a
-    document, not a bound.
+    **The number.** uvicorn's `limit_concurrency` is not admission control: it is checked where a
+    `Request` event is parsed, so an over-budget connection is accepted and counted, and its
+    *request* is answered 503. Measured with the shipped ceiling of 320: 800 connections were held
+    at once, refused nothing, and were reclaimed only as each one's own head deadline expired. So
+    the count is checked here too, where the connection is accepted, as `ingress` does.
+
+    All three are bounds `ingress` already applies at its own door -- to a first head, and to a
+    connection -- applied here to every head and every route, with the relay's own refusals.
+    A subclass is the least the job takes: `h11_max_incomplete_event_size` is still passed (it
+    bounds h11's own buffer in the incomplete case), but on its own it is a document, not a bound.
     """
 
     # The bounds, as class attributes: uvicorn instantiates the protocol itself, with a fixed
@@ -115,14 +131,34 @@ class BoundedHeadH11Protocol(H11Protocol):
     max_request_head_bytes = MAX_REQUEST_HEAD_BYTES
     request_timeout_s = REQUEST_TIMEOUT_S
     _head_deadline: asyncio.TimerHandle | None = None
+    # Shared by every connection this class serves, like uvicorn's own `connections` set, and only
+    # so that a flood is one log line rather than one per socket. `ingress` keeps the same pair.
+    _saturated = False
 
     # Protocol interface
 
     def connection_made(self, transport: asyncio.Transport) -> None:  # type: ignore[override]
         super().connection_made(transport)
-        # From the moment it is accepted, not from its first byte: a socket that says nothing is
-        # the cheapest way to hold a slot.
+        # The budget is the one number uvicorn was given (`limit_concurrency`), enforced here at
+        # the accept as well as where uvicorn checks it. `super()` has already added this
+        # connection to the shared set, so this count includes it: at most the budget is held.
+        held = len(self.connections)
+        if self.limit_concurrency is not None and held > self.limit_concurrency:
+            self._log_saturation(held)
+            self._refuse(TOO_MANY_CONNECTIONS)
+            return
+        if self._saturated and held <= (self.limit_concurrency or 0) * 3 // 4:
+            type(self)._saturated = False
+        # Armed from the moment it is accepted, not from its first byte: a socket that says nothing
+        # is the cheapest way to hold a slot.
         self._arm_head_deadline()
+
+    def _log_saturation(self, held: int) -> None:
+        if not self._saturated:
+            type(self)._saturated = True
+            log.warning(
+                "server_connections_exhausted held=%d limit=%s", held, self.limit_concurrency
+            )
 
     def connection_lost(self, exc: Exception | None) -> None:
         self._cancel_head_deadline()
@@ -187,10 +223,17 @@ class BoundedHeadH11Protocol(H11Protocol):
     def _refuse(self, payload: bytes) -> None:
         """Answer a raw response and close, without h11.
 
-        h11 will not let a server send a response before it has received a request, and neither
-        refusal here has one; these are the bytes `ingress` sends for the same two cases.
+        h11 will not let a server send a response before it has received a request, and none of
+        the three refusals here has one; these are the bytes `ingress` sends for the same cases,
+        so a peer over a bound both layers hold cannot tell which one it reached.
+
+        The status alone is logged, never anything a peer sent: the exception raised for a
+        malformed head quotes the head, and a head carries whatever the peer put in it.
         """
         self._cancel_head_deadline()
+        if self.transport.is_closing():
+            return
+        log.debug("server_refused status=%s", payload[9:12].decode("ascii", "replace"))
         with contextlib.suppress(OSError):
             self.transport.write(payload)
         self.transport.close()
@@ -202,7 +245,7 @@ def build_config(
     bind: str = DEFAULT_BIND,
     port: int = DEFAULT_PORT,
     protocol: type[H11Protocol] = BoundedHeadH11Protocol,
-    max_concurrency: int = MAX_CONCURRENCY,
+    max_connections: int = MAX_CONNECTIONS,
 ) -> uvicorn.Config:
     """The server configuration the image runs. ``app`` is an import string or an ASGI callable.
 
@@ -216,7 +259,10 @@ def build_config(
         # h11's own limit, for the incomplete-head case it does cover. The protocol class above is
         # what makes the bound true for every shape; this is the layer under it.
         h11_max_incomplete_event_size=MAX_REQUEST_HEAD_BYTES,
-        limit_concurrency=max_concurrency,
+        # The other half of the number: uvicorn's own check, which counts running tasks as well
+        # as connections. The protocol class above is what refuses an over-budget connection at
+        # the accept, which this does not do.
+        limit_concurrency=max_connections,
     )
 
 

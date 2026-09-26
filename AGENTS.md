@@ -110,14 +110,17 @@ directories; it must not call upstream quota endpoints or read host tokens.
   port on `DASHBOARD_BIND`, which defaults to loopback.
 - `app/server.py` owns what a *peer* may cost the dashboard's own process: the
   server configuration the image's `CMD` launches, and the three bounds it arms —
-  a request head of at most 16 KiB (431), a complete head within 10 s (408), and a
-  concurrency ceiling of 320 connections-or-tasks (503), the first two being
-  `ingress`'s own numbers applied to every request of every connection rather than
-  the first, and the third above `ingress`'s 256. `BoundedHeadH11Protocol` is what
-  enforces the head bounds, and the subclass is load-bearing: h11's own
-  `max_incomplete_event_size` is checked only where its parser asks for more data,
-  so a head that arrives complete in one socket read is parsed however large it
-  is. Keep all three spent *before* a request is dispatched — a bound that reached
+  a request head of at most 16 KiB (431), a complete head within 10 s (408), and at
+  most 320 connections held at once (503), the first two being `ingress`'s own
+  numbers applied to every request of every connection rather than the first, and
+  the third above `ingress`'s 256. `BoundedHeadH11Protocol` enforces all three, and
+  the subclass is load-bearing twice over: h11's own `max_incomplete_event_size` is
+  checked only where its parser asks for more data, so a head that arrives complete
+  in one socket read is parsed however large it is; and uvicorn's
+  `limit_concurrency` is not admission control, so it refuses a *request* on an
+  over-budget connection rather than the connection (800 were held at once against
+  a ceiling of 320). Both numbers are checked at the accept and before the parser
+  as well. Keep all three spent *before* a request is dispatched — a bound that reached
   a response in flight would cut off every SSE stream. `ingress`'s first-head cap
   and deadline stay as the outer layer; they cover neither a later request on a
   kept-alive connection nor a connection opened straight to `codervis:8000` (#43).
@@ -227,7 +230,7 @@ What the repository does control is the text itself:
 - Preserve read-only bind mounts for `/data/claude` and `/data/codex`.
 - Preserve the front-door bound in the server that bears the cost: the image's
   `CMD` launches `python -m app.server`, and that module's head cap, head
-  deadline and concurrency ceiling are what apply to every request on every
+  deadline and connection budget are what apply to every request on every
   connection, whichever route it came by. A bare `uvicorn app.main:app`, or a
   compose `command:` that replaces the `CMD`, arms none of them, and neither does
   `http="h11"` on its own — the protocol subclass is what makes the head cap true
