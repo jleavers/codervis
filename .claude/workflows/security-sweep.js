@@ -841,8 +841,9 @@ Go fix by fix, reading the code rather than the commit messages:
 - **#20, the front door** (\`app/ingress.py\`, and the \`x-logging\` anchor in
   \`docker-compose.yml\`). Check the request deadline and the head cap against a client that
   pipelines, sends a body before the head completes, or reopens as fast as it is closed.
-- **#21, the text repo-shipped agent tooling carries** (the archived plans under
-  \`docs/superpowers/plans/archive/\`, the "What repo-shipped agent text may say" section of
+- **#21, the text repo-shipped agent tooling carries** (every document under
+  \`docs/superpowers/\` — the archived plans under \`plans/archive/\` and the design specs
+  beside them under \`specs/\` — the "What repo-shipped agent text may say" section of
   \`AGENTS.md\`, the sweep's \`DATA_NOT_INSTRUCTIONS\` preamble, and
   \`tests/test_agent_tooling_context.py\`). The fix's other half, a committed
   \`.claude/settings.json\`, was reverted in #34 because it bound the operator's own sessions.
