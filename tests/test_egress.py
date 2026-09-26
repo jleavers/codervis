@@ -934,7 +934,7 @@ def _name_resolving_to(outcomes: dict[str, BaseException | None]):
             yield dialled
 
 
-def test_the_public_name_probe_tells_no_route_from_no_resolver_from_no_probe() -> None:
+def test_the_public_name_probe_tells_no_route_from_no_dns_from_no_probe() -> None:
     """Three not-reached outcomes, and only one of them is evidence on its own.
 
     A timeout or an unreachable network means the probe went out and nothing came back. A name
@@ -963,6 +963,19 @@ def test_the_public_name_probe_tells_no_route_from_no_resolver_from_no_probe() -
     ):
         with _name_resolving_to({"192.0.2.1": failure}):
             assert probe_direct("example.com", 443, timeout_s=0.5) == expected, failure
+
+    # `EAFNOSUPPORT` really arrives from `socket.socket`, before there is anything to connect,
+    # so the row above reaches that classification by the other door. Both doors, or the one a
+    # v4-only container actually comes through is the untested one.
+    def no_socket_in_that_family(*_args: object, **_kwargs: object) -> None:
+        raise as_oserror(errno.EAFNOSUPPORT)
+
+    def v6_only(*_args: object, **_kwargs: object) -> list[tuple]:
+        return _candidates("2001:db8::1")
+
+    with mock.patch.object(egress.socket, "getaddrinfo", v6_only):
+        with mock.patch.object(egress.socket, "socket", no_socket_in_that_family):
+            assert probe_direct("example.com", 443, timeout_s=0.5) == DIRECT_NO_ROUTE
 
     # The lookup's own failure is still the lookup's: it is raised by the resolver, not by a
     # dial, so it cannot come from the table above.
