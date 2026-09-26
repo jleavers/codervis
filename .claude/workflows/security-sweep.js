@@ -1066,8 +1066,11 @@ container mounts. #37 (open, do not re-derive) is its TCP route to the host thro
   \`chatgpt.com:443\`, the client controls the TLS SNI, the HTTP \`Host\` and the account it
   authenticates as. Could it post a token to an account it controls at either service, or
   reach another tenant on a shared CDN edge (domain fronting)? If so, the name filter bounds
-  where bytes go but not who receives them, and \`app/egress.py:3-5\`'s claim ("cannot carry a
-  token anywhere else") holds only for network destinations.
+  where bytes go but not who receives them. \`app/egress.py\`'s module docstring already
+  concedes exactly that: it claims only that a token cannot reach a host off the allow-list,
+  and says in as many words that the tunnel's interior is outside what the proxy can see or
+  limit (#45, open). So the gap itself is known and is not a finding; a concrete mechanism,
+  named and shown, is.
   - Establish this from the vendors' and CDNs' documentation, and from reasoning about
     \`app/egress.py\`.
   - **Never send anything to claude.ai or chatgpt.com.**
