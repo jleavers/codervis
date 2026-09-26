@@ -31,11 +31,11 @@ Two halves, and neither is sufficient alone:
 ``check`` asserts the whole bound from inside the dashboard's container, and asserts it by
 probing what is reachable rather than by restating the design: the proxy filters by name and
 admits the configured upstreams, the on-link addresses it derives are each either a peer in
-this compose project or answer nothing, and a public name does not resolve-and-connect
--- or, where the lookup gave nothing to connect to, whether the resolver declined the name or
-never answered, the routing tables name no default route in either family for it to have
-used. A refusal on an on-link address is a failure like an accept, because an RST
-comes from a live host. Silence is the weaker half of that: it means nothing answered the ports
+this compose project or answer nothing, and a public name does not resolve-and-connect -- or,
+where the lookup gave nothing to connect to, whether the resolver declined the name or never
+answered, the routing tables name no default route in either family for it to have used. A
+refusal on an on-link address is a failure like an accept, because an RST comes from a live
+host. Silence is the weaker half of that: it means nothing answered the ports
 asked, which a host behind a default-drop rule also produces, so the on-link half is one of
 three assertions rather than the only one.
 
@@ -637,10 +637,15 @@ DIRECT_UNVERIFIED = "not probed"
 # being asserted, so what they are guaranteed is what this number is for. `check` sizes the
 # budget it passes so that half of it is a share worth having on each side.
 RESOLVE_BUDGET_SHARE = 0.5
-# The least a candidate may be dialled with. Below this a connect is not a probe -- it would
-# time out whatever is at the other end, and a timeout here reads as silence, which is the
-# *pass*. So a candidate whose window has fallen this low is reported unasked instead, making
-# that a property of the loop rather than of how the arithmetic happened to land.
+# The least a candidate may be dialled with. It rules out the degenerate window -- the
+# microsecond left over when the address before it overshot the deadline -- which `connect`
+# would spend in `select` and come back from as a timeout, reading as silence, which is the
+# *pass*. It is not a window an address can be relied on to answer in: the module puts that
+# figure an order of magnitude higher (`probe_direct`, on Linux's first SYN retransmit), and
+# a floor that size cannot live here, because it would have to be a fraction of the caller's
+# budget rather than a constant to avoid leaving a small budget with nothing dialled at all.
+# What carries the real guarantee is the order: the *first* address gets the whole of what
+# the lookup left, which at `check`'s budget is five seconds.
 MIN_DIAL_BUDGET_S = 0.1
 
 
@@ -1484,7 +1489,7 @@ def check(
             (
                 False,
                 f"{host}:{port} was not settled: a connection never left this container, "
-                f"the lookup could not be made, or the budget ran out with addresses of "
+                "the lookup could not be made, or the budget ran out with addresses of "
                 f"{host} still undialled -- so whether a public name routes round the proxy "
                 "is unverified",
             )

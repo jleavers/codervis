@@ -285,14 +285,13 @@ public-name line has a bound of its own, and that bound covers the name
 lookup: at most ten seconds to resolve `example.com` and dial the addresses
 it resolves to, together. The lookup is guaranteed half of it and cut off
 there; the dials get the rest, which after a quick lookup is nearly all of
-it. Not ten seconds an address,
-and not a resolver's own budget first — `/etc/resolv.conf` gives that
-`timeout:` seconds, 5 by default, once per `attempts:` per nameserver, which
-is what a container that cannot reach its resolver would otherwise wait out
-before any of this began. A resolver slower than the five seconds the lookup
-gets makes the line the routing-table assertion below rather than a dial, and
-says so. To change the
-allow-list, edit `EGRESS_ALLOW` in `.env` and run `docker compose up -d egress`.
+it. Not ten seconds an address, and not a resolver's own budget first —
+`/etc/resolv.conf` gives that `timeout:` seconds, 5 by default, once per
+`attempts:` per nameserver, which is what a container that cannot reach its
+resolver would otherwise wait out before any of this began. A resolver slower
+than the five seconds the lookup gets makes the line the routing-table
+assertion below rather than a dial, and says so. To change the allow-list,
+edit `EGRESS_ALLOW` in `.env` and run `docker compose up -d egress`.
 
 The two directions are separate bounds, and the on-link line is the one an
 internal network does not settle on its own. `internal: true` withholds the
@@ -361,13 +360,14 @@ How to read the on-link line, in the order the cases are worth knowing:
   reported as a failure rather than passed over, because that is the defect
   these lines exist to prevent.
 - The budget cause above is the one an egress **firewall** can produce where
-  `internal: true` cannot. With no default route the kernel refuses every
-  address of `example.com` at once, so all of them are dialled for nothing and
-  the line passes. Where egress is bounded by *dropping* packets instead, the
-  first address is silent for the whole budget and the rest go unasked —
-  which
-  is a `FAIL` saying so, not a pass. Read it as "several addresses were silent
-  and I ran out of time"; the check errs towards saying it does not know.
+  `internal: true` cannot, and only where the name has more than one address.
+  With no default route the kernel rejects each connect immediately — no
+  route — so every address of `example.com` is dialled for nothing and the
+  line passes. Where egress is bounded by *dropping* packets instead, the
+  first address is silent for the whole budget and the rest go unasked, which
+  is a `FAIL` saying so rather than a pass. Read it as "several addresses were
+  silent and I ran out of time"; the check errs towards saying it does not
+  know.
 
 **If you cannot upgrade to 28.0+**, add a host firewall rule that drops new
 inbound connections arriving on that bridge's interface; nothing in the stack

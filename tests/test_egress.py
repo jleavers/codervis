@@ -827,6 +827,13 @@ def test_readme_shows_the_lines_the_check_actually_prints(monkeypatch) -> None:
     assert samples, "README shows no sample output at all"
     assert set(samples) <= producible, sorted(set(samples) - producible)
 
+    # A line quoted inline in prose rather than in a fence carries no verdict prefix, so the
+    # sample scan above does not see it and it can go stale on its own. The one there is is
+    # checked as a prefix of a line `check` can really print.
+    inline = "example.com:443 was not settled"
+    assert f"`{inline}`" in flowed, "README no longer quotes the unverified line"
+    assert any(line[7:].startswith(inline) for line in producible), sorted(producible)
+
     # The verdicts the fences carry are also claimed in prose, which no fence comparison holds.
     assert "Only the first two are passes, and the routing table is what makes them so." in flowed
 
@@ -1111,18 +1118,20 @@ def test_the_lookup_gets_a_share_of_the_budget_rather_than_all_of_it() -> None:
     """What `RESOLVE_BUDGET_SHARE` is for, which nothing else here would notice was gone.
 
     The dials are what establish the thing this half asserts, so a resolver that is merely
-    slow must not be able to spend their budget. Hand the lookup the whole window and it can:
-    it comes back with the deadline behind it, nothing is dialled, and the probe fails the
-    check with `DIRECT_UNVERIFIED` over a resolver that worked. Cut at its share instead, the
-    same lookup is reported for what it was -- a resolver that did not answer in the time it
-    had -- which `check` settles against the routing tables like any other.
+    slow must not be able to spend their budget: given the whole window it takes as much of
+    it as it likes and the dials get whatever is left, down to nothing. Cut at its share
+    instead, a lookup that outlasts the share is reported for what it was -- a resolver that
+    did not answer in the time it had -- which `check` settles against the routing tables
+    like any other, on its own line.
 
-    Driven on the outcome *and* the clock, because the two implementations differ in both: a
-    lookup cut at its share returns at the share, and one given the whole window returns when
-    the resolver finally does.
+    Driven on the outcome *and* the clock, because the two implementations differ in both. A
+    lookup cut at its share comes back at the share with `DIRECT_NO_RESOLVER`; one given the
+    whole window comes back when the resolver finally does, three times later, and dials what
+    it found -- so it is `DIRECT_ANSWERED` here rather than a failure, and the clock is the
+    other half of what says which implementation ran.
     """
     def slower_than_its_share(*_args: object, **_kwargs: object) -> list[tuple]:
-        time.sleep(1.8)
+        time.sleep(3.0)
         return _candidates("192.0.2.1")
 
     refused = ConnectionRefusedError(errno.ECONNREFUSED, "refused")
@@ -1133,10 +1142,12 @@ def test_the_lookup_gets_a_share_of_the_budget_rather_than_all_of_it() -> None:
             elapsed = time.monotonic() - started
 
     assert outcome == DIRECT_NO_RESOLVER, (
-        f"a lookup taking 1.8s of a 2 s budget read as {outcome!r}: it is being given the "
+        f"a lookup taking 3 s of a 2 s budget read as {outcome!r}: it is being given the "
         "whole window rather than RESOLVE_BUDGET_SHARE of it, and the dials got what was left"
     )
-    assert elapsed < 1.5, f"the lookup was waited on for {elapsed:.2f}s of its 1 s share"
+    # Between the 1 s share and the 3 s the resolver was going to take, with a second of slack
+    # either side: tight enough to mean something, loose enough for a loaded runner.
+    assert elapsed < 2.0, f"the lookup was waited on for {elapsed:.2f}s of its 1 s share"
 
     # The other side of the same number: a lookup inside its share leaves the dials the rest
     # of the budget, which is what makes a name that resolves slowly still get dialled.
@@ -1221,6 +1232,64 @@ def test_an_address_that_answers_slowly_is_still_reach_when_the_name_has_many() 
     assert elapsed < 1.5
 
 
+def test_an_address_is_reported_unasked_rather_than_dialled_with_no_time_to_answer() -> None:
+    """`MIN_DIAL_BUDGET_S`, which is the floor under the window a candidate may be given.
+
+    The loop hands each address what is left of the budget, so an address after one that
+    overshot the deadline can be offered a window of microseconds. A `connect` with that
+    window comes back a timeout whatever is at the other end, and a timeout reads as silence,
+    which is what the check *passes* on -- so the leftover is reported unasked instead.
+
+    It rules out the degenerate window and not a short one: the floor is a constant, and one
+    large enough to guarantee an answer would have to be a fraction of the caller's budget or
+    it would leave a small budget with nothing dialled at all. What carries that guarantee is
+    the order -- the first address gets the whole of what the lookup left.
+    """
+    class Overshooting:
+        """A first address that spends the budget, and a second that must not be dialled."""
+
+        def __init__(self) -> None:
+            self.dialled: list[str] = []
+
+        def __call__(self, *_args: object, **_kwargs: object) -> object:
+            layer = self
+
+            class Socket:
+                def settimeout(self, timeout_s: float) -> None:
+                    assert timeout_s >= egress.MIN_DIAL_BUDGET_S, (
+                        f"an address was dialled with {timeout_s:.4f}s, under the floor"
+                    )
+
+                def connect(self, sockaddr: tuple) -> None:
+                    layer.dialled.append(sockaddr[0])
+                    # All but a twentieth of the budget, so what is left for the address
+                    # after this one is under the floor and over zero -- which is the whole
+                    # of the difference between the floor and a bare deadline check.
+                    time.sleep(0.95)
+                    raise TimeoutError
+
+                def close(self) -> None:
+                    pass
+
+            return Socket()
+
+    layer = Overshooting()
+    addresses = ["192.0.2.1", "192.0.2.2"]
+
+    def resolves(*_args: object, **_kwargs: object) -> list[tuple]:
+        return _candidates(*addresses)
+
+    with mock.patch.object(egress.socket, "getaddrinfo", resolves):
+        with mock.patch.object(egress.socket, "socket", layer):
+            outcome = probe_direct("example.com", 443, timeout_s=1)
+
+    assert layer.dialled == ["192.0.2.1"], (
+        "the second address was dialled with what the first left over, which is a window it "
+        "could only time out in -- and a timeout here is the pass"
+    )
+    assert outcome == DIRECT_UNVERIFIED, "an address not asked leaves the name unsettled"
+
+
 def test_the_public_name_probe_costs_its_budget_once_over_all_of_a_name_s_addresses() -> None:
     """The bound is the probe's, not the probe's times however many addresses the name has.
 
@@ -1230,8 +1299,10 @@ def test_the_public_name_probe_costs_its_budget_once_over_all_of_a_name_s_addres
 
     Silence is what spends it, so silence is what runs out of it, and a name only partly
     asked is `DIRECT_UNVERIFIED` -- it fails the check rather than passing it, because the
-    addresses that went undialled establish nothing. A confined container never reaches this:
-    with no default route the kernel refuses every address at once, for nothing.
+    addresses that went undialled establish nothing. The container this project ships never
+    reaches it: `internal: true` withholds the default route, so the kernel rejects every
+    connect immediately and all of them are dialled for nothing. A deployment confined by
+    *dropping* egress does reach it, and README says what an operator there reads it as.
     """
     layer = _AnsweringAfter(30.0, None)  # far beyond any budget: nothing ever answers
     addresses = [f"192.0.2.{n}" for n in range(1, 9)]
