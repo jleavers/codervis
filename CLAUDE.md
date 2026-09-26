@@ -289,21 +289,40 @@ parses one head per connection and only the connections that pass through it, so
 a bound that lived only there covered neither a later request on a kept-alive
 connection nor a connection opened straight to `codervis:8000` — and uvicorn's
 own defaults bound nothing: `--http auto` prefers httptools, which caps a request
-head at nothing, and no ceiling or timer is armed until a response has been sent.
-`app/server.py` is what the image's `CMD` launches, and it names three things:
-h11 (the head limit is h11's, exposed as `h11_max_incomplete_event_size`, and it
-applies to **every** request on a connection), the same 16 KiB `ingress` uses, and
-a connection-and-task ceiling of 320 — above `ingress`'s 256, so the relay runs
-out of slots before the server does and an SSE stream per tab is never what the
-server refuses. An oversized head gets 400 and the connection closed; a request
-arriving while the count is at the ceiling gets 503.
-**Time stays unbounded after a head has begun**, deliberately: a dripped head
-costs one counted slot, the same as an open tab, and at most 16 KiB of memory.
-`tests/test_server_bounds.py` pins both behaviours through a real server on
-loopback, pins the values, pins the relation between the two layers' numbers, and
-pins that the `CMD` still launches this module — `app/server.py` is documentation
-if the image goes back to `uvicorn app.main:app`. Keep `ingress`'s checks as the
-outer layer; do not move a bound out of the server and into the relay.
+head at nothing, and no ceiling and no timer is armed until a response has been
+sent. `app/server.py` is what the image's `CMD` launches, and it holds three
+bounds, every one of them spent *before* a request is dispatched:
+
+- **a head of at most 16 KiB, refused with 431**, on every request of every
+  connection. `BoundedHeadH11Protocol` is what enforces it, and the subclass is
+  not ceremony: h11's own `max_incomplete_event_size` is checked only where
+  `next_event()` has to answer `NEED_DATA`, so a head that arrives *complete*
+  inside one socket read is parsed however large it is — 20, 50 and 80 KiB heads
+  in one write were all served with 200 under that setting alone, and the real
+  bound was the kernel's read size. The class checks the pending head before h11
+  sees the bytes, in all three shapes a head can arrive in: one write, dripped,
+  and pipelined behind a request that is fine.
+- **a complete head within 10 s, refused with 408** — `ingress`'s deadline, on
+  every head rather than the first, and never renewed by an arriving byte. It is
+  what stops a socket that says nothing, or dribbles, from holding a counted
+  connection: with the ceiling below armed, enough of those would make the server
+  answer 503 to everyone, which is a worse outage than the unbounded head it
+  replaced.
+- **a concurrency ceiling of 320**, above `ingress`'s 256, so the relay runs out
+  of slots before the server does and an SSE stream per tab is never what the
+  server refuses. It is not admission control: uvicorn accepts the connection and
+  answers the *request* 503 once 320 connections or tasks are held, the arriving
+  one included, so at most 319 are served at a time.
+
+**What stays unbounded is a response already under way**, deliberately: that is
+what SSE is, and `/api/stream` lasts as long as the browser tab.
+`tests/test_server_bounds.py` pins each bound through a real server on loopback —
+each head shape, the deadline including that a slow stream is not cut off, the
+ceiling's exact boundary — pins the values, asks both front doors for the same
+refusal rather than comparing two constants, and pins that the `CMD` still
+launches this module: `app/server.py` is documentation the moment the image goes
+back to `uvicorn app.main:app`. Keep `ingress`'s checks as the outer layer; do not
+move a bound out of the server and into the relay.
 
 The front door is also bounded by who may use it, because the dashboard has no
 login: `DASHBOARD_BIND` (default `127.0.0.1`) is the host address `ingress`

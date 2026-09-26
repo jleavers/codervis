@@ -1012,11 +1012,17 @@ const UNOWNED_LANES = [
     web: true,
     title: 'every route into codervis:8000, and everything it serves back',
     brief: `Your attacker is anyone who can send the dashboard a request: a LAN peer, a
-process on the host, another container, or a web page in the operator's browser. #15 and #20
-bound the front door, but both fixes live in \`ingress\`: the \`Host\` allow-list, the 10 s
-head deadline, the 16 KiB head cap and the 256-connection budget. uvicorn arms no timer of its
-own, and \`/api/stream\` holds one generator per connection. So your first question is
-whether anything reaches \`codervis:8000\` **without** passing through \`ingress\`.
+process on the host, another container, or a web page in the operator's browser. The front door
+is bounded in two layers, and be exact about which holds what: \`ingress\` applies a 10 s head
+deadline, a 16 KiB head cap and a 256-connection budget to the *first* request head of each
+connection that passes through it (#20), while \`app/server.py\` -- the server the image's
+\`CMD\` launches -- applies the same head cap and deadline to *every* request of every
+connection and a concurrency ceiling of 320, whichever route the connection came by (#43). The
+\`Host\` allow-list is neither: it is a pure-ASGI check in \`app/main.py\` (#15).
+\`/api/stream\` holds one generator per connection, and no bound reaches a response already
+under way. So your first question is still whether anything reaches \`codervis:8000\`
+**without** passing through \`ingress\`, and your second is what such a route is still not
+bounded by.
 
 - **Routes round \`ingress\`** (the third critic's gap 1). Candidates:
   - a host-local process using the dashboard's address on the \`inside\` bridge

@@ -511,17 +511,18 @@ flags that are useful for quick diagnosis.
   older), and there a host firewall rule that drops new inbound connections
   arriving on that bridge's interface is what closes it.
 - Whoever reaches the dashboard is bounded in what they can cost, by the server
-  that bears the cost rather than only by the relay in front of it. The
-  dashboard's own process caps **every** request head on **every** connection at
-  16 KiB and holds at most 320 connections and streaming tasks, whichever route
-  the connection came by (`app/server.py`, which is what the image launches).
-  `ingress` is the outer layer on the published port: at most 256 connections,
-  and a client that has not sent a complete first request head within 10 seconds
-  is dropped before the dashboard is dialled. What is deliberately not bounded is
-  time after a head has begun, because an SSE response lasts as long as the
-  browser tab: a client that drips a request head holds one counted connection,
-  the same cost as an open tab, and can spend no more than 16 KiB of memory on
-  it. Every service's log is capped at 3 × 10 MB.
+  that bears the cost and not only by the relay in front of it. The dashboard's
+  own process (`app/server.py`, which is what the image launches) refuses a
+  request head over 16 KiB with `431`, and a connection that has not completed a
+  head within 10 seconds with `408` — on **every** request of a connection, not
+  just the first, and whichever route the connection arrived by. Once 320
+  connections or streaming tasks are held it answers `503`, so at most 319 are
+  served at a time. `ingress` is the outer layer on the published port, with the
+  same head cap and deadline and a budget of 256 connections, applied to the
+  first head of each connection before the dashboard is dialled at all. What is
+  deliberately **not** bounded is a response already under way, because an SSE
+  response lasts as long as the browser tab: every bound above is spent before a
+  request is dispatched. Every service's log is capped at 3 × 10 MB.
 - The dashboard never logs the tokens, and never serves an exception's own
   text: a failure is reported with one of the fixed messages in
   `app/degrade.py`. A debug capture of an upstream call made with the CLI's own
