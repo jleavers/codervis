@@ -638,7 +638,11 @@ live undocumented quota endpoints". Establish whether anything *enforces* that:
 
 - \`app.main\` reads \`CLAUDE_DATA_DIR\`, \`CODEX_DATA_DIR\`, \`CLAUDE_AI_HOST\` and
   \`CHATGPT_HOST\` at import and constructs both live clients unconditionally.
-- \`pytest.ini\` sets only \`testpaths\` and \`pythonpath\`, and there is no \`conftest.py\`.
+- \`pytest.ini\` sets only \`testpaths\` and \`pythonpath\`. There was no \`conftest.py\` when
+  this lane was written, which is what it found; #38 (closed, do not re-derive) added one, and
+  it points both data directories at empty scratch trees and both upstream hosts at a dead
+  loopback port before collection, then fails whichever test reaches past them. Read the file
+  as it stands rather than either state.
 - For each test in \`tests/test_main_payload.py\`, \`tests/test_activity_readers.py\` and
   \`tests/test_quota_parsers.py\`, find the point at which the stub is in place. Then work out
   what the real client would read and call if a test reached it first, under the environment
@@ -833,11 +837,17 @@ Go fix by fix, reading the code rather than the commit messages:
   - the hard-link rule, and the \`WALK\` operation that \`OPERATIONS\` does not include
   - whether a \`STAT\` ever follows a link
   - the exemption for a root that is itself a link
-  - the filesystem-call watcher in \`tests/test_activity_readers.py:334-369\`, which
+  - the filesystem-call watcher \`tests/test_activity_readers.py\` asserts on. It no longer
     monkeypatches \`os.stat\`, \`lstat\`, \`scandir\`, \`open\`, \`listdir\`, \`io.open\` and
-    \`builtins.open\` by name. Establish what it cannot see: a name bound at import time, a
-    \`dir_fd\`-relative call, \`posix.*\`, \`_io.open\`. A regression that goes through one of
-    those passes the suite, and that is a vacuous-test finding in scope for this lane.
+    \`builtins.open\` by name: #38 (closed, do not re-derive) replaced those seven with the
+    session audit hook in \`tests/conftest.py\`, keyed on the resource, so a name bound at
+    import time, \`posix.*\` and \`io.FileIO(path)\` are in its record too. Establish what it
+    still cannot see -- its own docstring enumerates a stat, a \`dir_fd\`-relative path, a link
+    planted mid-path and anything a child process does -- and whether
+    \`tests/test_reader_filesystem_surface.py\`, which carries the stat half by pinning that
+    neither reader module names a filesystem API, reaches every form of that. A regression that
+    goes through something neither half sees passes the suite, and that is a vacuous-test
+    finding in scope for this lane.
 - **#20, the front door** (\`app/ingress.py\`, and the \`x-logging\` anchor in
   \`docker-compose.yml\`). Check the request deadline and the head cap against a client that
   pipelines, sends a body before the head completes, or reopens as fast as it is closed.
@@ -1170,7 +1180,15 @@ first run's deploy lane, which saw a much smaller CI file.
     title: 'the claims tests, specs and agent-read text make, against what enforces them',
     brief: `Your attacker is anyone who benefits from a claim nobody checks: a regression that
 passes a green suite, or an agent that acts on text a stranger wrote while holding the
-operator's shell. #38 (open, do not re-derive) is the reader-level test watcher. Cover:
+operator's shell. #38 (closed, do not re-derive) was the reader-level test watcher, and it is
+closed in two halves. The seven patched module attributes are gone: the watcher is now the
+session audit hook in \`tests/conftest.py\`, keyed on the *resource*, so an \`open\`, an
+\`os.listdir\` or an \`os.scandir\` is in its record whatever Python name reached it. The half
+no audit hook can witness -- a stat, for which CPython raises no audit event, and a credential
+file's mtime is enough to publish -- is pinned structurally instead, by
+\`tests/test_reader_filesystem_surface.py\`, which holds that neither reader module names a
+filesystem API at all. Both halves name their own limits in their docstrings; a regression that
+goes round one of them is yours to establish, not #38's record to quote. Cover:
 
 - **The gate-level tests** (the third critic's gap 5). \`tests/test_activity_gate.py\` (297
   lines) should enforce the no-link rule, the hard-link rule, \`O_NOFOLLOW\` and each reader's
