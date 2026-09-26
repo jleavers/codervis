@@ -32,17 +32,20 @@ Two halves, and neither is sufficient alone:
 probing what is reachable rather than by restating the design: the proxy filters by name and
 admits the configured upstreams, the on-link addresses it derives are each either a peer in
 this compose project or answer nothing, and a public name does not resolve-and-connect -- or,
-where it will not resolve at all, the routing table names no default route for it to have used. A
-refusal on an on-link address is a failure like an accept, because an RST comes from a live
-host. Silence is the weaker half of that: it means nothing answered the ports asked, which a
-host behind a default-drop rule also produces, so the on-link half is one of three assertions
-rather than the only one.
+where it will not resolve at all, the routing tables name no default route in either family for
+it to have used. A refusal on an on-link address is a failure like an accept, because an RST
+comes from a live host. Silence is the weaker half of that: it means nothing answered the ports
+asked, which a host behind a default-drop rule also produces, so the on-link half is one of
+three assertions rather than the only one.
 
 What the on-link half derives is not every address the container could dial: it is the address
 a bridge gateway would hold -- the first of each on-link subnet -- and any gateway a route
-names (`on_link_addresses`, which says what that misses). A second host address further into
-the subnet, or a gateway placed elsewhere by an explicit ``ipam.config.gateway``, is not
-probed; the compose file puts neither there, and a change that does has to extend this.
+names, in **either family** (`on_link_addresses`, which says what that misses). Both, because a
+network with ``enable_ipv6`` has a second gateway address that is on-link exactly as the first
+is, and ``/proc/net/route`` holds IPv4 routes only -- so reading it alone would print this bound
+whole while that address sat on the bridge (#42). A second host address further into the subnet,
+or a gateway placed elsewhere by an explicit ``ipam.config.gateway``, is not probed; the compose
+file puts neither there, and a change that does has to extend this.
 
 ``CONNECT`` is deliberately all of it. The proxy reads the host name from the request line and
 never sees a byte of the TLS session it relays, so it holds no certificate authority and never
@@ -66,7 +69,7 @@ import struct
 import sys
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from ipaddress import IPv4Network, ip_address
+from ipaddress import IPv4Network, IPv6Address, IPv6Network, ip_address
 from types import MappingProxyType
 from typing import Protocol
 from urllib.parse import SplitResult, urlsplit
@@ -100,17 +103,27 @@ UPSTREAM_ENV: tuple[tuple[str, str], ...] = (
 PROBE_DENIED_HOST = "egress-probe.invalid"
 # Off the allow-list but answering on 443, so "no route" is the container's doing.
 PROBE_DIRECT_HOST = "example.com"
-# The container's own routing table, which is where the addresses it can dial without a route
-# come from. Linux only, which is what the image is.
+# The container's own routing tables, which are where the addresses it can dial without a
+# route come from. Linux only, which is what the image is. Two files because the first holds
+# IPv4 routes only, and a network with `enable_ipv6` puts a second gateway address on-link
+# (#42); each is parsed by its own function, since they have nothing in common but their purpose.
 ROUTE_TABLE_PATH = "/proc/net/route"
+IPV6_ROUTE_TABLE_PATH = "/proc/net/ipv6_route"
+# RTF_REJECT, in `/proc/net/ipv6_route`'s flags column. A netns with IPv6 enabled and nowhere
+# to send it holds an `unreachable default`, which is the kernel saying so rather than a way
+# off this container, so no candidate is derived from one.
+RTF_REJECT = 0x0200
 # The ports an on-link address is tried on. Which one answers decides the wording, not the
 # verdict: a refusal proves the address is live as surely as an accept does (see
 # `probe_on_link`), so one port would be enough to establish reach. Three, because a firewall
 # rule that covers a single port must not read as "nothing there", and these are the ports a
 # host is likeliest to be listening on.
 PROBE_ONLINK_PORTS: tuple[int, ...] = (443, 80, 22)
-# How many derived addresses are probed. A container has one or two interfaces; the cap is
-# what stops a surprising routing table turning a check into a scan.
+# How many derived addresses are probed. A container has one or two interfaces, and each can
+# contribute a candidate per family, so this stack's shape -- one internal network -- derives one
+# over IPv4 and one over IPv6 (#42); the cap is what stops a surprising routing table turning a
+# check into a scan. A list beyond it is not passed over: `check_on_link` fails and names what
+# went unprobed, so growing past this is loud rather than quiet.
 MAX_ONLINK_PROBES = 4
 DEFAULT_PORT = 3128
 # Loopback unless told otherwise; compose passes 0.0.0.0 behind the internal network.
@@ -664,8 +677,22 @@ def _address(column: str) -> str:
     return socket.inet_ntoa(struct.pack("=L", int(column, 16)))
 
 
-def on_link_addresses(route_table: str) -> list[str]:
-    """The addresses this container can dial with no route at all, from its own routing table.
+def _ipv6_address(column: str) -> IPv6Address:
+    """One of /proc/net/ipv6_route's address columns.
+
+    Nothing like `_address`: these are printed with ``%pi6``, which is the sixteen bytes in the
+    order they go on the wire, so they are read big-endian and there is no host-order word to
+    undo. `bytes.fromhex` rather than `int(column, 16)` because the column is thirty-two hex
+    digits or it is not an address, and `int` would accept a sign and an underscore in it.
+    """
+    raw = bytes.fromhex(column)
+    if len(raw) != 16:
+        raise ValueError(f"an IPv6 column is 16 bytes, not {len(raw)}")
+    return IPv6Address(raw)
+
+
+def on_link_addresses(route_table: str, ipv6_route_table: str | None = None) -> list[str]:
+    """The addresses this container can dial with no route at all, from its own routing tables.
 
     Two kinds, and neither is a constant this module could carry:
 
@@ -676,20 +703,52 @@ def on_link_addresses(route_table: str) -> list[str]:
       it on the host's end of the bridge, so it sits in the container's own subnet and needs no
       route to be reached.
 
+    **Both families**, from a table each (#42). A network with ``enable_ipv6`` has a second
+    gateway address, on-link in the container's own IPv6 prefix and reachable with no route
+    exactly as the first one is, and ``/proc/net/route`` holds IPv4 routes only -- so a half
+    that read it alone would print the bound whole while that address sat on the bridge, which
+    is the shape of defect this whole check exists to catch. ``ipv6_route_table`` is optional
+    and ``None`` means "not read": a caller with one table passes one, and a kernel with no
+    IPv6 at all has no second table to give (`read_ipv6_route_table`). The two files share
+    nothing but their purpose -- no header line, the device last rather than first, prefixes in
+    hex with a length beside them -- so each has its own parser and this combines what they
+    yield.
+
     Every candidate is returned, this container's own address included: which of them are the
     project rather than the host is `peer_addresses`' job, and it says so in a line of its own
     rather than by dropping one.
 
-    Ordered gateways first, deduplicated, and loopback and the unspecified address dropped.
+    Ordered gateways first and derived after, IPv4 before IPv6 within each kind, deduplicated,
+    and what is nobody's address in either family dropped: loopback, the unspecified address,
+    and multicast -- a route to ``224.0.0.0/4`` or ``ff00::/8`` is on-link, and the first
+    address of each is a group rather than a host to dial.
 
     The derived kind rests on Docker's own convention, and says so because the convention is
     not a guarantee: a network given an explicit ``ipam.config.gateway`` elsewhere in its subnet
     would not be probed. A compose change that does that has to extend this.
+    """
+    named, derived = _ipv4_candidates(route_table)
+    if ipv6_route_table is not None:
+        named6, derived6 = _ipv6_candidates(ipv6_route_table)
+        named += named6
+        derived += derived6
+    addresses: list[str] = []
+    for addr in named + derived:
+        parsed = ip_address(addr)
+        if parsed.is_loopback or parsed.is_unspecified or parsed.is_multicast:
+            continue
+        if addr in addresses:
+            continue
+        addresses.append(addr)
+    return addresses
 
-    IPv4 only, which is the whole of what reaches this bridge: the compose network sets no
-    ``enable_ipv6``, and the topology test refuses one that does without the matching IPv6
-    gateway isolation. A network that grows a second family needs ``/proc/net/ipv6_route`` read
-    here as well, which is #42.
+
+def _ipv4_candidates(route_table: str) -> tuple[list[str], list[str]]:
+    """`/proc/net/route`'s gateways and on-link subnets, in that order, as two lists.
+
+    A header line first, the device in the first column, and every address a host-order word
+    (`_address`). Filtering what is nobody's is `on_link_addresses`' job, since that rule is
+    the same for both families.
     """
     named: list[str] = []
     derived: list[str] = []
@@ -716,17 +775,74 @@ def on_link_addresses(route_table: str) -> list[str]:
             derived.append(str(subnet.network_address + 1))
         else:
             named.append(gateway)
-    addresses: list[str] = []
-    for addr in named + derived:
-        parsed = ip_address(addr)
-        if parsed.is_loopback or parsed.is_unspecified or addr in addresses:
+    return named, derived
+
+
+def _ipv6_candidates(route_table: str) -> tuple[list[str], list[str]]:
+    """The same two kinds from `/proc/net/ipv6_route`, which is a different file in every detail.
+
+    No header line, so every line is read. The device is the *last* column and is empty on a
+    route that has none. A prefix is thirty-two hex digits with its length in hex beside it
+    (`_ipv6_address`), and a route with no gateway prints one of zeros -- which is how a gateway
+    a route names is told from an on-link prefix here, without reading RTF_GATEWAY.
+
+    What it skips, and why none of them is an address this check should dial:
+
+    * **`lo`**, as in the IPv4 reading. It is also where the kernel's own ``::1/128`` and its
+      ``unreachable default`` sit.
+    * **A reject route.** `RTF_REJECT` is this netns saying it has nowhere to send the family.
+    * **A /0, and a /127 or /128**, exactly as over IPv4: a default route is not a subnet this
+      container is on, and a prefix that long holds no separate address to derive.
+    * **A link-local prefix.** Its first address is derived from nothing: a link-local address
+      is not handed out by Docker's IPAM but built from the interface's own MAC, so nothing sits
+      at ``fe80::1``, while every container with IPv6 at all has ``fe80::/64`` on-link -- so
+      deriving from it would spend the probe cap on an address that answers nowhere. A gateway a
+      route *names* in ``fe80::/10`` is a different thing and is kept, with the device it is
+      reachable through appended, since a link-local address cannot be dialled without one.
+    """
+    named: list[str] = []
+    derived: list[str] = []
+    for line in route_table.splitlines():
+        fields = line.split()
+        if len(fields) < 9:
             continue
-        addresses.append(addr)
-    return addresses
+        device = fields[9] if len(fields) > 9 else ""
+        if device == "lo":
+            continue
+        try:
+            destination = _ipv6_address(fields[0])
+            prefixlen = int(fields[1], 16)
+            gateway = _ipv6_address(fields[4])
+            flags = int(fields[8], 16)
+        except ValueError:
+            continue
+        if flags & RTF_REJECT:
+            continue
+        if gateway.is_unspecified:
+            try:
+                subnet = IPv6Network((destination, prefixlen), strict=False)
+            except ValueError:
+                continue
+            if subnet.prefixlen > 126 or subnet.prefixlen == 0:
+                continue
+            if subnet.network_address.is_link_local:
+                continue
+            derived.append(str(subnet.network_address + 1))
+        elif gateway.is_link_local and device:
+            # Without a scope this could not be dialled at all: `connect` to a bare link-local
+            # address fails locally, which would report as "not probed" for an address the
+            # table says is reachable through a device it names. Where the table names no device
+            # for one -- which no next hop the kernel prints does, since every one of them has
+            # a device -- the candidate falls through bare and is reported as unverified rather
+            # than dropped, because a candidate dropped is a question this half did not ask.
+            named.append(f"{gateway}%{device}")
+        else:
+            named.append(str(gateway))
+    return named, derived
 
 
-def has_default_route(route_table: str) -> bool:
-    """Whether the table names an IPv4 default route (`0.0.0.0/0`).
+def has_default_route(route_table: str, ipv6_route_table: str | None = None) -> bool:
+    """Whether the tables name a default route -- `0.0.0.0/0`, or `::/0`.
 
     That, and not "a route off this container's subnets" in general, is the question: it is
     what `internal: true` withholds, and it is the evidence the direct half falls back on when
@@ -735,12 +851,17 @@ def has_default_route(route_table: str) -> bool:
     container that has a way off the host. The table tells the two apart without asking
     anything of the network.
 
+    Both families, for the reason the on-link half reads both (#42): a container whose only
+    default route is an IPv6 one has a way off its own subnets, and reading `/proc/net/route`
+    alone would answer `False` for it -- which is the pass this guards. ``ipv6_route_table`` is
+    optional and ``None`` means "not read"; a caller that could not read it must not treat this
+    answer as settled.
+
     What it therefore answers `False` to while a route off-subnet exists: a split default
-    (`0.0.0.0/1` plus `128.0.0.0/1`, the VPN idiom), a route to some other subnet via a named
-    gateway, and an IPv6-only default route, since this reads `/proc/net/route` alone (#42).
-    None of them is silent here: `on_link_addresses` returns every gateway a route names, so
-    the on-link half dials it. This is the narrower question, deliberately, because the pass it
-    guards should rest on the one condition the compose file sets.
+    (`0.0.0.0/1` plus `128.0.0.0/1`, the VPN idiom), and a route to some other subnet via a
+    named gateway. Neither is silent here: `on_link_addresses` returns every gateway a route
+    names, so the on-link half dials it. This is the narrower question, deliberately, because
+    the pass it guards should rest on the one condition the compose file sets.
 
     The table it is given is `read_route_table`'s, which stops at `ROUTE_TABLE_CAP`. A table
     long enough to lose its default route to that cap would answer `False` on evidence that was
@@ -758,6 +879,32 @@ def has_default_route(route_table: str) -> bool:
             continue
         if destination == 0 and netmask == 0:
             return True
+    return _has_ipv6_default_route(ipv6_route_table) if ipv6_route_table is not None else False
+
+
+def _has_ipv6_default_route(route_table: str) -> bool:
+    """`::/0` in `/proc/net/ipv6_route`, read the way `_ipv6_candidates` reads that file.
+
+    A netns with IPv6 enabled and nowhere to send it holds an `unreachable default` on `lo`,
+    which is a default route in shape and the absence of one in fact -- so both of that
+    function's skips apply here, or every IPv6-enabled container would report a way off itself.
+    """
+    for line in route_table.splitlines():
+        fields = line.split()
+        if len(fields) < 9:
+            continue
+        if (fields[9] if len(fields) > 9 else "") == "lo":
+            continue
+        try:
+            destination = _ipv6_address(fields[0])
+            prefixlen = int(fields[1], 16)
+            flags = int(fields[8], 16)
+        except ValueError:
+            continue
+        if flags & RTF_REJECT:
+            continue
+        if destination.is_unspecified and prefixlen == 0:
+            return True
     return False
 
 
@@ -767,10 +914,12 @@ ROUTE_TABLE_CAP = 64 * 1024
 def read_route_table(path: str = ROUTE_TABLE_PATH) -> str | None:
     """The routing table as the kernel renders it, or None where there is none to read.
 
+    Either table, by path -- the format is the parsers' business and the cap is the same.
+
     Capped like every other read of something this process does not write. A table that hits the
     cap loses its last line rather than keeping a truncated one: a half-written line can still
-    split into eight fields with a short mask, and a subnet derived from that is a candidate
-    dialled in place of one that was never read.
+    split into enough fields to parse, with a short mask or a short prefix length, and a subnet
+    derived from that is a candidate dialled in place of one that was never read.
     """
     try:
         with open(path, encoding="ascii", errors="replace") as handle:
@@ -782,14 +931,33 @@ def read_route_table(path: str = ROUTE_TABLE_PATH) -> str | None:
     return table
 
 
+def read_ipv6_route_table(path: str = IPV6_ROUTE_TABLE_PATH) -> str | None:
+    """The IPv6 table: `""` where this kernel has no IPv6, `None` where it would not be read.
+
+    Those are two different answers and must not be one value. A netns with no IPv6 stack has no
+    file here, no IPv6 address, and no way to dial one -- nothing is on-link over a family that
+    is not there, so an empty table is the honest reading of an absent file and the half rests
+    on what the other family establishes. A file that *is* there and will not be read leaves
+    this family unknown, which its caller reports as unverified rather than passing over, since
+    the rule everywhere here is that a probe not made establishes nothing.
+    """
+    if not os.path.exists(path):
+        return ""
+    return read_route_table(path)
+
+
 def resolved_addresses(host: str) -> frozenset[str]:
-    """Every IPv4 address a name resolves to, or nothing where it does not resolve.
+    """Every address a name resolves to, in either family, or nothing where it does not resolve.
+
+    Both families, because this is what labels an on-link candidate as a peer, and the label is
+    a string match: a peer's IPv6 address left out here is a peer *dialled*, which fails a
+    correct dual-stack deployment on the proxy's own address (#42).
 
     Best effort by design: a name that does not resolve costs a candidate its label, so it is
     probed rather than accounted for -- which fails the check rather than passing it.
     """
     try:
-        info = socket.getaddrinfo(host, None, socket.AF_INET)
+        info = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
     except (OSError, UnicodeError):
         return frozenset()
     return frozenset(str(entry[4][0]) for entry in info)
@@ -817,6 +985,11 @@ def probe_on_link(addr: str, port: int, *, timeout_s: float) -> str:
     reported as it: `EPERM` from a local rule, `EMFILE` from running out of descriptors and the
     like mean no packet was sent, so the address is `ON_LINK_UNVERIFIED` -- a probe not made,
     which fails the check like every other one here.
+
+    Either family, and there is no family argument because there is nothing for one to decide:
+    every address here is a literal from the routing table, and `socket.create_connection` dials
+    a literal in the family it is written in -- an IPv6 one over `AF_INET6`, a scoped one
+    (`fe80::1%eth0`) out of the device named in it.
     """
     try:
         with socket.create_connection((addr, port), timeout_s):
@@ -918,8 +1091,8 @@ def check_on_link(
             results.append(
                 (
                     False,
-                    f"{addr}:{answered[0]} accepted a direct connection: that address is "
-                    "on-link, reachable with no route, and it is neither this container nor "
+                    f"{_target(addr, answered[0])} accepted a direct connection: that address "
+                    "is on-link, reachable with no route, and it is neither this container nor "
                     "the proxy -- so egress is not the only way off this container",
                 )
             )
@@ -946,6 +1119,19 @@ def check_on_link(
 
 def _ports(ports: Sequence[int]) -> str:
     return ", ".join(str(port) for port in ports) or "no ports"
+
+
+def _target(addr: str, port: int) -> str:
+    """An address and port as an operator would paste them back: an IPv6 literal in brackets.
+
+    `fd00:cafe::1:443` names neither the address nor the port, and the line it appears in is the
+    one a reader takes to `docker network inspect`.
+
+    Only where an address and a port are printed together. The refusal and no-answer lines name
+    the port in words ("on port 443", "on 443, 80, 22"), so the address in them is already
+    unambiguous and bracketing it would be noise.
+    """
+    return f"[{addr}]:{port}" if ":" in addr else f"{addr}:{port}"
 
 
 def format_result(ok: bool, line: str) -> str:
@@ -1050,22 +1236,30 @@ def check(
         # A lookup that failed is not a routing fact. What settles it is the table: a container
         # with no default route cannot reach an off-link address whether it resolved one or
         # not, and a container that has one was not established either way by a failed lookup.
+        # Both tables, because a default route in either family is a way off this container's
+        # subnets (#42), and a table that would not be read settles nothing. The line names one
+        # file, since that is what an operator goes and looks at: the IPv4 table where it was
+        # the unreadable one or both were, and the IPv6 table where that was the only one.
         table = read_route_table()
-        if table is not None and not has_default_route(table):
+        ipv6_table = read_ipv6_route_table()
+        unread = ROUTE_TABLE_PATH if table is None else None
+        if unread is None and ipv6_table is None:
+            unread = IPV6_ROUTE_TABLE_PATH
+        if unread is not None:
+            results.append(
+                (
+                    False,
+                    f"{host} could not be looked up and {unread} could not be read, "
+                    "so neither way of telling whether this container has a route off it was "
+                    "available and the bound is unverified",
+                )
+            )
+        elif not has_default_route(table, ipv6_table):
             results.append(
                 (
                     True,
                     f"{host} does not resolve here, and the routing table names no default "
                     "route: there is no route round the proxy to take",
-                )
-            )
-        elif table is None:
-            results.append(
-                (
-                    False,
-                    f"{host} could not be looked up and {ROUTE_TABLE_PATH} could not be read, "
-                    "so neither way of telling whether this container has a route off it was "
-                    "available and the bound is unverified",
                 )
             )
         else:
@@ -1136,7 +1330,22 @@ def _on_link_results(
     A list emptied by ``peers`` is the other case, and it passes: every address on-link was
     accounted for as this container or the proxy, which is what the bound looks like when it
     holds. What each one was is printed, so a pass is never silent about what it did not dial.
+
+    An IPv6 table that is there and will not be read is a third case, and it is a failure of its
+    own rather than a reason to report nothing: the IPv4 candidates are still worth dialling, and
+    the family that could not be read is named as unverified beside them (#42). A kernel with no
+    IPv6 is not that case -- there is no table, and nothing is on-link over a family that is not
+    there.
+
+    The mirror of that is deliberately *not* symmetric: where `/proc/net/route` is the file that
+    will not be read, this returns on the spot and does not go looking at the second table. The
+    verdict is the same either way -- a half that could not enumerate what is on-link is
+    unverified, and no address it went on to dial could turn that into a pass -- and the one
+    thing an operator does about it is the same too: find out why the kernel's own routing table
+    is unreadable in this container. Probing a second family underneath that answer would add
+    lines to a report whose first line already says the enumeration failed.
     """
+    unreadable: list[tuple[bool, str]] = []
     if on_link is None:
         table = read_route_table()
         if table is None:
@@ -1147,12 +1356,22 @@ def _on_link_results(
                     "reach on-link are unknown and the bound is unverified",
                 )
             ]
-        candidates = on_link_addresses(table)
+        ipv6_table = read_ipv6_route_table()
+        if ipv6_table is None:
+            unreadable.append(
+                (
+                    False,
+                    f"{IPV6_ROUTE_TABLE_PATH} is there and could not be read, so the addresses "
+                    "this container can reach on-link over IPv6 are unknown and the bound is "
+                    "unverified for that family",
+                )
+            )
+        candidates = on_link_addresses(table, ipv6_table)
     else:
         candidates = list(on_link)
     if not candidates:
-        source = "the routing table" if on_link is None else "the candidates passed in"
-        return [
+        source = "the routing tables" if on_link is None else "the candidates passed in"
+        return unreadable + [
             (
                 False,
                 f"no on-link address could be derived from {source}, so the bound is "
@@ -1169,8 +1388,12 @@ def _on_link_results(
     ]
     to_probe = [addr for addr in candidates if addr not in peers]
     if not to_probe:
-        return accounted
-    return accounted + check_on_link(to_probe, ports=ports, probe=probe, timeout_s=timeout_s)
+        return unreadable + accounted
+    return (
+        unreadable
+        + accounted
+        + check_on_link(to_probe, ports=ports, probe=probe, timeout_s=timeout_s)
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:

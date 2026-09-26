@@ -294,14 +294,23 @@ bound by dialling, never by restating the design — which is how the gateway
 went unnoticed: the proxy filters by name and admits the configured upstream
 hosts, the addresses it derives as **on-link** are each a peer or answer
 nothing, and a public name does not resolve-and-connect — or, where it will not
-resolve at all, the routing table names no default route it could have used,
-since a failed lookup on its own says nothing about whether packets can leave.
-The on-link half derives its candidates from the container's own routing table
-(every gateway a route names, and the first address of each on-link subnet,
-which is where Docker puts a bridge's gateway), and it fails on a refusal as
-well as on an accept, because an RST comes from a live host. Those candidates
-are not every address the container could dial: a second host address further
-into the subnet, or a gateway placed elsewhere by an explicit
+resolve at all, neither routing table names a default route it could have
+used, since a failed lookup on its own says nothing about whether packets can
+leave. The on-link half derives its candidates from the container's own routing
+tables (every gateway a route names, and the first address of each on-link
+subnet, which is where Docker puts a bridge's gateway), and it fails on a
+refusal as well as on an accept, because an RST comes from a live host. **Both
+families**, from a table each: `/proc/net/route` holds IPv4 routes only, and a
+network with `enable_ipv6` has a second gateway address that is on-link in the
+container's own prefix and reachable with no route exactly as the first one is,
+so `/proc/net/ipv6_route` is read beside it and parsed by its own function —
+that file shares nothing with the first but its purpose (#42). The two answers
+an absent table and an unreadable one give are kept apart: a kernel with no
+IPv6 has no file, and nothing is on-link over a family that is not there, while
+a table that is there and will not be read leaves that family unknown and is
+reported as unverified for it rather than passed over. Those candidates are not
+every address the container could dial: a second host address further into the
+subnet, or a gateway placed elsewhere by an explicit
 `ipam.config.gateway`, is not probed, and a compose change that puts one there
 has to extend `on_link_addresses`. What it does *not* dial is a candidate that
 is this container or the proxy (`peer_addresses`): both are on-link by design,
