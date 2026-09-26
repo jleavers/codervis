@@ -13,4 +13,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# The bound on a request head and on connections lives here, in the process that holds both
+# tokens and does the parsing, rather than only in the `ingress` relay (#43): `app/server.py`
+# names the values and `uvicorn`'s own defaults arm none of them.
+CMD ["python", "-m", "app.server", "--bind", "0.0.0.0", "--port", "8000"]
