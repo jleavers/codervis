@@ -118,6 +118,45 @@ def test_the_dashboard_container_publishes_nothing_itself(config: dict) -> None:
     assert not config["services"]["codervis"].get("ports")
 
 
+DATA_MOUNTS = {
+    "/data/claude": ".claude",
+    "/data/codex": ".codex",
+}
+
+
+def _mounts(config: dict, service: str) -> dict[str, dict]:
+    return {
+        entry["target"]: entry for entry in config["services"][service].get("volumes") or []
+    }
+
+
+@pytest.mark.parametrize("rendered", ["config", "bare_config"])
+def test_the_dashboard_mounts_the_two_agent_trees_read_only_and_nothing_more(
+    request, rendered: str
+) -> None:
+    """This list is the read half of the container's budget, and the only place it is set (#45).
+
+    Each mount is a whole home tree rather than the seven paths the app reads, because a
+    credential file sits at each tree's root and a bind mount of a file follows the inode it was
+    made from -- the container would keep reading the file its CLI replaced on the next token
+    refresh. So the budget is "these two trees, read-only", which makes a third entry, a source
+    that is not one of those trees, or a mount that drops `:ro` a widening someone has to make
+    on purpose. Checked with no `.env` too, because the compose file's own defaults are the ones
+    nothing else would catch: a default widened from `~/.claude` to `~` would hand this
+    container the whole home directory.
+    """
+    mounts = _mounts(request.getfixturevalue(rendered), "codervis")
+    assert set(mounts) == set(DATA_MOUNTS), sorted(mounts)
+    for target, entry in mounts.items():
+        assert entry.get("type") == "bind", (target, entry)
+        # Compose renders the short `source:target:ro` syntax as a long-form bind; the mode
+        # spelling is accepted as well, so that this pin asserts read-only rather than one
+        # CLI's rendering of it.
+        read_only = entry.get("read_only") is True or entry.get("mode") in ("ro", "readonly")
+        assert read_only, (target, entry)
+        assert Path(str(entry.get("source"))).name == DATA_MOUNTS[target], (target, entry)
+
+
 def test_the_dashboard_runs_the_image_s_own_bounded_server(config: dict) -> None:
     """The head cap and the connection ceiling are armed by the command the image starts (#43),
     so a `command:` here that replaced it would disarm both while every other pin stayed green.
