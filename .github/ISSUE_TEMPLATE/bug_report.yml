@@ -60,12 +60,12 @@ body:
       required: true
 
   - type: textarea
-    id: validation
+    id: how-you-would-know
     attributes:
-      label: Validation
+      label: How you would know it is fixed
       description: >
-        The commands that must pass for this to be fixed, if you know them. Concrete commands
-        are worth more than prose.
+        What is true afterwards that is not true now. Describe the behaviour rather than the
+        commands: a maintainer works out what to run, and this field is not a script.
       placeholder: |
-        python -m pytest tests/test_payload_contract.py -k codex
-      render: shell
+        The Codex card reads `live` with a five-hour percentage, against the response shape in
+        the evidence above.

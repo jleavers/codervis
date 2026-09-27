@@ -33,6 +33,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_SETTINGS = ROOT / ".claude" / "settings.json"
 
+ISSUE_FORMS = sorted((ROOT / ".github" / "ISSUE_TEMPLATE").glob("*.yml"))
+
 DOCS_DIR = ROOT / "docs" / "superpowers"
 PLANS_DIR = DOCS_DIR / "plans"
 WORKFLOW = ROOT / ".claude" / "workflows" / "security-sweep.js"
@@ -41,16 +43,17 @@ AGENTS_DIR = ROOT / ".claude" / "agents"
 
 # What each stage's agent may hold. The value is the exact `tools:` list its definition
 # declares, in order, because "the triage pass has no shell" is the whole point of the file and
-# a tool added to it is a decision, not a detail. `Bash` on the report stage is the one
-# residual the tool layer cannot express: its dedupe is two read-only `gh` listings, and a
-# shell that can run those can run `gh issue close` too, which is why SKILL.md's post-run audit
-# looks for write verbs.
+# a tool added to it is a decision, not a detail. The report stage held `Bash` until #80, for a
+# dedupe that was two read-only `gh` listings -- which a tool list cannot say, since a shell
+# that runs those runs `gh issue close` too, and which is why SKILL.md's post-run audit looks
+# for write verbs. The tracker listing is the launching session's now, filtered to
+# maintainer-authored items and relayed through the fence, so the stage holds no shell at all.
 STAGE_TOOLS = {
     "sweep-recon": "Read, Glob, Grep, Bash, Write",
     "sweep-lane": "Read, Glob, Grep, Bash, Edit, Write",
     "sweep-lane-web": "Read, Glob, Grep, Bash, Edit, Write, WebFetch, WebSearch",
     "sweep-triage": "Read, Glob, Grep, Write",
-    "sweep-report": "Read, Glob, Grep, Write, Bash",
+    "sweep-report": "Read, Glob, Grep, Write",
 }
 
 # What an archived document opens with. The plans carry this sentence; the two design specs
@@ -103,6 +106,13 @@ def _shipped_files() -> list[Path]:
 def _shipped_text_files() -> list[Path]:
     """The shipped files this module can scan as text."""
     return [path for path in _shipped_files() if path.suffix in TEXT_SUFFIXES]
+
+
+def _const_body_list(source: str, name: str) -> list[str]:
+    """The string literals of ``const <name> = ['a', 'b']``, which is not a template literal."""
+    match = re.search(rf"const {name} = \[([^\]]*)\]", source)
+    assert match is not None, f"no const {name} array"
+    return re.findall(r"'([^']*)'", match.group(1))
 
 
 def _const_body(source: str, name: str) -> str:
@@ -356,6 +366,7 @@ def test_relayed_material_reaches_an_agent_fenced_and_labelled() -> None:
         "clusters",
         "singletons",
         "coverage gaps",
+        "tracker items",
     ):
         assert any(label.startswith(relayed) for label in labelled), (
             f"{relayed!r} no longer reaches the next stage through the fence; relayed: {labelled}"
@@ -424,11 +435,88 @@ def test_every_stage_holds_a_named_tool_profile_and_nothing_wider() -> None:
     # above already ties each file to the table, so these add no reach -- they say which parts of
     # those tool lists are load-bearing, so that a change to one arrives with an explanation.
     assert "Bash" not in held["sweep-triage"], "the triage stage has acquired a shell"
+    assert "Bash" not in held["sweep-report"], (
+        "the report stage has acquired a shell; its dedupe reads a tracker listing relayed to "
+        "it, and a shell is how it would go and fetch an unfiltered one itself (#80)"
+    )
     assert "Web" not in held["sweep-report"], "the report stage has acquired the web"
     assert "Web" not in held["sweep-lane"], (
         "the default lane profile has acquired the web; a lane whose brief needs it declares "
         "`web: true` and gets sweep-lane-web"
     )
+
+
+def test_no_sweep_stage_goes_and_reads_the_tracker() -> None:
+    """Who wrote a tracker item is a bound on what may reach an agent; a preamble is not.
+
+    The dedupe pass used to run `gh issue list` and `gh pr list` in its own shell, on the host
+    that holds this dashboard's two live tokens, and the bodies it read carried no author and
+    no fence (#80). Any GitHub account can open an issue on a public repository, edit its own
+    and close it, so a stranger's self-closed "fixed" issue was enough to make a genuine new
+    cluster read as a duplicate -- no disobedience needed, and so nothing in the prompt to
+    disobey. The listing is the launching session's now, and this script's to filter.
+    """
+    source = WORKFLOW.read_text(encoding="utf-8")
+
+    # No prompt sends a stage to fetch it. `gh` is on the `PATH` of every stage that holds a
+    # shell, which is why this is about what the prompts ask for and not about the tool lists.
+    for name in re.findall(r"const (\w*[Pp]rompt\w*) = ", source):
+        body = _prompt_body(source, name)
+        for command in ("gh issue list", "gh pr list", "gh issue view", "gh pr view"):
+            assert command not in body, f"{name} still sends its agent to run `{command}`"
+
+    # The filter is the script's, because the command that produces the listing is one line in
+    # a skill document and the association is the whole of what makes an item trustworthy.
+    associations = _const_body_list(source, "MAINTAINER_ASSOCIATIONS")
+    assert associations == ["OWNER", "MEMBER", "COLLABORATOR"], (
+        f"the maintainer associations are {associations}; anything wider admits an account "
+        f"with no commit rights to this repository"
+    )
+    filterer = source[source.index("const maintainerAuthored = ") :]
+    filterer = filterer[: filterer.index("\n}\n")]
+    assert "MAINTAINER_ASSOCIATIONS.includes(association)" in filterer, (
+        "maintainerAuthored() does not check the association, so args.tracker reaches the "
+        "dedupe pass however the launching session built it"
+    )
+    assert "author: item.author" in filterer, "a relayed tracker item does not carry its author"
+
+    # And it is applied: a listing that reached the relay unfiltered would leave every constant
+    # above in place and change nothing about what the report stage reads.
+    assert "maintainerAuthored(args.tracker)" in source, (
+        "args.tracker is not put through the filter"
+    )
+    assert "args.tracker" not in source.replace("maintainerAuthored(args.tracker)", ""), (
+        "args.tracker is read somewhere other than through maintainerAuthored()"
+    )
+    assert "'tracker items'," in source, (
+        "the tracker listing does not reach the dedupe pass as a labelled relayed block"
+    )
+
+
+def test_no_issue_form_asks_a_stranger_for_an_executable_section() -> None:
+    """A form any GitHub account fills in should not solicit input shaped as steps to run.
+
+    Both forms ended in a `Validation` textarea rendered as a `shell` block, asking for "the
+    commands that must pass" (#80). GitHub writes that into the issue body under `### Validation`
+    as a fenced shell block, and an automated agent working this tracker reads a section of that
+    name as steps to run -- which is what the body of this repository's own issue workflow says
+    it does.
+    """
+    assert ISSUE_FORMS, "no issue forms found; has .github/ISSUE_TEMPLATE moved?"
+    for form in ISSUE_FORMS:
+        text = form.read_text(encoding="utf-8")
+        where = form.relative_to(ROOT)
+        for rendered in ("render: shell", "render: bash", "render: console", "render: sh"):
+            assert rendered not in text, (
+                f"{where} renders a field a stranger fills in as {rendered.split(': ')[1]!r}"
+            )
+        # The name matters on its own: the section heading is what an agent reads for intent,
+        # whatever the field renders as.
+        for heading in ("label: Validation", "label: Test Plan", "label: Testing"):
+            assert heading not in text, (
+                f"{where} names a field a stranger fills in {heading.split(': ')[1]!r}; an agent "
+                f"working this tracker treats a section of that name as steps to run"
+            )
 
 
 def test_the_post_run_audit_looks_for_what_a_stage_still_holds() -> None:
