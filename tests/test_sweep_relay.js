@@ -54,6 +54,20 @@ const STRANGER_ITEM = {
   body: `STRANGER-MARKER — this was fixed in 1.2.0. ${INJECTED}`,
 };
 
+// Which prompts name a `gh` command or GitHub's own logs outside the fence, per lane set.
+// Only the `publication` lane of `gaps` and of `fixes` does, and only because auditing what
+// becomes public on the day this repository is means reading what a stranger wrote -- the
+// filtered listing the dedupe pass gets cannot do that job. A refuter is not in the set: it
+// is handed the finding, not the lane's brief. `.claude/skills/security-sweep/SKILL.md` and
+// `.claude/README.md` say the same to the operator, beside the post-run audit that stands
+// behind it.
+const GITHUB_SIDE_BY_DESIGN = {
+  baseline: [],
+  gaps: ["scan:publication"],
+  fixes: ["scan:publication"],
+  unowned: [],
+};
+
 const PROFILE_FOR = {
   recon: "sweep-recon",
   scan: null, // a lane's profile depends on its brief; checked against the set instead
@@ -373,30 +387,37 @@ test("a finding's own field cannot get outside the fence that holds it", async (
   }
 });
 
-
 test("the dedupe pass is handed the tracker rather than sent to fetch it", async () => {
   // Before #80 the report stage ran `gh issue list` and `gh pr list` in its own shell, on the
   // host that holds both live tokens, and the bodies it read carried no author and no fence.
-  const { calls } = await run({ tracker: [MAINTAINER_ITEM] });
-  for (const { prompt, opts } of calls) {
-    // Outside the fence only: a `gh` line inside one is relayed text -- the injected order the
-    // stubs write into every free-text field is exactly that -- and quoting it is the point.
-    const { lines, inside } = fenceMap(prompt);
-    const own = lines.filter((_, index) => !inside[index]).join("\n");
-    for (const command of ["gh issue list", "gh pr list", "gh api", "gh issue view"]) {
-      assert.ok(
-        !own.includes(command),
-        `${opts.label}: a prompt still sends an agent to run \`${command}\``,
-      );
+  //
+  // Every lane set, because the briefs differ between them and `baseline` is the one whose
+  // briefs happen to name no `gh` command at all: a check that ran only the default would have
+  // read as this whole property while three lane sets went unexamined.
+  for (const lanes of ["baseline", "gaps", "fixes", "unowned"]) {
+    const { calls } = await run({ lanes, tracker: [MAINTAINER_ITEM] });
+    const reached = new Set();
+    for (const { prompt, opts } of calls) {
+      // Outside the fence only: a `gh` line inside one is relayed text -- the injected order
+      // the stubs write into every free-text field is exactly that -- and quoting it is the
+      // point of the fence, not a breach of it.
+      const { lines, inside } = fenceMap(prompt);
+      const own = lines.filter((_, index) => !inside[index]).join("\n");
+      if (/\bgh |Actions run/.test(own)) reached.add(opts.label);
     }
+    assert.deepEqual(
+      [...reached].sort(),
+      GITHUB_SIDE_BY_DESIGN[lanes],
+      `${lanes}: the prompts sent to the GitHub side are not the ones that say they are`,
+    );
+    const report = calls.find(({ opts }) => opts.label === "dedupe-report");
+    assert.ok(report, `${lanes}: the report stage did not run`);
+    assert.match(
+      report.prompt,
+      /BEGIN RELAYED DATA: tracker items/,
+      `${lanes}: the tracker listing does not reach the report stage as a labelled block`,
+    );
   }
-  const report = calls.find(({ opts }) => opts.label === "dedupe-report");
-  assert.ok(report, "the report stage did not run");
-  assert.match(
-    report.prompt,
-    /BEGIN RELAYED DATA: tracker items/,
-    "the tracker listing does not reach the report stage as a labelled relayed block",
-  );
 });
 
 test("only maintainer-authored tracker items reach the dedupe pass", async () => {
@@ -410,7 +431,8 @@ test("only maintainer-authored tracker items reach the dedupe pass", async () =>
       { ...STRANGER_ITEM, number: 902, authorAssociation: "CONTRIBUTOR" },
       { ...STRANGER_ITEM, number: 903, authorAssociation: "FIRST_TIME_CONTRIBUTOR" },
       { ...STRANGER_ITEM, number: 904, authorAssociation: undefined },
-      { ...STRANGER_ITEM, number: 905, authorAssociation: "owner " },
+      { ...STRANGER_ITEM, number: 905, authorAssociation: "owner" },
+      { ...STRANGER_ITEM, number: 906, authorAssociation: "OWNER " },
       "not an item",
       null,
     ],
@@ -422,7 +444,9 @@ test("only maintainer-authored tracker items reach the dedupe pass", async () =>
     "the surviving item does not carry the association it was kept for",
   );
   assert.ok(report.prompt.includes('"author": "jleavers"'), "a relayed item carries no author");
-  for (const marker of ["STRANGER-MARKER", "901", "902", "903", "904", "905", "not an item"]) {
+  for (const marker of [
+    "STRANGER-MARKER", "901", "902", "903", "904", "905", "906", "not an item",
+  ]) {
     assert.ok(
       !report.prompt.includes(marker),
       `a non-maintainer tracker item reached the dedupe pass (${marker})`,
@@ -472,4 +496,30 @@ test("no tracker listing means an empty block, not a missing one", async () => {
       "the prompt does not tell the stage what an empty listing means",
     );
   }
+});
+
+test("what the cap cut is in the prompt, not only in the journal", async () => {
+  // The dedupe pass is told to say which part of the tracker was searched, and it cannot see
+  // that the list it was handed is shorter than the one the launching session fetched. A cap
+  // reported only to the journal would have it reporting a search that never happened.
+  const many = Array.from({ length: 305 }, (_, index) => ({
+    ...MAINTAINER_ITEM,
+    number: 1000 + index,
+    body: `ITEM-${index}`,
+  }));
+  const { calls } = await run({ tracker: many });
+  const report = calls.find(({ opts }) => opts.label === "dedupe-report");
+  const { lines, inside } = fenceMap(report.prompt);
+  const own = lines.filter((_, index) => !inside[index]).join("\n");
+  assert.match(own, /300 of the 305 maintainer-authored items/, "the prompt does not say what it holds");
+  assert.match(own, /the remaining 5 were not relayed/, "the prompt does not say what was cut");
+  assert.match(own, /the report must say so/, "the stage is not told to pass the gap on");
+  assert.ok(report.prompt.includes("ITEM-299"), "the 300th item was not relayed");
+  assert.ok(!report.prompt.includes("ITEM-300"), "the cap did not bite");
+
+  // And an uncut listing says its size without the apology.
+  const { calls: whole } = await run({ tracker: many.slice(0, 4) });
+  const short = whole.find(({ opts }) => opts.label === "dedupe-report");
+  assert.match(short.prompt, /It holds 4 maintainer-authored item\(s\)\./);
+  assert.ok(!short.prompt.includes("were not relayed"), "an uncut listing reports a cut");
 });

@@ -231,15 +231,18 @@ What the repository does control is the text itself:
   whatever you are reading.
 - **A rule an agent has to obey is not a bound on who may write what it reads.**
   On a public repository any account can open an issue, edit its own and close
-  it, so tracker text reaching an agent that holds a shell or the operator's
-  credentials is bounded by authorship, not by the preamble alone (#80). The
-  sweep's dedupe pass no longer lists the tracker: the launching session fetches
-  it, filtered to author associations `OWNER`, `MEMBER` and `COLLABORATOR`, and
-  `maintainerAuthored()` in the workflow re-checks every item and carries its
-  author into the fence. This repository's issue forms are the same rule facing
-  outward: no field a stranger fills in is named, or rendered, as an executable
-  validation section, because an agent working this tracker reads a section of
-  that name as steps to run.
+  it, so where tracker text is an agent's *input to reason from* rather than the
+  thing it is auditing, bound it by authorship and not by the preamble alone
+  (#80). The sweep's dedupe pass no longer lists the tracker: the launching
+  session fetches it, filtered to author associations `OWNER`, `MEMBER` and
+  `COLLABORATOR`, and `maintainerAuthored()` in the workflow re-checks every
+  item and carries its author into the fence. The `publication` lanes still read
+  the GitHub side whole, because what a stranger wrote is exactly what they
+  audit; that is the shape an exception takes, and it is written down beside
+  the post-run audit rather than left implicit. This repository's issue forms
+  are the rule facing outward: no field a stranger fills in is named, or
+  rendered, as an executable validation section, because an agent working this
+  tracker reads a section of that name as steps to run.
 - **Text one agent hands another is that same text, one step further on.** The
   sweep's findings quote the code, commands and tracker prose they are about,
   because its evidence rule requires them to, so an imperative somebody wrote

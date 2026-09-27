@@ -47,8 +47,12 @@ a tool list cannot say "read-only `gh`". Its dedupe was `gh issue list` and `gh 
 the only way to run them was a shell that could equally run `gh issue close` — and what those
 listings returned was issue bodies with no author, from a tracker any GitHub account can write
 to. The listing is now the launching session's to fetch and filter to maintainer-authored
-items, and the workflow relays it to the stage through the fence like every other hand-off. No
-stage of the sweep reads the tracker.
+items, and the workflow relays it to the stage through the fence like every other hand-off.
+
+That is the dedupe pass and not the whole sweep: the `publication` lanes of the `gaps` and
+`fixes` sets read the GitHub side unfiltered, because what they are auditing is what a stranger
+can make public. `.claude/skills/security-sweep/SKILL.md` says so beside the audit that stands
+behind them.
 
 Which profile a lane gets is the `web` flag on the lane in the workflow, and the reason is a
 comment beside it.

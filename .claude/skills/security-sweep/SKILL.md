@@ -31,11 +31,19 @@ pass, the completeness critic and the report stage hold no shell at all, and onl
 brief sends it to a vendor's documentation or an advisory database holds the web.
 `.claude/README.md` carries the table, and the thing a tool list cannot say.
 
-**No agent in this sweep reads the tracker.** The report stage used to list it itself, and an
-issue body carries no author (#80): on a public repository any account can open one, edit its
-own and close it, so a stranger's self-closed "fixed" issue was enough to make a genuine new
-cluster read as a duplicate. You fetch the listing in phase 0, filtered to maintainer-authored
-items, and the workflow relays it to that stage through the same fence as every other hand-off.
+**The dedupe pass no longer reads the tracker.** It used to list it itself, and an issue body
+carries no author (#80): on a public repository any account can open one, edit its own and
+close it, so a stranger's self-closed "fixed" issue was enough to make a genuine new cluster
+read as a duplicate. You fetch the listing in phase 0, filtered to maintainer-authored items,
+and the workflow relays it to that stage through the same fence as every other hand-off. That
+stage holds no shell now, so there is no second way for it to look.
+
+**One kind of lane still reads the GitHub side, unfiltered and unfenced, and that is its job.**
+The `publication` lanes of the `gaps` and `fixes` sets are sent to every issue, comment, review
+comment and Actions run log, looking for a credential that becomes readable by anyone on the
+day the repository is public. The filtered listing cannot do that work: the text those lanes
+audit is precisely the text a stranger wrote. They hold a shell, and the post-run audit below
+is what stands behind them — do not read the paragraph above as covering them.
 
 After a run, audit what the agents actually ran before presenting: the per-agent transcripts sit
 beside the workflow's `journal.jsonl`, in the directory the task notification names. Look for:

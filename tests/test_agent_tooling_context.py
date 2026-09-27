@@ -108,6 +108,47 @@ def _shipped_text_files() -> list[Path]:
     return [path for path in _shipped_files() if path.suffix in TEXT_SUFFIXES]
 
 
+# The sweep text that sends its agent to the GitHub side on purpose, and why. Both are the
+# `publication` lane of a lane set, sent to every issue, comment, review comment and Actions
+# run log to find a credential that becomes readable by anyone on the day this repository is
+# public. The filtered listing the dedupe pass is handed cannot do that work: what a stranger
+# wrote is exactly what those lanes audit. They read unfiltered and unfenced, with a shell, and
+# SKILL.md says so beside the post-run audit that stands behind them. Anything else that
+# acquires it is a decision, and this set is where the decision is argued for.
+GITHUB_SIDE_BY_DESIGN = {"gaps/publication", "fixes/publication"}
+
+# How a brief says it: a `gh` subcommand, or GitHub's own name for the logs. Two markers rather
+# than one, because the `fixes/publication` brief names no command at all -- it says "all issue
+# and PR threads, #1 onwards" and leaves the agent to pick the call -- and a check keyed on
+# `gh` alone would have pinned one of the two exceptions and left the other invisible, which is
+# the failure mode this whole test exists to prevent.
+GITHUB_SIDE = re.compile(r"\bgh |Actions run")
+
+
+def _sweep_briefs(source: str) -> dict[str, str]:
+    """Every prompt the workflow writes, and every lane brief it interpolates into one.
+
+    A lane's `brief` is a template literal inside a `<SET>_LANES` array, not a `const
+    <name>Prompt`, and `scanPrompt` renders it in the prompt's own voice -- so a check that
+    reads only the prompt builders reads none of the text that actually reaches a scan agent.
+    The keys are `<lane set>/<lane key>`, spelled as `LANE_SETS` and `args.lanes` spell them.
+    """
+    texts = {
+        name: _prompt_body(source, name)
+        for name in re.findall(r"const (\w*[Pp]rompt\w*) = ", source)
+    }
+    sets = dict(re.findall(r"\n  (\w+): (\w+_LANES),", source))
+    assert sets, "no lane sets found; has LANE_SETS moved?"
+    for set_name, array in sets.items():
+        body = re.search(rf"const {array} = \[(.*?)\n\]\n", source, re.S)
+        assert body is not None, f"no array named {array}"
+        lanes = re.findall(r"key: '([^']+)',(.*?)\n  \}", body.group(1), re.S)
+        assert lanes, f"no lanes parsed out of {array}"
+        for key, brief in lanes:
+            texts[f"{set_name}/{key}"] = brief
+    return texts
+
+
 def _const_body_list(source: str, name: str) -> list[str]:
     """The string literals of ``const <name> = ['a', 'b']``, which is not a template literal."""
     match = re.search(rf"const {name} = \[([^\]]*)\]", source)
@@ -458,12 +499,23 @@ def test_no_sweep_stage_goes_and_reads_the_tracker() -> None:
     """
     source = WORKFLOW.read_text(encoding="utf-8")
 
-    # No prompt sends a stage to fetch it. `gh` is on the `PATH` of every stage that holds a
-    # shell, which is why this is about what the prompts ask for and not about the tool lists.
-    for name in re.findall(r"const (\w*[Pp]rompt\w*) = ", source):
-        body = _prompt_body(source, name)
-        for command in ("gh issue list", "gh pr list", "gh issue view", "gh pr view"):
-            assert command not in body, f"{name} still sends its agent to run `{command}`"
+    # Every prompt the workflow writes, and every lane brief it interpolates into one. The
+    # briefs are the half worth saying out loud: they live in `LANE_SETS`, not in a `*Prompt*`
+    # constant, and `scanPrompt` puts them in the prompt's own voice, outside the fence. A
+    # check scoped to the prompts alone would have read as this whole property while the lane
+    # briefs went unexamined.
+    #
+    # `gh` is on the `PATH` of every stage that holds a shell, so what is pinned is what the
+    # text asks for, not what the tool lists allow.
+    reaches_github = {
+        name for name, body in _sweep_briefs(source).items() if GITHUB_SIDE.search(body)
+    }
+    assert reaches_github == GITHUB_SIDE_BY_DESIGN, (
+        f"the sweep text that sends an agent to the GitHub side is {sorted(reaches_github)}, "
+        f"not {sorted(GITHUB_SIDE_BY_DESIGN)}. Tracker and Actions text an agent reads with a "
+        f"shell is bounded by nothing but the preamble (#80); a stage that needs it says so "
+        f"here, and SKILL.md and .claude/README.md say the same to the operator."
+    )
 
     # The filter is the script's, because the command that produces the listing is one line in
     # a skill document and the association is the whole of what makes an item trustworthy.
@@ -474,11 +526,13 @@ def test_no_sweep_stage_goes_and_reads_the_tracker() -> None:
     )
     filterer = source[source.index("const maintainerAuthored = ") :]
     filterer = filterer[: filterer.index("\n}\n")]
-    assert "MAINTAINER_ASSOCIATIONS.includes(association)" in filterer, (
+    assert "MAINTAINER_ASSOCIATIONS.includes(item.authorAssociation)" in filterer, (
         "maintainerAuthored() does not check the association, so args.tracker reaches the "
         "dedupe pass however the launching session built it"
     )
-    assert "author: item.author" in filterer, "a relayed tracker item does not carry its author"
+    assert "author: String(item.author" in filterer, (
+        "a relayed tracker item does not carry its author"
+    )
 
     # And it is applied: a listing that reached the relay unfiltered would leave every constant
     # above in place and change nothing about what the report stage reads.
@@ -522,8 +576,9 @@ def test_no_issue_form_asks_a_stranger_for_an_executable_section() -> None:
 def test_the_post_run_audit_looks_for_what_a_stage_still_holds() -> None:
     """Scoping is not the whole control, so the audit covers what the profiles cannot.
 
-    A shell can reach the network whatever the web tools say, and the report stage's `gh` can
-    write as well as list. SKILL.md's audit is what stands behind those, so it names them.
+    A shell can reach the network whatever the web tools say, and `gh` is on the `PATH` of
+    every stage that holds one -- the `publication` lanes, which are sent to the GitHub side
+    on purpose, included. SKILL.md's audit is what stands behind those, so it names them.
     """
     skill = SKILL.read_text(encoding="utf-8")
 

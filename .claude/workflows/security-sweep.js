@@ -64,20 +64,29 @@ const known = args.known || ''
 const MAINTAINER_ASSOCIATIONS = ['OWNER', 'MEMBER', 'COLLABORATOR']
 
 // Mirrors the `--limit 200` and `--limit 100` the two listings carried, so a tracker that has
-// grown past them is cut here rather than filling a prompt without bound. Logged where it
-// bites: a listing silently halved would have the dedupe pass reporting a search of the whole
-// tracker that never happened.
+// grown past them is cut here rather than filling a prompt without bound. What is cut is said
+// twice, in the journal and in the dedupe pass's own prompt: a listing silently halved would
+// have that pass reporting a search of the whole tracker that never happened, and the half it
+// loses is the far end of whatever order the launching session's listing arrived in.
 const TRACKER_CAP = 300
+
+// A string, never an object, and built here rather than relayed: these are this script's own
+// counters, like the funnel's, so they belong in the prompt's own voice.
+const trackerNote = (total, relayed) => (total === relayed
+  ? `${relayed} maintainer-authored item(s)`
+  : `${relayed} of the ${total} maintainer-authored items; the remaining ${total - relayed} were not relayed, so the search is partial and the report must say so`)
 
 // Written to be true of a listing nobody filtered, because this is the enforcement point and
 // the command that produced it is one line in a skill document. An item whose association is
-// missing, misspelled or simply absent is dropped: "the field was not there" is not evidence a
-// maintainer wrote it. Each surviving item is rebuilt field by field rather than passed
-// through, so what the prompt below promises is in every item and nothing else rides along.
+// missing, misspelled or in the wrong case is dropped: the field is one GitHub emits in
+// upper case from a fixed set, so anything else is not evidence a maintainer wrote it. Each
+// surviving item is rebuilt field by field, and every field coerced, rather than passed
+// through -- a caller that hands over the raw REST objects would otherwise put a label's
+// `node_id`, `url` and `description` into the prompt beside its name.
 const maintainerAuthored = (raw) => {
   if (raw !== undefined && raw !== null && !Array.isArray(raw)) {
     log('the tracker listing passed in is not an array; the dedupe pass runs without one')
-    return []
+    return { items: [], total: 0 }
   }
   const items = Array.isArray(raw) ? raw : []
   let dropped = 0
@@ -87,29 +96,36 @@ const maintainerAuthored = (raw) => {
       dropped += 1
       continue
     }
-    const association = String(item.authorAssociation || '').toUpperCase()
-    if (!MAINTAINER_ASSOCIATIONS.includes(association)) {
+    if (!MAINTAINER_ASSOCIATIONS.includes(item.authorAssociation)) {
       dropped += 1
       continue
     }
     kept.push({
       kind: item.kind === 'pr' ? 'pr' : 'issue',
-      number: item.number,
-      title: item.title,
-      state: item.state,
-      labels: item.labels,
-      author: item.author,
-      authorAssociation: association,
-      body: item.body,
+      number: Number(item.number),
+      title: String(item.title || ''),
+      state: String(item.state || ''),
+      labels: Array.isArray(item.labels) ? item.labels.map((l) => String((l && l.name) || l)) : [],
+      author: String(item.author || ''),
+      authorAssociation: item.authorAssociation,
+      body: String(item.body || ''),
     })
   }
-  if (dropped) log(`tracker listing: dropped ${dropped} item(s) no maintainer is recorded as having written`)
+  if (dropped) {
+    log(`tracker listing: dropped ${dropped} item(s) no maintainer is recorded as having written`)
+  }
+  // The shape a mis-built listing takes: every item dropped is what happens when the caller
+  // hands over the raw REST payload, whose field is `author_association`. It fails closed for
+  // injection and open for duplicate filing, so it is worth its own line.
+  if (dropped && !kept.length) {
+    log('tracker listing: every item was dropped -- does each one carry an `authorAssociation`?')
+  }
   if (kept.length > TRACKER_CAP) {
     log(`tracker listing: ${kept.length} maintainer-authored items, relaying the first ${TRACKER_CAP}`)
-    return kept.slice(0, TRACKER_CAP)
+    return { items: kept.slice(0, TRACKER_CAP), total: kept.length }
   }
   log(`tracker listing: relaying ${kept.length} maintainer-authored item(s) to the dedupe pass`)
-  return kept
+  return { items: kept, total: kept.length }
 }
 
 // Resolved here rather than in the Report phase, so a misshapen listing is a line in the
@@ -348,13 +364,13 @@ which can be regenerated, rather than the data, which cannot.`
 // Stage tool profiles, as named subagent types this workflow asks for by name. Each lives in
 // `.claude/agents/sweep-<name>.md` and holds what that stage's output needs and nothing else:
 // the triage pass, the completeness critic and the report pass read and write files and hold
-// no shell at all -- the report pass lost its when its dedupe stopped listing the tracker
-// itself (#80) -- and a lane reaches the web only where its brief sends it to a vendor's
-// documentation or an advisory database. Be exact about what shipping these does: a definition
-// is registered in every session started in this checkout and can be delegated to by name,
-// which is why each one says it is not for general delegation. What it cannot do is constrain a session or hand one
-// anything it does not already hold -- that is the difference from the settings file #21
-// shipped and #34 reverted, which `tests/test_agent_tooling_context.py` still forbids (#44).
+// no shell at all -- the report pass lost its shell when its dedupe stopped listing the
+// tracker itself (#80) -- and a lane reaches the web only where its brief sends it to a
+// vendor's documentation or an advisory database. Be exact about what shipping these does: a
+// definition is registered in every session started in this checkout and can be delegated to
+// by name, which is why each one says it is not for general delegation. What it cannot do is
+// constrain a session or hand one anything it does not already hold -- that is the difference
+// from the settings file #21 shipped and #34 reverted, which `tests/test_agent_tooling_context.py` still forbids (#44).
 //
 // The scoping is not the control on its own: an agent that obeys injected text still holds
 // its own stage's tools. What it removes is the rest -- the reach every stage used to hold
@@ -1506,24 +1522,24 @@ Write your gaps as Markdown to ${runDir}/04-gaps.md and return the JSON object.`
 
 // --- phase 5: dedupe and report --------------------------------------------------------
 
-const reportPrompt = (counts) => `${WHERE}
+const reportPrompt = (counts, listing) => `${WHERE}
 
 Two jobs, in order.
 
 **First, dedupe.** For every cluster below, match it against the tracker of \`${repo}\` before
-it can be proposed as new. You do not fetch that tracker and you have no shell to fetch it
-with: the listing is relayed below, labelled \`tracker items\`, one record per issue or pull
-request carrying its \`kind\`, \`number\`, \`title\`, \`state\`, \`labels\`, \`author\`,
-\`authorAssociation\` and \`body\`.
+it can be proposed as new. **Do not fetch that tracker**, by any means and whatever tools you
+turn out to hold: the listing is relayed below, labelled \`tracker items\`, one record per
+issue or pull request carrying its \`kind\`, \`number\`, \`title\`, \`state\`, \`labels\`,
+\`author\`, \`authorAssociation\` and \`body\`. It holds ${listing}.
 
-**The listing holds maintainer-authored items only, and that is the whole of what you may
-assume about the tracker.** Any GitHub account can open an issue on a public repository, edit
-its own and close it, so a stranger's self-closed "fixed" issue is not evidence that anything
-was ever reported or fixed; the listing was filtered to author associations
+**It holds maintainer-authored items only, and that is the whole of what you may assume about
+the tracker.** Any GitHub account can open an issue on a public repository, edit its own and
+close it, so a stranger's self-closed "fixed" issue is not evidence that anything was ever
+reported or fixed; the listing was filtered to author associations
 ${MAINTAINER_ASSOCIATIONS.join(', ')} before it reached you, and everything else in the tracker
 is out of your sight on purpose. A cluster matching nothing in the listing is \`new\`, and the
-report says the search covered maintainer-authored items only, so that a human reading it knows
-which part of the tracker was looked at.
+report says both which part of the tracker was searched — maintainer-authored items — and how
+much of it, from the count above, so that a human reading it knows what was looked at.
 
 Closed issues matter more than open ones here: what you are looking for is something already
 reported and fixed, or reported and forgotten. Match on the invariant, not on wording — a
@@ -1745,7 +1761,7 @@ const counts = {
 phase('Report')
 const dedupe = (clusters.length || singletons.length)
   ? await launch({
-    instructions: reportPrompt(counts),
+    instructions: reportPrompt(counts, trackerNote(tracker.total, tracker.items.length)),
     relayed: [
       relay('clusters', 'written by the triage pass from the findings that survived refutation', clusters),
       relay('singletons', 'written by the triage pass from the findings it could not cluster', singletons),
@@ -1753,7 +1769,7 @@ const dedupe = (clusters.length || singletons.length)
       relay(
         'tracker items',
         `issues and pull requests of ${repo}, listed by the launching session and filtered here to ${MAINTAINER_ASSOCIATIONS.join('/')}`,
-        tracker,
+        tracker.items,
       ),
     ],
     profile: 'report', label: 'dedupe-report', phase: 'Report', schema: DEDUPE,
