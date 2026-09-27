@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -213,7 +214,10 @@ def test_only_the_relay_publishes_a_port_and_it_targets_the_dashboard(config: di
 def test_the_published_port_reaches_this_machine_alone_by_default(request, rendered: str) -> None:
     """The dashboard has no login, so the default publish is the one the operator can widen
     on purpose: without a host address here it would answer every LAN peer and every
-    co-resident container, neither of which a host firewall stops (#15). Checked with no
+    co-resident container, neither of which the host's own `INPUT` chain sees, since Docker
+    forwards those packets to the container rather than delivering them (#15). What this
+    setting is worth also depends on the engine keeping its side (#79), which is the pin
+    below's half. Checked with no
     `.env` as well, because that is the reading `.env.example` would otherwise cover up."""
     (port,) = request.getfixturevalue(rendered)["services"]["ingress"]["ports"]
     assert port.get("host_ip") == "127.0.0.1"
@@ -224,6 +228,89 @@ def test_the_dashboard_answers_only_loopback_names_by_default(request, rendered:
     """The other half: a loopback publish alone still answers a rebound page as same-origin."""
     setting = request.getfixturevalue(rendered)["services"]["codervis"]["environment"]
     assert parse_allowed_hosts(setting[ALLOWED_HOSTS_ENV]) == {"localhost", "127.0.0.1", "::1"}
+
+
+# ------------------------------------------------------------- what the documents promise
+# The pins above are the shape the deployment has; these are what the documents tell a stranger
+# that shape gives them. They read the files directly, so unlike the rest of this module they
+# need no Docker CLI and run everywhere.
+#
+# Neither promise holds unconditionally (#79). What the loopback publish keeps out is the
+# engine's to keep: before 28.0 nothing drops traffic routed from off the host to a container's
+# own address, and 28.2.0 through 28.3.2 lose Docker's own rules on every firewalld reload. And
+# the whole-tree mounts leave readable whatever each CLI writes into its tree, which is a good
+# deal more than the transcripts the app reads. A document that states either promise without
+# the condition it rests on is the defect, because it is what a stranger decides on.
+
+# The release where both loopback exposures are closed, and the chain that closes them for an
+# operator who cannot reach it. A host INPUT rule does not: Docker's DNAT and its forward rules
+# run ahead of that chain, which is what the old text generalised into "a host firewall cannot".
+ENGINE_FLOOR = "28.3.3"
+WORKING_CHAIN = "DOCKER-USER"
+FRONT_DOOR_DOCS = ("README.md", ".env.example", "docker-compose.yml")
+FRONT_DOOR_SECTION = "### The engine and your front door"
+
+
+def _document(name: str) -> str:
+    return (ROOT / name).read_text()
+
+
+def _readme_section(heading: str) -> str:
+    """The text under one README heading, so a pin cannot be satisfied from somewhere else."""
+    readme = _document("README.md")
+    assert heading in readme, f"README has no {heading!r} section"
+    depth = len(heading) - len(heading.lstrip("#"))
+    rest = readme[readme.index(heading) + len(heading) :]
+    following = re.search(r"(?m)^#{1,%d} " % depth, rest)
+    return " ".join((rest[: following.start()] if following else rest).split())
+
+
+@pytest.mark.parametrize("name", FRONT_DOOR_DOCS)
+def test_every_document_that_promises_the_loopback_publish_names_its_condition(name: str) -> None:
+    """All three say what publishing on `DASHBOARD_BIND` keeps out, so all three carry what it
+    rests on. A reader who only ever opens `.env.example` is the one this is for."""
+    text = _document(name)
+    assert "DASHBOARD_BIND" in text, f"{name} no longer makes the claim; move this pin"
+    assert ENGINE_FLOOR in text, (
+        f"{name} says what the loopback publish keeps out without naming the engine release "
+        f"that makes it so ({ENGINE_FLOOR})"
+    )
+    assert WORKING_CHAIN in text, (
+        f"{name} leaves an operator below {ENGINE_FLOOR} with nothing that closes it: a host "
+        f"INPUT rule does not, and a {WORKING_CHAIN} rule does"
+    )
+
+
+def test_the_readme_has_one_place_that_says_what_an_older_engine_leaves_open() -> None:
+    """Two different lapses are fixed by one release, and an operator's own version decides
+    which they have. Naming the floor alone would leave 28.2.0-28.3.2 reading as closed."""
+    section = _readme_section(FRONT_DOOR_SECTION)
+    for phrase in ("28.0", "28.2.0", "28.3.2", ENGINE_FLOOR, "firewalld", WORKING_CHAIN):
+        assert phrase in section, f"{FRONT_DOOR_SECTION} does not name {phrase}"
+
+
+# What the mount exposes is what each CLI writes into its own tree, so the Caveats' list is
+# derived from that rather than from the paths codervis reads (#79). `~/.claude.json` is the
+# one to keep: the file itself is outside both mounts, and its copies under `backups/` are not.
+VENDOR_WRITTEN = (
+    "~/.claude.json",
+    "backups/",
+    "debug/",
+    "file-history/",
+    "paste-cache/",
+    "config.toml",
+)
+
+
+@pytest.mark.parametrize("written", VENDOR_WRITTEN)
+def test_the_caveat_on_the_whole_tree_mounts_names_what_each_cli_writes_there(written: str) -> None:
+    """The mounts fall under the compromised-dependency principal #45 accepts. What a list of
+    examples decides is whether a stranger's acceptance is an informed one, so the list names
+    the contents worth most rather than the ones easiest to describe."""
+    caveats = _readme_section("### Caveats")
+    assert written in caveats, (
+        f"README's Caveats do not name {written}, which the whole-tree mount leaves readable"
+    )
 
 
 @pytest.mark.parametrize("service", ["codervis", "egress", "ingress"])
@@ -247,8 +334,8 @@ def test_the_gateway_services_run_with_nothing_to_spare(config: dict, service: s
     assert "no-new-privileges:true" in (svc.get("security_opt") or [])
     assert "volumes" not in svc
 
-# The pins above need the Docker CLI to render the compose file, so they skip where it is
-# absent unless `REQUIRE_DOCKER` says they must not. That makes CI's own configuration part of
+# Every pin above that renders the compose file needs the Docker CLI, so those skip where it
+# is absent unless `REQUIRE_DOCKER` says they must not. That makes CI's own configuration part of
 # the pin: drop the variable and every assertion in this file goes back to skipping silently on
 # a runner whose image lost the CLI, with a green build to show for it. These two need nothing
 # but the workflow file, so they run everywhere.
