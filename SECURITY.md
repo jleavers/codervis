@@ -7,6 +7,12 @@ reporting](https://github.com/jleavers/codervis/security/advisories/new).** The 
 a draft advisory only you and the maintainer can see, and it is the route to use rather than a
 public issue.
 
+**If that link does not offer you a form** — private reporting can be switched off — open an
+issue titled `Security contact request` and put nothing else in it: no description, no file,
+no hint of what you found. The maintainer will open a private advisory and invite you to it.
+The tracker is public, so please do not describe the problem there, in the issue or in a
+comment.
+
 Include what you would want if you were fixing it: the commit, what an attacker can reach, and
 the smallest sequence that shows it. A proof of concept is welcome but not required — a clear
 description of the mechanism is worth more than a working exploit. **Check anything you paste
