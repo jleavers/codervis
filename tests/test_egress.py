@@ -2910,9 +2910,10 @@ def test_no_result_line_carries_the_proxy_variables_userinfo(
     printed = [egress.format_result(ok, line) for ok, line in results]
     assert printed, "the check produced no lines to assert about"
     assert not [line for line in printed if PROXY_SECRET in line], printed
-    # Redacted, not dropped: the proxy half still names the host that was dialled, or the
-    # operator cannot tell which proxy the verdict is about.
-    assert [line for line in printed if "egress" in line], printed
+    # Redacted, not dropped: the proxy half still names the host *and port* that were dialled,
+    # or the operator cannot tell which proxy the verdict is about. Asserted as `egress:3128`
+    # rather than `egress`, which `egress-probe.invalid` would satisfy on its own.
+    assert [line for line in printed if "egress:3128" in line], printed
     assert [line for line in printed if egress.USERINFO_REDACTED in line], printed
 
 
@@ -2986,17 +2987,53 @@ async def test_no_result_line_carries_an_upstream_variables_userinfo(
     assert [line for line in printed if egress.USERINFO_REDACTED in line], printed
 
 
-def test_upstream_urls_are_stripped_the_way_configured_proxy_already_stripped() -> None:
-    """`urlsplit` strips leading whitespace itself, so a value with a stray space in front of
-    it is the one in force for the live client. The check has to read it the same way rather
-    than quoting the whitespace back and treating the value as something else."""
-    assert upstream_urls({"CLAUDE_AI_HOST": "  https://usage.example.test  "})[0] == (
+def test_upstream_urls_are_read_the_way_the_live_clients_urllib_reads_them() -> None:
+    """Leading whitespace only, and the same set `urlsplit` removes.
+
+    The live clients hand the raw variable to `Request`, which lstrips it, so the leading case
+    is genuinely the value in force and the check has to agree. The *trailing* case is the
+    opposite: `urlsplit` deliberately keeps it, so tidying it away here would have the check
+    report `admitted` about a host the client never reaches.
+    """
+    assert upstream_urls({"CLAUDE_AI_HOST": "  https://usage.example.test"})[0] == (
         "CLAUDE_AI_HOST",
         "https://usage.example.test",
     )
-    # Whitespace only is no override at all, which is what `configured_proxy` does with one.
-    assert upstream_urls({"CLAUDE_AI_HOST": "   "})[0] == ("CLAUDE_AI_HOST", CLAUDE_AI_HOST)
-    assert upstream_targets({"CHATGPT_HOST": " https://c.test:8443 "})[1] == ("c.test", 8443)
+    assert upstream_urls({"CLAUDE_AI_HOST": "\t\n https://usage.example.test"})[0][1] == (
+        "https://usage.example.test"
+    )
+    # Trailing whitespace is part of the host urllib hands the client, so it is part of the
+    # host this check asks the proxy about, and the answer is a refusal rather than a pass.
+    assert upstream_urls({"CLAUDE_AI_HOST": "https://usage.example.test "})[0][1] == (
+        "https://usage.example.test "
+    )
+    assert upstream_targets({"CLAUDE_AI_HOST": "https://usage.example.test "})[0] == (
+        "usage.example.test ",
+        443,
+    )
+    # A whitespace-only override does not fall back to the default. `Request` refuses it, so
+    # the client is broken and the check has to say which variable broke it -- collapsing it to
+    # the default would report a pass about `claude.ai`, which that client will never reach.
+    assert upstream_urls({"CLAUDE_AI_HOST": "   "})[0] == ("CLAUDE_AI_HOST", "")
+    assert upstream_targets({"CLAUDE_AI_HOST": "   "})[0] is None
+    # Unset and empty are the genuine "no override" cases, and those do take the default.
+    assert upstream_urls({})[0] == ("CLAUDE_AI_HOST", CLAUDE_AI_HOST)
+    assert upstream_urls({"CLAUDE_AI_HOST": ""})[0] == ("CLAUDE_AI_HOST", CLAUDE_AI_HOST)
+    assert upstream_targets({"CHATGPT_HOST": " https://c.test:8443"})[1] == ("c.test", 8443)
+
+
+@UPSTREAM_VARIABLES
+@asynctest
+async def test_a_whitespace_only_override_is_a_failed_line_and_not_a_silent_default(
+    variable: str,
+) -> None:
+    """The regression this nearly became: `.strip() or default` turned a value the live client
+    refuses into a pass asserting the default host was admitted."""
+    async with _CheckRig() as rig:
+        results = await rig.run({**rig.environ, variable: "   "})
+    failures = [line for ok, line in results if not ok]
+    assert [line for line in failures if line.startswith(f"{variable}=")], results
+    assert not [line for ok, line in results if ok and line.startswith(f"{variable}: ")], results
 
 
 @UNREADABLE_UPSTREAMS

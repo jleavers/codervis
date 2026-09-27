@@ -310,14 +310,19 @@ the proxy; or the probe could not be made
 proxy is configured that way — so every line that quotes the variable back
 prints it with the userinfo replaced by `<userinfo redacted>`, keeping the
 scheme, host and port so you can still see which proxy was dialled. The same
-goes for a `CLAUDE_AI_HOST`/`CHATGPT_HOST` that carries one. A proxy with no
-userinfo prints exactly as you configured it, which is what the sample above
-shows. This matters because CI's `Egress bound` job runs this command into a
-public Actions log.
+goes for a `CLAUDE_AI_HOST`/`CHATGPT_HOST` that carries one. An ordinary proxy
+URL with no userinfo prints exactly as you configured it, which is what the
+sample above shows — the redaction errs towards taking too much, so a value with
+an `@` somewhere other than in front of the host loses the part before it too.
+This matters because CI's `Egress bound` job runs this command into a public
+Actions log.
 
 An override the command cannot read a host and a port out of — an unclosed
-bracket, or a port that is not a number — is a `FAIL` line naming the variable
-rather than a crash, and the other upstream is still probed and still reported.
+bracket, a port that is not a number, or nothing but whitespace — is a `FAIL`
+line naming the variable rather than a crash, and the other upstream is still
+probed and still reported. The value is read exactly as the live client's urllib
+reads it, leading whitespace and all, so a trailing space is reported as part of
+the host rather than tidied away: the client dials it that way too.
 
 The address on the on-link line is whatever the container's own routing tables
 yield — the first address of each on-link subnet, plus any gateway a route

@@ -247,17 +247,33 @@ def configured_proxy(environ: Mapping[str, str]) -> str | None:
     return None
 
 
+# What `urlsplit` takes off the front of a URL before reading one: WHATWG's
+# C0-control-or-space set, U+0000 to U+0020. Spelled out rather than imported from
+# `urllib.parse._WHATWG_C0_CONTROL_OR_SPACE`, which is private.
+URL_LEADING_STRIP = "".join(chr(code) for code in range(0x21))
+
+
 def upstream_urls(environ: Mapping[str, str]) -> list[tuple[str, str]]:
     """``(variable, base URL)`` for each live client, as the clients themselves read them.
 
-    Stripped, which `configured_proxy` already did for the proxy variable and this did not.
-    `urlsplit` strips leading whitespace of its own accord, so `" https://claude.ai"` is a
-    value the live clients use and the check has to report as the one in force -- rather than
-    quoting the whitespace back into a line and reading the value as something else than
-    urllib does.
+    **Leading whitespace only, and the same set `urlsplit` removes**, because the point is to
+    read the override exactly as the live client's urllib will. `app/quota.py` and
+    `app/codex_quota.py` hand the raw value to `Request`, which lstrips it, so
+    `" https://claude.ai"` really is `https://claude.ai` to them and the check must say so.
+
+    Stripping the *trailing* end would be the check asserting something untrue:
+    `urlsplit` deliberately does not (CPython: "Only lstrip url as some applications rely on
+    preserving trailing space"), so `"https://claude.ai "` leaves the client dialling a host
+    with a space in it, and a check that tidied the value away would report `claude.ai:443
+    admitted` about a host that client never reaches.
+
+    A whitespace-only override is left as the empty string rather than falling back to the
+    default, for the same reason: it is a value `Request` refuses, so it has to reach
+    `split_upstream_url` as unreadable and be reported against the variable that holds it.
     """
     return [
-        (name, (environ.get(name) or "").strip() or default) for name, default in UPSTREAM_ENV
+        (name, (environ.get(name) or default).lstrip(URL_LEADING_STRIP))
+        for name, default in UPSTREAM_ENV
     ]
 
 
@@ -289,15 +305,16 @@ def upstream_targets(environ: Mapping[str, str]) -> list[tuple[str, int] | None]
     variable's name beside the answer -- which is what the `FAIL` line for an unreadable value
     is named from.
     """
-    targets: list[tuple[str, int] | None] = []
-    for _, url in upstream_urls(environ):
-        parts = split_upstream_url(url)
-        if parts is None:
-            targets.append(None)
-            continue
-        default = 80 if parts.scheme == "http" else DEFAULT_TARGET_PORT
-        targets.append((parts.hostname or "", parts.port or default))
-    return targets
+    return [_upstream_target(url) for _, url in upstream_urls(environ)]
+
+
+def _upstream_target(url: str) -> tuple[str, int] | None:
+    """One base URL's ``(host, port)``, or ``None`` where urllib will not read one out of it."""
+    parts = split_upstream_url(url)
+    if parts is None:
+        return None
+    default = 80 if parts.scheme == "http" else DEFAULT_TARGET_PORT
+    return parts.hostname or "", parts.port or default
 
 
 def normalise_host(host: str) -> str | None:
@@ -651,10 +668,10 @@ def _authority_of(url: str) -> tuple[str, str]:
     under: `mailto:a@b` comes back as `<userinfo redacted>@b`, which loses a scheme nobody may
     configure here and discloses nothing.
     """
-    # Leading whitespace is skipped rather than refused, because `urlsplit` strips it: a
-    # `CLAUDE_AI_HOST` with a stray space in front of it is a value urllib reads fine, and so a
-    # live credential. Without this the scheme match fails and the scheme is lost to
-    # over-redaction -- no leak, but no reason to accept one either.
+    # Leading whitespace is skipped rather than refused, because `urlsplit` skips it too.
+    # Both callers inside this module strip before they get here, so this is for a caller that
+    # does not: without it the scheme match fails and the scheme is lost to over-redaction --
+    # no leak, but no reason to accept one either.
     lead = len(url) - len(url.lstrip("\t\n\r\f\v "))
     head, rest = url[:lead], url[lead:]
     marked = rest.find("://")
@@ -1718,7 +1735,11 @@ def check(
         )
     else:
         results.append((True, f"{shown} refused {PROBE_DENIED_HOST} ({refused[0]})"))
-    for (name, url), target in zip(upstream_urls(environ), upstream_targets(environ)):
+    # One read of the environment, not two: `upstream_targets` recomputes `upstream_urls`
+    # internally, and a mapping that changed between the two calls would pair a variable's name
+    # with a different value's target.
+    urls = upstream_urls(environ)
+    for (name, url), target in zip(urls, [_upstream_target(url) for _, url in urls]):
         # Both of these quote the variable's value back, and an upstream base URL can carry
         # userinfo exactly as the proxy variable can, so both go through `without_userinfo`.
         if target is None:
@@ -1726,10 +1747,10 @@ def check(
                 (
                     False,
                     f"{name}={without_userinfo(url)} is not a URL with a host and a numeric "
-                    "port -- an unclosed bracket, a port that is not a number, or no "
-                    "https:// in front of it: the host the live client would dial cannot be "
-                    "read out of it, so nothing was asked about it and the bound is "
-                    "unverified for that upstream",
+                    "port -- an unclosed bracket, a port that is not a number, no host in it, "
+                    "or nothing in front of the host that urllib reads as a scheme: the host "
+                    "the live client would dial cannot be read out of it, so nothing was "
+                    "asked about it and the bound is unverified for that upstream",
                 )
             )
             continue
