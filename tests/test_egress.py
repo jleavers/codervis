@@ -2104,7 +2104,7 @@ def test_resolved_addresses_asks_for_both_families() -> None:
     """
     asked: list[object] = []
 
-    def getaddrinfo(host: str, port: object, family: int, kind: int):
+    def getaddrinfo(host: str, port: object, family: int, kind: int, flags: int = 0):
         asked.append((host, family, kind))
         return [
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("172.30.0.1", 0)),
