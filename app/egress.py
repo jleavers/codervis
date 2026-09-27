@@ -611,9 +611,7 @@ def without_userinfo(url: str) -> str:
     where it is not, the last one removes more than the first, which is the safe direction for
     a function whose whole job is that nothing before it survives.
     """
-    prefix, sep, rest = url.partition("//")
-    if not sep:
-        prefix, rest = "", url
+    prefix, rest = _authority_of(url)
     # The authority ends at the first of these or at the end of the string; anything after it
     # is kept as written, since a userinfo cannot be there.
     cut = min((at for at in (rest.find(c) for c in "/?#") if at != -1), default=len(rest))
@@ -621,7 +619,34 @@ def without_userinfo(url: str) -> str:
     _, at, host_port = authority.rpartition("@")
     if not at:
         return url
-    return f"{prefix}{sep}{USERINFO_REDACTED}@{host_port}{tail}"
+    return f"{prefix}{USERINFO_REDACTED}@{host_port}{tail}"
+
+
+# A scheme, as RFC 3986 spells one. Matched rather than assumed, because where the authority
+# begins is the whole of what `without_userinfo` depends on being right.
+_SCHEME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+-.")
+
+
+def _authority_of(url: str) -> tuple[str, str]:
+    """``(everything before the authority, the rest)``, for a URL with a scheme or without one.
+
+    Splitting on the *first* `//` is not this, and the difference is a leak: the scheme-less
+    spelling urllib accepts (`user:secret@egress:3128`) may carry a path, and
+    `user:secret@egress:3128/x//y` would then be framed with `y` as its authority, find no `@`
+    in it, and hand the value back whole. So a `//` counts as the start of an authority only
+    where a scheme really precedes it, or where it begins the string.
+
+    A value with neither is taken as an authority from its first character, which is what the
+    scheme-less spelling is. Where that reading is wrong the cost is over-redaction and never
+    under: `mailto:a@b` comes back as `<userinfo redacted>@b`, which loses a scheme nobody may
+    configure here and discloses nothing.
+    """
+    marked = url.find("://")
+    if marked > 0 and set(url[:marked]) <= _SCHEME_CHARS:
+        return url[: marked + 3], url[marked + 3 :]
+    if url.startswith("//"):
+        return "//", url[2:]
+    return "", url
 
 
 def split_proxy_url(proxy_url: str) -> SplitResult | None:

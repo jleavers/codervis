@@ -2795,6 +2795,19 @@ PROXY_SECRET = "s3cr3t-egress-password"
         # An `@` past the authority is not userinfo and the authority before it still is.
         (f"http://user:{PROXY_SECRET}@egress:3128/a@b", "http://<userinfo redacted>@egress:3128/a@b"),
         ("http://egress:3128/a@b", "http://egress:3128/a@b"),
+        # Where the authority begins, which is the whole of what this depends on being right.
+        # Splitting on the first `//` would frame `y` as the authority here, find no `@` in it
+        # and hand the value back whole -- the scheme-less spelling is the one that can have a
+        # path in front of a `//` with no scheme to mark the authority off.
+        (f"user:{PROXY_SECRET}@egress:3128/x//y", "<userinfo redacted>@egress:3128/x//y"),
+        (f"user:{PROXY_SECRET}@egress:3128/x://y", "<userinfo redacted>@egress:3128/x://y"),
+        (f"//user:{PROXY_SECRET}@egress:3128", "//<userinfo redacted>@egress:3128"),
+        (f"HTTP://user:{PROXY_SECRET}@egress:3128", "HTTP://<userinfo redacted>@egress:3128"),
+        # A reading that is wrong costs over-redaction and never under: no scheme is recognised
+        # here, so the whole value is read as an authority and the scheme goes with the cut.
+        (f"mailto:user:{PROXY_SECRET}@egress", "<userinfo redacted>@egress"),
+        ("", ""),
+        ("egress", "egress"),
     ],
 )
 def test_without_userinfo_drops_the_credential_and_keeps_the_host_and_port(
@@ -2805,6 +2818,25 @@ def test_without_userinfo_drops_the_credential_and_keeps_the_host_and_port(
     comes back exactly as written, which is why README's sample output is unchanged."""
     assert without_userinfo(url) == expected
     assert PROXY_SECRET not in without_userinfo(url)
+
+
+def test_no_userinfo_survives_without_userinfo_whatever_surrounds_it() -> None:
+    """The table above is the readable statement; this is the one that cannot be gamed.
+
+    The credential is placed in userinfo position under every combination of the things that
+    decide where the authority starts and ends -- a scheme or none, a leading `//`, a path, a
+    query, a fragment, a second `@` further on. A framing bug shows up here as a value handed
+    back whole, which is exactly how the first draft of `_authority_of` failed.
+    """
+    survived = []
+    for scheme in ("http://", "https://", "", "//", "HTTP://", "socks5://"):
+        for user in (f"user:{PROXY_SECRET}", PROXY_SECRET, f"{PROXY_SECRET}:"):
+            for host in ("egress:3128", "egress", "[::1]:3128", "[::1"):
+                for tail in ("", "/", "/x", "/x//y", "/x://y", "?q=1", "#f", "/a@b"):
+                    url = f"{scheme}{user}@{host}{tail}"
+                    if PROXY_SECRET in without_userinfo(url):
+                        survived.append(url)
+    assert not survived, survived
 
 
 @pytest.mark.parametrize(
