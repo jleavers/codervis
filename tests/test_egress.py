@@ -85,6 +85,7 @@ from app.egress import (
     split_allow,
     split_upstream_url,
     upstream_targets,
+    upstream_urls,
     without_userinfo,
 )
 from app.quota import CLAUDE_AI_HOST
@@ -2792,9 +2793,23 @@ PROXY_SECRET = "s3cr3t-egress-password"
         # redaction has to hold without the parser.
         (f"http://user:{PROXY_SECRET}@[::1", "http://<userinfo redacted>@[::1"),
         ("https://[::1", "https://[::1"),
-        # An `@` past the authority is not userinfo and the authority before it still is.
-        (f"http://user:{PROXY_SECRET}@egress:3128/a@b", "http://<userinfo redacted>@egress:3128/a@b"),
-        ("http://egress:3128/a@b", "http://egress:3128/a@b"),
+        # A delimiter *inside* the credential. Where the authority ends is deliberately not
+        # consulted, because a credential is exactly the part of a URL that may not be well
+        # formed: stopping the authority at the first `/` closed the frame before the `@`,
+        # found no `@` in it, and handed the whole value back. A base64 secret carries `/`
+        # routinely, so this was the common case rather than the exotic one.
+        (f"http://user:ab/{PROXY_SECRET}@egress:3128", "http://<userinfo redacted>@egress:3128"),
+        (f"http://user:ab?{PROXY_SECRET}@egress:3128", "http://<userinfo redacted>@egress:3128"),
+        (f"http://user:ab#{PROXY_SECRET}@egress:3128", "http://<userinfo redacted>@egress:3128"),
+        # The cost of that rule, and the direction this function is allowed to be wrong in: an
+        # `@` in a path takes the authority with it. No proxy or upstream base URL has such a
+        # path, and losing a host from a line is not losing a credential.
+        (f"http://user:{PROXY_SECRET}@egress:3128/a@b", "http://<userinfo redacted>@b"),
+        ("http://egress:3128/a@b", "http://<userinfo redacted>@b"),
+        # Leading whitespace: `urlsplit` strips it, so this is a value urllib reads and a live
+        # credential. The scheme survives, rather than being lost to over-redaction.
+        (f" http://user:{PROXY_SECRET}@egress:3128", " http://<userinfo redacted>@egress:3128"),
+        (f"\thttp://user:{PROXY_SECRET}@egress:3128", "\thttp://<userinfo redacted>@egress:3128"),
         # Where the authority begins, which is the whole of what this depends on being right.
         # Splitting on the first `//` would frame `y` as the authority here, find no `@` in it
         # and hand the value back whole -- the scheme-less spelling is the one that can have a
@@ -2829,8 +2844,19 @@ def test_no_userinfo_survives_without_userinfo_whatever_surrounds_it() -> None:
     back whole, which is exactly how the first draft of `_authority_of` failed.
     """
     survived = []
-    for scheme in ("http://", "https://", "", "//", "HTTP://", "socks5://"):
-        for user in (f"user:{PROXY_SECRET}", PROXY_SECRET, f"{PROXY_SECRET}:"):
+    for scheme in ("http://", "https://", "", "//", "HTTP://", "socks5://", " http://", "\thttp://"):
+        # The credential is varied too, and with the delimiters in it: a secret that is not
+        # well formed is the case the first draft got wrong, and a table that only ever put a
+        # tidy credential in userinfo position would not have seen it.
+        for user in (
+            f"user:{PROXY_SECRET}",
+            PROXY_SECRET,
+            f"{PROXY_SECRET}:",
+            f"user:ab/{PROXY_SECRET}",
+            f"user:ab?{PROXY_SECRET}",
+            f"user:ab#{PROXY_SECRET}",
+            f"user:{PROXY_SECRET}@x",
+        ):
             for host in ("egress:3128", "egress", "[::1]:3128", "[::1"):
                 for tail in ("", "/", "/x", "/x//y", "/x://y", "?q=1", "#f", "/a@b"):
                     url = f"{scheme}{user}@{host}{tail}"
@@ -2928,6 +2954,49 @@ async def test_no_line_of_a_real_checks_output_carries_the_proxys_userinfo() -> 
     assert all(ok for ok, _ in results), printed
     assert not [line for line in printed if PROXY_SECRET in line], printed
     assert [line for line in printed if egress.USERINFO_REDACTED in line], printed
+
+
+@UPSTREAM_VARIABLES
+@pytest.mark.parametrize(
+    "url",
+    [
+        # Both branches that quote an upstream value back: the one that cannot be read, and the
+        # one that is readable but not `https://`. README claims the same redaction for these
+        # variables as for the proxy, and `check` calls `without_userinfo` on both lines.
+        pytest.param(f"https://user:{PROXY_SECRET}@[::1", id="unreadable"),
+        pytest.param(f"http://user:{PROXY_SECRET}@usage.example.test", id="not-https"),
+        pytest.param(f"https://user:{PROXY_SECRET}@usage.example.test:notaport", id="bad-port"),
+        # A stray space in `.env` is an ordinary slip, and `urlsplit` strips it -- so this is a
+        # value the live client really uses, carrying a credential that really works.
+        pytest.param(f" http://user:{PROXY_SECRET}@usage.example.test", id="leading-space"),
+    ],
+)
+@asynctest
+async def test_no_result_line_carries_an_upstream_variables_userinfo(
+    variable: str, url: str
+) -> None:
+    """An upstream base URL can carry userinfo exactly as the proxy variable can, and the lines
+    that quote it back are the lines this change adds and rewords."""
+    async with _CheckRig() as rig:
+        results = await rig.run({**rig.environ, variable: url})
+    printed = [egress.format_result(ok, line) for ok, line in results]
+    assert not [line for line in printed if PROXY_SECRET in line], printed
+    # The variable is still named, and still redacted rather than dropped.
+    assert [line for line in printed if line.startswith(f"[FAIL] {variable}=")], printed
+    assert [line for line in printed if egress.USERINFO_REDACTED in line], printed
+
+
+def test_upstream_urls_are_stripped_the_way_configured_proxy_already_stripped() -> None:
+    """`urlsplit` strips leading whitespace itself, so a value with a stray space in front of
+    it is the one in force for the live client. The check has to read it the same way rather
+    than quoting the whitespace back and treating the value as something else."""
+    assert upstream_urls({"CLAUDE_AI_HOST": "  https://usage.example.test  "})[0] == (
+        "CLAUDE_AI_HOST",
+        "https://usage.example.test",
+    )
+    # Whitespace only is no override at all, which is what `configured_proxy` does with one.
+    assert upstream_urls({"CLAUDE_AI_HOST": "   "})[0] == ("CLAUDE_AI_HOST", CLAUDE_AI_HOST)
+    assert upstream_targets({"CHATGPT_HOST": " https://c.test:8443 "})[1] == ("c.test", 8443)
 
 
 @UNREADABLE_UPSTREAMS
