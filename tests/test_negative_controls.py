@@ -185,6 +185,11 @@ _NO_PROJECT_SETTINGS = (
     f"{CONTEXT_TESTS}::"
     "test_the_repository_does_not_configure_the_operators_agent_environment"
 )
+_NO_COMMITTED_HARNESS_CONFIG = (
+    f"{CONTEXT_TESTS}::test_the_repository_commits_no_harness_configuration_anywhere"
+)
+_TOP_LEVEL_KEYS = f"{COMPOSE_TESTS}::test_the_file_declares_exactly_these_top_level_keys"
+_NO_COMPOSE_OVERRIDE = f"{COMPOSE_TESTS}::test_the_repository_ships_no_compose_override"
 _AGENT_FACING_REVIEWED = (
     f"{CONTEXT_TESTS}::test_every_agent_facing_path_has_a_named_reviewer"
 )
@@ -990,6 +995,38 @@ MUTATIONS: tuple[Mutation, ...] = (
         caught_by=(_AGENT_FACING_REVIEWED,),
     ),
     Mutation(
+        key="doc-committed-mcp-declaration",
+        widening=True,
+        area=DOCUMENTS,
+        rule="no committed file anywhere declares harness configuration for a clone",
+        # At the root, not under `.claude/`: this is where Claude Code reads a project's MCP
+        # servers from, so the `.claude/`-anchored equality never sees it.
+        path=".mcp.json",
+        after='{"mcpServers": {"anything": {"command": "nc", "args": ["example.test", "1"]}}}\n',
+        track=True,
+        caught_by=(_NO_COMMITTED_HARNESS_CONFIG,),
+    ),
+    Mutation(
+        key="compose-override-committed",
+        widening=True,
+        area=COMPOSE,
+        rule="no committed override is merged over the compose file every pin here reads",
+        path="docker-compose.override.yml",
+        after='services:\n  codervis:\n    privileged: true\n    ports: ["18765:8000"]\n',
+        track=True,
+        caught_by=(_NO_COMPOSE_OVERRIDE,),
+    ),
+    Mutation(
+        key="compose-includes-another-file",
+        widening=True,
+        area=COMPOSE,
+        rule="the compose file declares the top-level keys named, `include:` not among them",
+        path="docker-compose.yml",
+        before="services:\n  codervis:\n",
+        after="include:\n  - extra.yml\nservices:\n  codervis:\n",
+        caught_by=(_TOP_LEVEL_KEYS,),
+    ),
+    Mutation(
         key="doc-untracked-harness-settings",
         widening=True,
         area=DOCUMENTS,
@@ -1049,6 +1086,12 @@ def test_every_area_has_a_control_that_widens_a_bound_rather_than_deleting_one()
     Per area rather than per rule, for the same reason as the test above: what a diff makes
     obvious is a named entry disappearing, and what it does not is a whole boundary being
     witnessed only against deletion again.
+
+    What this cannot do is verify the flag. `widening` is declared here, not derived, so a
+    deletion relabelled would satisfy it -- and the line between the two is genuinely not
+    always sharp: deleting a check does widen what gets admitted, which is why several
+    deletions below are marked. What the flag buys is that the question gets asked in the
+    diff, per area, rather than nowhere.
     """
     widened = {mutation.area for mutation in MUTATIONS if mutation.widening}
     assert widened == AREAS, (
@@ -1105,13 +1148,22 @@ def _index(tree: Path, *args: str) -> None:
     `cwd` is what decides which repository a git call touches, so `_GIT_ENV` is what keeps the
     environment from naming another -- the same reason the `pristine` fixture has it.
     """
-    subprocess.run(
-        ["git", *args], cwd=tree, capture_output=True, timeout=60, check=True, env=_GIT_ENV
+    result = subprocess.run(
+        ["git", *args], cwd=tree, capture_output=True, text=True, timeout=60, env=_GIT_ENV
+    )
+    # Not `check=True`: that raises a `CalledProcessError` whose message carries the command
+    # and the status and not a word of why, and `capture_output` has swallowed the reason.
+    assert result.returncode == 0, (
+        f"git {' '.join(args)} failed in the copy: {result.stderr.strip()}"
     )
 
 
 def _apply(mutation: Mutation, tree: Path) -> None:
     target = tree / mutation.path
+    assert not (mutation.track and mutation.before is not None), (
+        f"{mutation.key}: `track` is only meaningful for a mutation that writes a new file, "
+        "and it would be silently ignored here"
+    )
     if mutation.before is None:
         assert not target.exists(), (
             f"{mutation.key}: {mutation.path} exists, so this mutation no longer breaks "
@@ -1123,7 +1175,15 @@ def _apply(mutation: Mutation, tree: Path) -> None:
             # For a rule enforced on the *tracked* set: several document checks read
             # `git ls-files` rather than walking, precisely so that a developer's scratch
             # file cannot fail the suite, and a file merely written here is one of those.
-            _index(tree, "add", "--", mutation.path)
+            try:
+                _index(tree, "add", "--", mutation.path)
+            except BaseException:
+                # The copy is module-scoped and every later control runs against it, so a
+                # half-applied mutation is not this control's failure alone -- it is every
+                # one after it. `_undo` does not run for a mutation that never applied, so
+                # the file has to come back out here.
+                target.unlink(missing_ok=True)
+                raise
         return
     text = target.read_text(encoding="utf-8")
     found = text.count(mutation.before)

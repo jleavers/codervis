@@ -22,6 +22,14 @@ a *widening* has to go through rather than around (#78) -- a key that grants a c
 module all passed the "is the good value still here" pins this half replaces. It also runs
 wherever pytest does, which is why `tests/test_negative_controls.py` can witness the compose
 rules in a checkout with no Docker installed.
+
+Be exact about what reading the file rather than the rendered config does *not* see, since
+that is the half the rendered pins still carry: what `${VAR:-default}` becomes once a `.env` or
+a shell variable has been applied, which is what `bare_config` above is for; and anything
+merged in from another file. The second is closed here rather than left to CI -- the top-level
+key set, `extends:` on every service, and the absence of a committed `docker-compose.override.yml`
+are each pinned below, because an override is merged by every `docker compose` command and
+every assertion in this half reads the base file alone.
 """
 
 from __future__ import annotations
@@ -591,3 +599,57 @@ def test_the_dashboards_exposure_settings_are_the_ones_named_here(
 ) -> None:
     environment = source["services"]["codervis"]["environment"]
     assert environment.get(name) == DASHBOARD_EXPOSURE[name], name
+
+
+#: The top-level keys the file declares. `include:` and a service-level `extends:` each pull in
+#: another file, and a second `x-` anchor can carry anything a service then merges: each is a
+#: way for the tables above to describe less of the running stack than they appear to. Pinning
+#: the set is what makes reading this file, rather than the rendered config, an assertion
+#: instead of an assumption.
+TOP_LEVEL_KEYS = frozenset({"x-logging", "services", "networks"})
+
+
+def test_the_file_declares_exactly_these_top_level_keys(source: dict) -> None:
+    assert set(source) == TOP_LEVEL_KEYS, (
+        "a new top-level key in docker-compose.yml. `include:` merges another file into this "
+        "one, and every pin in this half reads this file alone -- so a key that brings in "
+        "configuration from elsewhere has to be a decision, and the pins have to follow it."
+    )
+
+
+@pytest.mark.parametrize("service", sorted(SERVICE_KEYS))
+def test_no_service_extends_another_file(source: dict, service: str) -> None:
+    """`extends:` is absent from every key set above; this says which key and why."""
+    assert "extends" not in source["services"][service]
+
+
+#: What `docker compose` merges on top of `docker-compose.yml` without being asked. A committed
+#: one is a second file granting `privileged: true` or a published port, with every pin in this
+#: module green: they read the base file, and the rendered half is CI-only.
+OVERRIDE_NAMES = (
+    "docker-compose.override.yml",
+    "docker-compose.override.yaml",
+    "compose.override.yml",
+    "compose.override.yaml",
+)
+
+
+def test_the_repository_ships_no_compose_override() -> None:
+    """An override in an operator's own checkout is theirs; a committed one is the project's.
+
+    Tracked rather than present, for that reason -- the file is the documented way to adapt a
+    deployment locally, and this is only about what a clone gets.
+    """
+    listed = subprocess.run(
+        ["git", "ls-files", "-z", "--", *OVERRIDE_NAMES],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    ).stdout
+    committed = [name for name in listed.split("\0") if name]
+    assert not committed, (
+        f"{committed} is merged over docker-compose.yml by every `docker compose` command, "
+        "and every pin in this file reads the base file alone."
+    )
