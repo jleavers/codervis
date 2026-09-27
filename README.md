@@ -305,6 +305,20 @@ the proxy; or the probe could not be made
 (`example.com:443 was not settled`), which is `unverified` like the two
 `FAIL`s above — nothing was established either way.
 
+**The command is safe to paste.** A proxy variable may carry userinfo —
+`HTTPS_PROXY=http://user:secret@egress:3128` is valid, and an authenticating
+proxy is configured that way — so every line that quotes the variable back
+prints it with the userinfo replaced by `<userinfo redacted>`, keeping the
+scheme, host and port so you can still see which proxy was dialled. The same
+goes for a `CLAUDE_AI_HOST`/`CHATGPT_HOST` that carries one. A proxy with no
+userinfo prints exactly as you configured it, which is what the sample above
+shows. This matters because CI's `Egress bound` job runs this command into a
+public Actions log.
+
+An override the command cannot read a host and a port out of — an unclosed
+bracket, or a port that is not a number — is a `FAIL` line naming the variable
+rather than a crash, and the other upstream is still probed and still reported.
+
 The address on the on-link line is whatever the container's own routing tables
 yield — the first address of each on-link subnet, plus any gateway a route
 names — so it differs between deployments,
@@ -559,6 +573,7 @@ browser-disabled cards are dimmed.
 | Every chip reads `unavailable` and `docker compose logs egress` shows a refused host | The host is not on the egress allow-list: a `CLAUDE_AI_HOST`/`CHATGPT_HOST` override without a matching `EGRESS_ALLOW` entry, or the vendor redirected to another host. |
 | Browser shows `Host not served by this dashboard` (`403`) | The name in the address bar is not in `DASHBOARD_ALLOWED_HOSTS`. Add it (and widen `DASHBOARD_BIND` if the request comes from another machine), then `docker compose up -d`. |
 | `python -m app.egress check` reports a `FAIL` on the on-link line, naming an address that accepted or refused | Something that is neither this container nor the proxy is on-link. On an engine older than 28.0 that is the host: a 26.x engine ignores `gateway_mode_ipv4` without a word and keeps its address on the bridge. Upgrade, or see [Check the egress bound](#check-the-egress-bound) for the firewall rule that replaces it — and for the case where the address is another container in this project. |
+| `python -m app.egress check` reports a `FAIL` naming `CLAUDE_AI_HOST=` or `CHATGPT_HOST=` and says the bound is `unverified for that upstream` | That override is not a URL with a host and a numeric port — an unclosed `[` in an IPv6 literal, or a port that is not a number. Nothing could be asked about that upstream, so nothing was. Fix the value in `.env` and run `docker compose up -d`; the live client cannot reach it either. |
 | `docker compose up` fails creating the `inside` network with `unknown gateway mode isolated` | A 27.x engine: it knows the option but not that value. Upgrade to 28.0+, or delete the `driver_opts` block from the `inside` network and use the firewall rule instead. |
 | `docker compose up` reports `dependency failed to start` | The `egress` proxy is unhealthy, and the dashboard waits for it. Check `docker compose logs egress`. |
 

@@ -83,7 +83,9 @@ from app.egress import (
     serve,
     serve_until_stopped,
     split_allow,
+    split_upstream_url,
     upstream_targets,
+    without_userinfo,
 )
 from app.quota import CLAUDE_AI_HOST
 
@@ -2279,6 +2281,49 @@ def test_upstream_targets_are_the_hosts_the_clients_are_configured_for() -> None
     ) == [("usage.example.test", 8443), ("c.test", 443)]
 
 
+# The upstream base URLs a *value* can take that urllib will not read a target out of. Each one
+# used to come out of `python -m app.egress check` as a traceback (#48): `urlsplit` refuses the
+# first outright, and `SplitResult.port` parses lazily so the second raises only once something
+# asks -- which `upstream_targets` did, and `check` called it.
+UNREADABLE_UPSTREAMS = pytest.mark.parametrize(
+    "url",
+    [
+        pytest.param("https://[::1", id="unclosed-bracket"),
+        pytest.param("https://claude.ai:notanumber", id="port-not-a-number"),
+        pytest.param("https://claude.ai:-1", id="negative-port"),
+        pytest.param("https:///no-host", id="no-host"),
+    ],
+)
+
+# Both variables, every time. `tests/test_payload_contract.py`'s rule is that a case naming a
+# shape one provider can have runs for the other too, and these two are the same variable in
+# two spellings: a guard added for one and not the other is the drift that rule exists to stop.
+UPSTREAM_VARIABLES = pytest.mark.parametrize("variable", ["CLAUDE_AI_HOST", "CHATGPT_HOST"])
+
+
+@UNREADABLE_UPSTREAMS
+def test_an_upstream_url_urllib_will_not_read_yields_no_target_rather_than_raising(
+    url: str,
+) -> None:
+    assert split_upstream_url(url) is None
+
+
+@UNREADABLE_UPSTREAMS
+@UPSTREAM_VARIABLES
+def test_upstream_targets_reports_an_unreadable_variable_as_no_target(
+    variable: str, url: str
+) -> None:
+    """`None` in the slot rather than a raise, and in step with `upstream_urls`, so the caller
+    still knows which variable the gap belongs to."""
+    slot = ["CLAUDE_AI_HOST", "CHATGPT_HOST"].index(variable)
+    targets = upstream_targets({variable: url})
+    assert len(targets) == 2
+    assert targets[slot] is None
+    # The other variable keeps its own default target: one bad value costs its own line and no
+    # more, rather than emptying the half.
+    assert targets[1 - slot] == [("claude.ai", 443), ("chatgpt.com", 443)][1 - slot]
+
+
 class _CheckRig:
     """A proxy, an allowed upstream and the environment the dashboard container would have."""
 
@@ -2718,6 +2763,203 @@ async def test_the_check_reports_a_proxy_variable_that_will_not_parse(monkeypatc
     failures = [line for ok, line in results if not ok]
     assert failures and all("is not a proxy URL" in line for line in failures)
     assert set(dialled) == {"172.30.0.1"}
+
+
+# --- what a result line may quote back (#48) ------------------------------------------
+#
+# `check` is a command README tells operators to run and CI's `Egress bound` job runs into a
+# public Actions log, and `http://user:secret@egress:3128` is a valid `HTTPS_PROXY`. So the
+# variable is never printed as configured.
+
+# Distinctive enough that a substring search for it cannot match anything the wording itself
+# contributes, which is what makes "no line contains it" a real assertion.
+PROXY_SECRET = "s3cr3t-egress-password"
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        # Every spelling urllib takes for a proxy variable, with userinfo and without.
+        ("http://egress:3128", "http://egress:3128"),
+        ("egress:3128", "egress:3128"),
+        ("http://egress", "http://egress"),
+        (f"http://user:{PROXY_SECRET}@egress:3128", "http://<userinfo redacted>@egress:3128"),
+        # A token as the whole userinfo, with no colon in it: the username half is as much a
+        # credential as the password half, so the cut is the whole of it rather than the tail.
+        (f"http://{PROXY_SECRET}@egress:3128", "http://<userinfo redacted>@egress:3128"),
+        (f"user:{PROXY_SECRET}@egress:3128", "<userinfo redacted>@egress:3128"),
+        # A value urllib will not read is a value that still reaches a printed line, so the
+        # redaction has to hold without the parser.
+        (f"http://user:{PROXY_SECRET}@[::1", "http://<userinfo redacted>@[::1"),
+        ("https://[::1", "https://[::1"),
+        # An `@` past the authority is not userinfo and the authority before it still is.
+        (f"http://user:{PROXY_SECRET}@egress:3128/a@b", "http://<userinfo redacted>@egress:3128/a@b"),
+        ("http://egress:3128/a@b", "http://egress:3128/a@b"),
+    ],
+)
+def test_without_userinfo_drops_the_credential_and_keeps_the_host_and_port(
+    url: str, expected: str
+) -> None:
+    """Host, port and scheme survive -- the operator has to see which proxy was dialled -- and
+    so does the `@`, so an authenticating proxy still reads as one. A URL carrying no userinfo
+    comes back exactly as written, which is why README's sample output is unchanged."""
+    assert without_userinfo(url) == expected
+    assert PROXY_SECRET not in without_userinfo(url)
+
+
+@pytest.mark.parametrize(
+    "proxy",
+    [
+        f"http://user:{PROXY_SECRET}@egress:3128",
+        f"http://{PROXY_SECRET}@egress:3128",
+        f"user:{PROXY_SECRET}@egress:3128",
+    ],
+)
+@pytest.mark.parametrize(
+    ("verdict", "answer"),
+    [
+        # One per branch of the proxy half, because each writes its own line and each used to
+        # write the variable into it: the refusal that passes, the tunnel that fails, and a
+        # proxy that could not be reached at all.
+        ("refused", lambda _p, host, *_a, **_k: (403, "Forbidden") if host == PROBE_DENIED_HOST else (200, "OK")),
+        ("tunnelled", lambda *_a, **_k: (200, "OK")),
+        ("unreachable", lambda *_a, **_k: "egress:3128 did not answer (TimeoutError)"),
+    ],
+)
+def test_no_result_line_carries_the_proxy_variables_userinfo(
+    monkeypatch, proxy: str, verdict: str, answer
+) -> None:
+    """The acceptance criterion, driven over every line the proxy half can produce.
+
+    Stubbed rather than dialled: what is asserted is the wording, and the wording is the same
+    whichever way the probes answered. The peer line is in it too -- `peer_addresses` formats
+    the variable into `PEER_PROXY`, which is the fourth site and the one an operator is most
+    likely to paste somewhere.
+    """
+    gateway = "172.30.0.1"
+    monkeypatch.setattr(egress, "probe_proxy", answer)
+    monkeypatch.setattr(egress, "own_addresses", frozenset)
+    monkeypatch.setattr(egress, "resolved_addresses", lambda _host: frozenset({gateway}))
+
+    results = check(
+        {"HTTPS_PROXY": proxy},
+        direct=("example.com", 443),
+        direct_probe=lambda *_a, **_k: DIRECT_NO_ROUTE,
+        on_link=[gateway],
+        on_link_probe=lambda *_a, **_k: ON_LINK_NO_ANSWER,
+        timeout_s=1,
+    )
+    printed = [egress.format_result(ok, line) for ok, line in results]
+    assert printed, "the check produced no lines to assert about"
+    assert not [line for line in printed if PROXY_SECRET in line], printed
+    # Redacted, not dropped: the proxy half still names the host that was dialled, or the
+    # operator cannot tell which proxy the verdict is about.
+    assert [line for line in printed if "egress" in line], printed
+    assert [line for line in printed if egress.USERINFO_REDACTED in line], printed
+
+
+@pytest.mark.parametrize(
+    "proxy",
+    [
+        # Neither dials anything or resolves a name: `probe_proxy` returns on the value alone,
+        # which is what lets this stay hermetic while driving the real function.
+        f"http://user:{PROXY_SECRET}@[::1",
+        f"ftp://user:{PROXY_SECRET}@egress:3128",
+    ],
+)
+def test_probe_proxy_redacts_the_variable_it_quotes_back(proxy: str) -> None:
+    """Its own two failure strings, which `check` interpolates straight into a printed line.
+
+    They are a fourth and fifth leak site rather than the three in `check`'s own wording, and a
+    fix that covered only `check` would have left them: `f"{shown}: {refused}"` prints whatever
+    came back here verbatim.
+    """
+    answer = probe_proxy(proxy, "example.com", timeout_s=0.5)
+    assert isinstance(answer, str)
+    assert "proxy URL" in answer
+    assert PROXY_SECRET not in answer
+
+
+@asynctest
+async def test_no_line_of_a_real_checks_output_carries_the_proxys_userinfo() -> None:
+    """End to end against a proxy that really answers, which is where the criterion is claimed.
+
+    The userinfo is inert here -- `egress` requires no authentication and urllib drops it
+    before dialling -- so the run is the passing one an operator would have, with the one
+    difference the issue is about.
+    """
+    async with _CheckRig() as rig:
+        host_port = rig.url.removeprefix("http://")
+        environ = {**rig.environ, "HTTPS_PROXY": f"http://user:{PROXY_SECRET}@{host_port}"}
+        results = await rig.run(environ)
+    printed = [egress.format_result(ok, line) for ok, line in results]
+    assert all(ok for ok, _ in results), printed
+    assert not [line for line in printed if PROXY_SECRET in line], printed
+    assert [line for line in printed if egress.USERINFO_REDACTED in line], printed
+
+
+@UNREADABLE_UPSTREAMS
+@UPSTREAM_VARIABLES
+@asynctest
+async def test_an_upstream_variable_urllib_will_not_read_is_a_failed_line_not_a_traceback(
+    variable: str, url: str
+) -> None:
+    """The second half of #48: `check` used to raise out of `upstream_targets` for these.
+
+    Both variables, and the other one still gets its own line -- one unreadable value costs its
+    own assertion and does not take the other upstream's with it.
+    """
+    async with _CheckRig() as rig:
+        results = await rig.run({**rig.environ, variable: url})
+    failures = [line for ok, line in results if not ok]
+    assert [line for line in failures if line.startswith(f"{variable}=")], results
+    assert [line for line in failures if "the bound is unverified for that upstream" in line]
+    # The other upstream was still probed and still passed, so the gap is one line wide.
+    other = "CHATGPT_HOST" if variable == "CLAUDE_AI_HOST" else "CLAUDE_AI_HOST"
+    assert [line for ok, line in results if ok and line.startswith(f"{other}: ")], results
+
+
+@UNREADABLE_UPSTREAMS
+@UPSTREAM_VARIABLES
+def test_the_check_command_exits_nonzero_for_an_upstream_it_cannot_read(
+    variable: str, url: str, capsys, monkeypatch
+) -> None:
+    """Through `main`, because the exit status is the whole of what CI's `Egress bound` job
+    reads: a traceback exits non-zero too, and this is what says the command reported instead
+    of crashing."""
+    monkeypatch.setattr(
+        egress,
+        "probe_proxy",
+        lambda _p, host, *_a, **_k: (403, "Forbidden") if host == PROBE_DENIED_HOST else (200, "OK"),
+    )
+    monkeypatch.setattr(egress, "own_addresses", frozenset)
+    monkeypatch.setattr(egress, "resolved_addresses", lambda _host: frozenset({"172.30.0.1"}))
+
+    # `main` calls `check(os.environ)` with no probes, and the two probe parameters are
+    # defaults bound at definition -- patching the module attributes would not reach them. So
+    # the real `check` is wrapped rather than replaced: its body, which is what is under test,
+    # runs unchanged and only the two things that would dial are supplied.
+    real_check = egress.check
+    monkeypatch.setattr(
+        egress,
+        "check",
+        lambda environ: real_check(
+            environ,
+            direct=("example.com", 443),
+            direct_probe=lambda *_a, **_k: DIRECT_NO_ROUTE,
+            on_link=["172.30.0.1"],
+            on_link_probe=lambda *_a, **_k: ON_LINK_NO_ANSWER,
+            timeout_s=1,
+        ),
+    )
+    for name in PROXY_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://egress:3128")
+    monkeypatch.setenv(variable, url)
+
+    assert egress.main(["check"]) == 1
+    printed = capsys.readouterr().out.splitlines()
+    assert [line for line in printed if line.startswith(f"[FAIL] {variable}=")], printed
 
 
 def test_the_on_link_half_fails_when_it_is_given_no_ports() -> None:
