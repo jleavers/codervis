@@ -277,19 +277,27 @@ def upstream_urls(environ: Mapping[str, str]) -> list[tuple[str, str]]:
 def split_upstream_url(url: str) -> SplitResult | None:
     """A live client's base URL as urllib reads one, or ``None`` where it will not read one.
 
-    ``split_proxy_url``'s rule, applied to the other pair of variables an operator sets (#48).
-    Two shapes come back as ``None``: one `urlsplit` refuses outright (`[::1`, an unclosed
-    bracket), and one whose port is not a number -- `SplitResult.port` parses lazily, so a
-    value that split cleanly still raises the first time anything asks for its port. Both used
-    to come out of `python -m app.egress check` as a traceback rather than as a `FAIL` line
-    naming the variable, which is the one thing that command must not do.
+    ``split_proxy_url``'s rule for the other pair of variables an operator sets (#48), plus a
+    stricter one, because the two are read by different things at the far end. A proxy
+    variable is read by `urlsplit` in the live clients too -- that is what urllib's own
+    `ProxyHandler` uses -- so agreeing with `urlsplit` is agreeing with the client. An upstream
+    base URL goes through `Request` and `http.client`, which are stricter than `urlsplit` in
+    ways that matter here, so this function has to be too.
+
+    Shared with `split_proxy_url`: one `urlsplit` refuses outright (`[::1`, an unclosed
+    bracket); one whose port is not a number, since `SplitResult.port` parses lazily and a
+    value that split cleanly still raises the first time anything asks; and one naming port
+    `0`. The first two used to come out of `python -m app.egress check` as a traceback rather
+    than as a `FAIL` line naming the variable, which is the one thing that command must not do.
 
     A URL with no host is ``None`` too. There is no host for a live client to dial and none for
     the check to ask the proxy about, so it is the same answer as a value that would not parse.
 
     So is one carrying a control character, and that case is here because `urlsplit` is the
-    *more* forgiving of the two readers: it drops `\t`, `\r` and `\n` from anywhere in a URL
-    and ignores a C0 control in front of the scheme, while the live client keeps them --
+    *more* forgiving of the two readers, in two different ways. It drops `\t`, `\r` and `\n`
+    from anywhere in a URL and ignores a C0 control in front of the scheme, while the live
+    client keeps them; and `\x7f`, which it does *not* drop, it hands back inside a host name
+    that `http.client` will not dial -- its disallowed set is `[\x00-\x20\x7f]`. Either way --
     `Request` reads `"\x01https://claude.ai"` as the scheme `\x01https`, which the opener then
     refuses outright, and `http.client` refuses to dial a host holding one, which is what
     `"https://claude.ai\t"` and a trailing space come to. Reading such a value as a host and a
@@ -706,12 +714,18 @@ def split_proxy_url(proxy_url: str) -> SplitResult | None:
     a deployment that was whole.
 
     ``None`` where urllib will not parse it at all (``[::1``, an unclosed bracket), so that it
-    is reported by the caller whose job that is rather than raised out of `check`.
+    is reported by the caller whose job that is rather than raised out of `check`. ``None``
+    for a port of ``0`` too, and for the same reason `split_upstream_url` refuses one: it is
+    falsy, so `parts.port or DEFAULT_PORT` read `http://egress:0` as the proxy on 3128 --
+    probing the one that works and passing the whole check, while the live client's urllib
+    dials port 0 and is refused (#48).
     """
     try:
-        return urlsplit(proxy_url if "//" in proxy_url else f"//{proxy_url}")
+        parts = urlsplit(proxy_url if "//" in proxy_url else f"//{proxy_url}")
+        port = parts.port
     except ValueError:
         return None
+    return None if port == 0 else parts
 
 
 # --- name resolution, under a deadline ------------------------------------------------
@@ -1763,7 +1777,8 @@ def check(
                 (
                     False,
                     f"{name}={without_userinfo(url)} is not a URL with a host and a numeric "
-                    "port -- an unclosed bracket, a port that is not a number in 1-65535, a "
+                    "port -- an unclosed bracket, a port that is there but is not a number in "
+                    "1-65535, a "
                     "control character, no host in it, or nothing in front of the host that "
                     "urllib reads as a scheme: the host the live client would dial cannot be "
                     "read out of it, so nothing was asked about it and the bound is "

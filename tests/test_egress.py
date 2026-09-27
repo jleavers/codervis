@@ -83,6 +83,7 @@ from app.egress import (
     serve,
     serve_until_stopped,
     split_allow,
+    split_proxy_url,
     split_upstream_url,
     upstream_targets,
     upstream_urls,
@@ -3041,30 +3042,28 @@ def test_upstream_urls_are_read_the_way_the_live_clients_urllib_reads_them() -> 
 
 
 @pytest.mark.parametrize(
-    "url",
+    ("url", "urllib_host"),
     [
-        # `urlsplit` is the more forgiving reader of the two: it ignores a C0 control in front
-        # of the scheme and drops `\t\r\n` from anywhere. The client keeps them -- `Request`
-        # reads the first as the scheme `\x01https` -- so reading a host out of these would
-        # pass the check on a configuration the client cannot use.
-        "\x01https://usage.example.test",
-        "https://usage.example.test\t",
-        "https://usage.\rexample.test",
-        "https://usage.example.test\n",
-        # `http.client`'s own disallowed set is `[\x00-\x20\x7f]`, so DEL belongs here too.
-        "https://usage.example.test\x7f",
+        # `urlsplit` is the more forgiving reader of the two, in two different ways, and the
+        # second value here is what it would have handed over -- the host that would have been
+        # probed and reported. Pinning it is what anchors the rule to its reason rather than
+        # leaving it a rule someone could delete as arbitrary.
+        #
+        # It normalises these away, so the host it reads is the clean one, while the client
+        # keeps them: `Request` reads the first as the scheme `\x01https`.
+        ("\x01https://usage.example.test", "usage.example.test"),
+        ("https://usage.example.test\t", "usage.example.test"),
+        ("https://usage.\rexample.test", "usage.example.test"),
+        ("https://usage.example.test\n", "usage.example.test"),
+        # DEL is the opposite case: `urlsplit` keeps it, and hands back a host `http.client`
+        # will not dial -- its disallowed set is `[\x00-\x20\x7f]`.
+        ("https://usage.example.test\x7f", "usage.example.test\x7f"),
     ],
 )
 def test_a_control_character_makes_an_upstream_unreadable_rather_than_normalised(
-    url: str,
+    url: str, urllib_host: str
 ) -> None:
-    # What `urlsplit` would have made of it, so the case is pinned against the reason the rule
-    # exists rather than against a rule someone could delete as arbitrary: it reads a host out
-    # of every one of these, and that host is what would have been probed and reported.
-    # Two families -- the ones it normalises the character away from, where the host it reads
-    # is the clean one, and `\x7f`, which it keeps and which is undialable all the same.
-    assert urlsplit(url).hostname is not None
-    assert urlsplit(url).hostname.startswith("usage.example.test")
+    assert urlsplit(url).hostname == urllib_host
     assert split_upstream_url(url) is None
     assert upstream_targets({"CLAUDE_AI_HOST": url})[0] is None
 
@@ -3145,6 +3144,30 @@ def test_the_check_command_exits_nonzero_for_an_upstream_it_cannot_read(
     assert egress.main(["check"]) == 1
     printed = capsys.readouterr().out.splitlines()
     assert [line for line in printed if line.startswith(f"[FAIL] {variable}=")], printed
+
+
+def test_port_zero_is_refused_in_both_readers_because_nothing_dials_it() -> None:
+    """`0` is falsy, so `parts.port or <default>` read it as the default port -- and that is a
+    pass on a deployment that reaches nothing.
+
+    Both readers, because the proxy variable is the one the whole command is about:
+    `HTTPS_PROXY=http://egress:0` had `check` probe the proxy that *works* on 3128 and print a
+    green line, while the live client's urllib dials port 0 and is refused. `:0080` is not the
+    same thing -- it is port 80, which is what the proxy's own `parse_connect_target` makes of
+    it too, so the two readers agree on that as well.
+    """
+    assert urlsplit("http://egress:0").port == 0, "the premise: urllib hands 0 back as a port"
+    assert split_proxy_url("http://egress:0") is None
+    assert split_upstream_url("https://claude.ai:0") is None
+    assert upstream_targets({"CLAUDE_AI_HOST": "https://claude.ai:0"})[0] is None
+    assert parse_connect_target("claude.ai:0") is None
+
+    # A port that is merely written oddly is still that port, in every reader.
+    assert split_proxy_url("http://egress:0080").port == 80
+    assert upstream_targets({"CLAUDE_AI_HOST": "https://claude.ai:0080"})[0] == ("claude.ai", 80)
+    assert parse_connect_target("claude.ai:0080") == ("claude.ai", 80)
+    # And no port at all still means the scheme's default rather than a refusal.
+    assert upstream_targets({"CLAUDE_AI_HOST": "https://claude.ai"})[0] == ("claude.ai", 443)
 
 
 def test_the_on_link_half_fails_when_it_is_given_no_ports() -> None:
