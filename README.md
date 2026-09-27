@@ -15,8 +15,9 @@ coral** as you approach the limit.
 - [Prerequisites](#prerequisites) · [Setup](#setup) · [Run](#run) · [Test](#test)
 - [What you see](#what-you-see) · [Troubleshooting](#troubleshooting)
 - [Security notes](#security-notes) — who can reach it, and where a token can go
-- [The engine and your front door](#the-engine-and-your-front-door) — what an
-  engine older than 28.3.3 leaves open, and the rule that closes it
+- [The engine and your front door](#the-engine-and-your-front-door) (under
+  [Run](#run)) — what an engine older than 28.3.3 leaves open, and the rule
+  that closes it
 - [Contributing](CONTRIBUTING.md) · [Security policy](SECURITY.md) · [Licence](#licence)
 
 ## How it works
@@ -188,12 +189,13 @@ link out of them.
     stack with the host still on that bridge, saying nothing.
     [Check the egress bound](#check-the-egress-bound) has both, and what to do
     if you cannot upgrade.
-  - **The loopback publish needs 28.3.3+.** Before 28.0 a machine on the same
-    network segment reaches the dashboard whatever address its port was
-    published on, and 28.2.0 through 28.3.2 reopen that on every firewalld
-    reload. [The engine and your front door](#the-engine-and-your-front-door)
-    says what that exposes, and the rule that closes it where you cannot
-    upgrade.
+  - **The loopback publish needs 28.0+, and 28.3.3+ wherever firewalld
+    runs.** Before 28.0 a machine on the same network segment reaches the
+    dashboard whatever address its port was published on. 28.0 closed that;
+    28.2.0 through 28.3.2 reopen it on every firewalld reload, and 28.3.3 is
+    where it stays closed. [The engine and your front
+    door](#the-engine-and-your-front-door) says what that exposes, and the rule
+    that closes it where you cannot upgrade.
 - Either or both of, installed and signed in on the host:
   - Claude Code (so `~/.claude/.credentials.json` exists)
   - Codex CLI (so `~/.codex/auth.json` exists)
@@ -323,11 +325,12 @@ docker version --format '{{.Server.Version}}'
 
 Two paths, and on an engine that old the publish address closes neither:
 
-- **The container's own address.** `ingress` listens on port 8000 inside this
-  project's bridge network, and reaching it involves no published mapping at
-  all: a peer that can route to that subnet — on a segment where nothing stops
-  it adding the route — connects to that address and port directly. 28.0 is
-  where the engine began dropping traffic routed to a container from off the
+- **The container's own address.** `ingress` listens on port 8000 on this
+  project's `outside` bridge — the one network here the host holds an address
+  on, and so the one it has a route to — and reaching that address involves no
+  published mapping at all: a peer that can route to the subnet, on a segment
+  where nothing stops it adding the route, connects to the port directly. 28.0
+  is where the engine began dropping traffic routed to a container from off the
   host.
 - **The published mapping.** A published port is a DNAT rule matching packets
   addressed to `127.0.0.1:8765`, and a peer on the same segment can put that
@@ -349,24 +352,49 @@ setting answers a page in *your own* browser pointing a name of its own at
 Docker's own `DOCKER-USER` chain, naming the interface your network is on:
 
 ```bash
-sudo iptables  -I DOCKER-USER -i eth0 -j DROP
-sudo ip6tables -I DOCKER-USER -i eth0 -j DROP
+sudo iptables  -I DOCKER-USER -i eth0 -m conntrack --ctstate NEW,INVALID -j DROP
+sudo ip6tables -I DOCKER-USER -i eth0 -m conntrack --ctstate NEW,INVALID -j DROP
 ```
 
-`DOCKER-USER` is consulted before Docker's own rules for *forwarded* traffic,
-which is what both paths are: the packet is on its way to a container, so it
-never reaches the host's `INPUT` chain, and Docker's DNAT has rewritten its
-destination before anything there could match on it. That, and not "a firewall
-cannot help you", is what an ordinary `ufw` or `firewalld` rule failing to stop
-this amounts to. The rule above covers every container on this host, so where
-you publish something else here deliberately, aim it at this project's bridge
-instead (`-o br-<id>`, from `docker network ls`). On a firewalld host, add it
-permanently rather than with `iptables`, or the next reload drops it:
+**Match the state, not just the interface.** `DOCKER-USER` is consulted before
+Docker's own rules for *forwarded* traffic — which is why it works at all here,
+and also why a bare `-i eth0 -j DROP` is the wrong rule: the replies to this
+stack's own outbound TLS arrive on that same interface and are forwarded to a
+container exactly as an inbound connection would be, so a blanket drop takes
+`egress` down with the front door and puts every quota panel into
+`unavailable`. The first packet of an inbound connection — to the published
+mapping or straight to the container — is `NEW`, and that is what these refuse.
+
+Being in the forward path is also the whole of why an ordinary `ufw` or
+`firewalld` rule does not stop this: the packet is on its way to a container,
+so it is never delivered to the host and the `INPUT` chain those rules are in
+never sees it. That, and not "a firewall cannot help you", is what that failure
+amounts to. The rule above covers every container on this host, so where you
+publish something else here deliberately, aim it at this project's `outside`
+bridge instead — `-o br-<id>`, with `<id>` the first 12 characters of that
+network's ID from `docker network ls`.
+
+On a firewalld host, add it permanently rather than with `iptables`, or the
+next reload drops it, and check afterwards that both the chain and the rule are
+there:
 
 ```bash
-sudo firewall-cmd --permanent --direct --add-rule ipv4 filter DOCKER-USER 0 -i eth0 -j DROP
+sudo firewall-cmd --permanent --direct --add-rule ipv4 filter DOCKER-USER 0 \
+  -i eth0 -m conntrack --ctstate NEW,INVALID -j DROP
+sudo firewall-cmd --permanent --direct --add-rule ipv6 filter DOCKER-USER 0 \
+  -i eth0 -m conntrack --ctstate NEW,INVALID -j DROP
 sudo firewall-cmd --reload
+sudo iptables -S DOCKER-USER
 ```
+
+**On 28.2.0 – 28.3.2 that last check is the point of the exercise**, because
+the reload those versions mishandle takes Docker's own rules with it — the
+`FORWARD` jump into `DOCKER-USER`, and the chain itself. A rule inside a chain
+nothing jumps to is not consulted, and a `--direct` rule naming a chain that is
+not there does not apply, so on that range this remedy needs the daemon put
+back behind it: `sudo systemctl restart docker` after every reload, and the
+`iptables -S` above to confirm. Upgrading to 28.3.3 is the answer that does not
+need remembering.
 
 This is not the same rule as the one in [Check the egress
 bound](#check-the-egress-bound) below, and neither stands in for the other:
@@ -704,17 +732,19 @@ flags that are useful for quick diagnosis.
     (DNS rebinding) — which the host list refuses even on a loopback-only
     instance.
 
-  An ordinary `ufw` or `firewalld` rule does not stop the first two, because
-  Docker forwards those packets to a container rather than delivering them to
-  the host: they never reach the `INPUT` chain those rules are in. A rule in
-  Docker's own `DOCKER-USER` chain does, and on an engine older than 28.3.3 you
-  need one — how much of this the two settings really decide is the engine's to
-  say, and below that release it either never held (before 28.0) or lapses on
-  every firewalld reload (28.2.0 – 28.3.2). [The engine and your front
-  door](#the-engine-and-your-front-door) has the exposure and the rule.
-  `DASHBOARD_ALLOWED_HOSTS` is not a second lock on the first two either:
-  whoever reaches the port writes the `Host` header, and `localhost` is on the
-  list. It answers the third one, and only the third.
+  How much of the first one the publish address really decides is the engine's
+  to say: below 28.3.3 it either never held (before 28.0) or lapses on every
+  firewalld reload (28.2.0 – 28.3.2), and there you need a rule in Docker's own
+  `DOCKER-USER` chain — an ordinary `ufw` or `firewalld` rule does not stop it,
+  because Docker forwards such a packet to a container rather than delivering
+  it here, so the `INPUT` chain those rules are in never sees it. [The engine
+  and your front door](#the-engine-and-your-front-door) has the exposure and
+  the rule. The second one is the publish address's own doing on any engine: a
+  co-resident container's packet is addressed to the bridge gateway, and the
+  mapping's rule matches `127.0.0.1`, so it never matches that packet at all.
+  `DASHBOARD_ALLOWED_HOSTS` is a second lock on none of them: whoever reaches
+  the port writes the `Host` header, and `localhost` is on the list. It answers
+  the third, and only the third.
 - **To reach it from outside this machine, put a reverse proxy with auth in
   front of it — and let the proxy be the only way in.** Keep
   `DASHBOARD_BIND=127.0.0.1` so the dashboard's own port stays off the

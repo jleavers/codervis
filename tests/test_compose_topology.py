@@ -256,29 +256,66 @@ def _document(name: str) -> str:
 
 
 def _readme_section(heading: str) -> str:
-    """The text under one README heading, so a pin cannot be satisfied from somewhere else."""
+    """The text under one README heading, so a pin cannot be satisfied from somewhere else.
+
+    Fenced blocks are skipped when looking for where the section ends, because a shell comment
+    inside one starts with the same character a heading does -- `# The interface they reach you
+    on` under "Serving other machines" is one -- and a section cut short there would fail its
+    pin for a reason that has nothing to do with the claim.
+    """
     readme = _document("README.md")
     assert heading in readme, f"README has no {heading!r} section"
     depth = len(heading) - len(heading.lstrip("#"))
     rest = readme[readme.index(heading) + len(heading) :]
-    following = re.search(r"(?m)^#{1,%d} " % depth, rest)
-    return " ".join((rest[: following.start()] if following else rest).split())
+    kept: list[str] = []
+    fenced = False
+    for line in rest.splitlines():
+        if line.startswith("```"):
+            fenced = not fenced
+        elif not fenced and re.match(r"#{1,%d} " % depth, line):
+            break
+        kept.append(line)
+    return " ".join("\n".join(kept).split())
 
 
-@pytest.mark.parametrize("name", FRONT_DOOR_DOCS)
-def test_every_document_that_promises_the_loopback_publish_names_its_condition(name: str) -> None:
-    """All three say what publishing on `DASHBOARD_BIND` keeps out, so all three carry what it
-    rests on. A reader who only ever opens `.env.example` is the one this is for."""
-    text = _document(name)
-    assert "DASHBOARD_BIND" in text, f"{name} no longer makes the claim; move this pin"
-    assert ENGINE_FLOOR in text, (
-        f"{name} says what the loopback publish keeps out without naming the engine release "
-        f"that makes it so ({ENGINE_FLOOR})"
-    )
-    assert WORKING_CHAIN in text, (
-        f"{name} leaves an operator below {ENGINE_FLOOR} with nothing that closes it: a host "
-        f"INPUT rule does not, and a {WORKING_CHAIN} rule does"
-    )
+# Where each document makes the claim, and what that site owes a reader who stops there. The
+# two small files make it once and are taken whole; README makes it in several places, and a
+# whole-file search there would pass on the table of contents alone -- so each of its claim
+# sites is asked for itself. Every site names the release; the ones that tell an operator what
+# to do about it name the chain that does it as well.
+CLAIM_SITES = (
+    (".env.example", None, (ENGINE_FLOOR, WORKING_CHAIN)),
+    ("docker-compose.yml", None, (ENGINE_FLOOR, WORKING_CHAIN)),
+    ("README.md", "## How it works", (ENGINE_FLOOR,)),
+    ("README.md", "## Prerequisites", (ENGINE_FLOOR,)),
+    ("README.md", "## Security notes", (ENGINE_FLOOR, WORKING_CHAIN)),
+    ("README.md", FRONT_DOOR_SECTION, (ENGINE_FLOOR, WORKING_CHAIN)),
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "site", "owed"),
+    CLAIM_SITES,
+    ids=[f"{name}{'' if site is None else ' ' + site}" for name, site, _ in CLAIM_SITES],
+)
+def test_every_document_that_promises_the_loopback_publish_names_its_condition(
+    name: str, site: str | None, owed: tuple[str, ...]
+) -> None:
+    """Each of these says what publishing on `DASHBOARD_BIND` keeps out, so each carries what
+    that rests on. A reader who only ever opens `.env.example` is the one this is for."""
+    assert "DASHBOARD_BIND" in _document(name), f"{name} no longer makes the claim; move this pin"
+    text = _document(name) if site is None else _readme_section(site)
+    where = name if site is None else f"{name}'s {site!r} section"
+    if ENGINE_FLOOR in owed:
+        assert ENGINE_FLOOR in text, (
+            f"{where} says what the loopback publish keeps out without naming the engine "
+            f"release that makes it so ({ENGINE_FLOOR})"
+        )
+    if WORKING_CHAIN in owed:
+        assert WORKING_CHAIN in text, (
+            f"{where} leaves an operator below {ENGINE_FLOOR} with nothing that closes it: a "
+            f"host INPUT rule does not, and a {WORKING_CHAIN} rule does"
+        )
 
 
 def test_the_readme_has_one_place_that_says_what_an_older_engine_leaves_open() -> None:
@@ -287,6 +324,21 @@ def test_the_readme_has_one_place_that_says_what_an_older_engine_leaves_open() -
     section = _readme_section(FRONT_DOOR_SECTION)
     for phrase in ("28.0", "28.2.0", "28.3.2", ENGINE_FLOOR, "firewalld", WORKING_CHAIN):
         assert phrase in section, f"{FRONT_DOOR_SECTION} does not name {phrase}"
+
+
+def test_the_rule_the_readme_gives_matches_state_rather_than_the_interface_alone() -> None:
+    """`DOCKER-USER` is consulted before the conntrack accept that lets a container's own
+    replies back in, so `-i <lan> -j DROP` closes the front door and the egress proxy's TLS
+    sessions with it -- every quota panel `unavailable`, for a documentation fix. Every rule
+    offered here refuses new connections only."""
+    # Continuations first, so a rule written over two lines is read as the one rule it is.
+    lines = _document("README.md").replace("\\\n", " ").splitlines()
+    rules = [" ".join(line.split()) for line in lines if WORKING_CHAIN in line and "-j DROP" in line]
+    assert rules, "README offers no rule at all"
+    for rule in rules:
+        assert "--ctstate NEW,INVALID" in rule, (
+            f"a rule with no state match drops this stack's own return traffic: {rule}"
+        )
 
 
 # What the mount exposes is what each CLI writes into its own tree, so the Caveats' list is
