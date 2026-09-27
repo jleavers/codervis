@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -202,9 +203,11 @@ def test_the_dashboard_runs_the_image_s_own_bounded_server(config: dict) -> None
     # emits is its business, not this bound's: the exact-shape assertion is
     # `test_each_service_runs_exactly_the_command_named_here`, on the file itself, which runs
     # everywhere. What this adds is that interpolation cannot put one back.
-    for key in ("command", "entrypoint"):
-        override = service.get(key)
-        assert override in (None, [], SERVICE_COMMANDS["codervis"]), (key, override)
+    assert service.get("command") in (None, [], SERVICE_COMMANDS["codervis"]), service
+    # Its own arm, and not the same tuple: an `entrypoint` naming the module is a different
+    # bound from a `command` doing so, and folding them together would start permitting one
+    # the day `SERVICE_COMMANDS` takes up its own invitation to name an override.
+    assert service.get("entrypoint") in (None, []), service.get("entrypoint")
 
 
 def test_the_dashboard_reaches_the_proxy_through_both_spellings(config: dict) -> None:
@@ -666,6 +669,20 @@ SECOND_COMPOSE_FILES = (
 )
 
 
+def _tracked_root_files() -> list[str]:
+    """The tracked files at the repository root, by name."""
+    listed = subprocess.run(
+        ["git", "ls-files", "-z", "--"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+        env={name: value for name, value in os.environ.items() if not name.startswith("GIT_")},
+    ).stdout
+    return [name for name in listed.split("\0") if name and "/" not in name]
+
+
 def test_the_repository_ships_no_second_compose_file() -> None:
     """One in an operator's own checkout is theirs; a committed one is the project's.
 
@@ -688,4 +705,30 @@ def test_the_repository_ships_no_second_compose_file() -> None:
         f"{committed} is read by every `docker compose` command -- merged over "
         "docker-compose.yml, or resolved ahead of it -- and every pin in this half of the "
         "file reads docker-compose.yml alone."
+    )
+
+
+#: The one compose file this repository ships. Stated as what is permitted, beside the list of
+#: names above that is stated as what is not: the seven-name list is complete for Compose's
+#: own resolution today, but a list of refused spellings is the shape that has already been
+#: got round twice on this branch, and the next name Compose learns will not be on it either.
+COMPOSE_FILE_NAME = "docker-compose.yml"
+#: Anything a reasonable reader would take for a compose file at the root.
+COMPOSE_FILE_PATTERN = re.compile(r"^(docker-)?compose(\.[^.]+)?\.ya?ml$")
+
+
+def test_the_only_compose_file_this_repository_ships_is_the_one_pinned_here() -> None:
+    """The allow-list half of the check above, and the half that outlives the name list.
+
+    Root-level and tracked: what a clone gets and what `docker compose` would pick up in it.
+    """
+    tracked = {
+        name
+        for name in _tracked_root_files()
+        if COMPOSE_FILE_PATTERN.match(name)
+    }
+    assert tracked == {COMPOSE_FILE_NAME}, (
+        f"the compose files this repository ships are {sorted(tracked)}. Every pin in this "
+        f"half of the file reads {COMPOSE_FILE_NAME}; a second one is merged over it or "
+        "resolved ahead of it, and leaves them green while the stack changes."
     )

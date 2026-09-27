@@ -51,7 +51,6 @@ that skipped only once mutated, which is a survived mutation wearing a skip.
 
 from __future__ import annotations
 
-import contextlib
 import os
 import shutil
 import subprocess
@@ -511,6 +510,40 @@ MUTATIONS: tuple[Mutation, ...] = (
         caught_by=(
             _DASHBOARD_VOLUMES,
             f"{COMPOSE_TESTS}::test_the_dashboard_mounts_the_two_agent_trees_read_only_and_nothing_more",
+        ),
+    ),
+    Mutation(
+        key="compose-gateway-mode-dropped",
+        widening=True,
+        area=COMPOSE,
+        # CLAUDE.md's "Keep the bound whole" names this apart from `internal: true`, because
+        # either without the other leaves the host an address on the dashboard's bridge (#37).
+        rule="the dashboard's network keeps the gateway mode that leaves its bridge no address",
+        path="docker-compose.yml",
+        before="      com.docker.network.bridge.gateway_mode_ipv4: isolated\n",
+        after="      com.docker.network.bridge.gateway_mode_ipv4: nat\n",
+        caught_by=(
+            _NETWORKS_DECLARED,
+            f"{COMPOSE_TESTS}::"
+            "test_the_dashboards_networks_give_the_host_no_address_on_their_bridge",
+        ),
+    ),
+    Mutation(
+        key="compose-ipv6-without-its-own-isolation",
+        widening=True,
+        area=COMPOSE,
+        rule="a network turning on IPv6 needs gateway_mode_ipv6 beside it: a second gateway",
+        path="docker-compose.yml",
+        before="    driver_opts:\n      com.docker.network.bridge.gateway_mode_ipv4: isolated\n",
+        after=(
+            "    enable_ipv6: true\n"
+            "    driver_opts:\n"
+            "      com.docker.network.bridge.gateway_mode_ipv4: isolated\n"
+        ),
+        caught_by=(
+            _NETWORKS_DECLARED,
+            f"{COMPOSE_TESTS}::"
+            "test_the_dashboards_networks_give_the_host_no_address_on_their_bridge",
         ),
     ),
     # ----------------------------------------------------------------- the host allow-list
@@ -1011,6 +1044,19 @@ MUTATIONS: tuple[Mutation, ...] = (
         caught_by=(_NO_PROJECT_SETTINGS,),
     ),
     Mutation(
+        key="doc-settings-file-turns-the-asking-off",
+        widening=True,
+        area=DOCUMENTS,
+        # The value allow-list, which needs its own control: for one round `defaultMode` was
+        # a key that was permitted and one refused *string*, so `acceptEdits` -- which stops
+        # the harness asking before any write, in every session started here -- went past it,
+        # as did the same word in capitals.
+        rule="permissions.defaultMode is one of the modes that leaves the asking in place",
+        path=".claude/settings.local.json",
+        after='{"permissions": {"allow": [], "defaultMode": "acceptEdits"}}\n',
+        caught_by=(_NO_PROJECT_SETTINGS,),
+    ),
+    Mutation(
         key="doc-nested-claude-settings-committed",
         widening=True,
         area=DOCUMENTS,
@@ -1183,6 +1229,21 @@ def pristine(tmp_path_factory) -> Path:
     return copy
 
 
+def _remove_empty_parents(target: Path, tree: Path) -> None:
+    """Take back the directories writing `target` had to create, and no others.
+
+    `rmdir` refuses a directory that still holds anything, so this stops of its own accord at
+    the first one the tracked tree already had -- and `tree` bounds it in any case.
+    """
+    parent = target.parent
+    while parent != tree and tree in parent.parents:
+        try:
+            parent.rmdir()
+        except OSError:
+            return
+        parent = parent.parent
+
+
 def _index(tree: Path, *args: str) -> None:
     """A git call against the copy's own index, and never against the real repository's.
 
@@ -1224,11 +1285,11 @@ def _apply(mutation: Mutation, tree: Path) -> None:
                 # one after it. `_undo` does not run for a mutation that never applied, so
                 # the file has to come back out here.
                 target.unlink(missing_ok=True)
-                # And the directory the write may have had to create, for the same reason
-                # `_undo` does: what is left has to be what a clone gets. `rmdir` because it
-                # refuses a directory that already held files.
-                with contextlib.suppress(OSError):
-                    target.parent.rmdir()
+                # And every directory the write may have had to create, not just the last:
+                # `mkdir(parents=True)` can make several, and what is left has to be what a
+                # clone gets. `rmdir` because it refuses a directory that already held files,
+                # which is what stops this walking back into the tree itself.
+                _remove_empty_parents(target, tree)
                 raise
         return
     text = target.read_text(encoding="utf-8")
@@ -1247,10 +1308,8 @@ def _undo(mutation: Mutation, tree: Path) -> None:
         if mutation.track:
             _index(tree, "rm", "--cached", "--quiet", "--", mutation.path)
         target.unlink(missing_ok=True)
-        # And the directory it may have had to create, so what is left is what a clone gets:
-        # `rmdir` for that reason, since it refuses a directory the tree already had files in.
-        with contextlib.suppress(OSError):
-            target.parent.rmdir()
+        # And the directories it may have had to create, so what is left is what a clone gets.
+        _remove_empty_parents(target, tree)
         return
     shutil.copy2(ROOT / mutation.path, target)
 

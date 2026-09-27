@@ -185,15 +185,20 @@ SHIPPED_AGENT_FILES = frozenset(
 #: written as `.claude/mcp.json` matches nothing whatever, which is a register that claims to
 #: cover "every name the harness honours" failing in exactly the way #78 is about.
 #:
-#: `**/` on every one of them, because a `.claude/` directory is honoured wherever it sits and
-#: not only at the root: `app/.claude/settings.json` carrying a `SessionStart` hook is the same
-#: file by another path, and a root-anchored glob does not see it.
+#: Anchored at the root, because these are matched against the *working tree* and a walk that
+#: descends is a walk into `.venv/`, `node_modules/` and this repository's own
+#: `.claude/worktrees/`. A vendored package's `.mcp.json` is not read by anything -- Claude
+#: Code resolves that name and `.claude-plugin/` at the project root -- and failing a
+#: developer's suite on one is the same defect as failing them for their own
+#: `settings.local.json`, which `_shipped_files()` above says in as many words this module
+#: must not do. The *tracked* reach is the one that goes to any depth, just below, and it
+#: reads `git ls-files` rather than walking.
 HARNESS_CONFIG_GLOBS = (
-    "**/.claude/settings.json",
-    "**/.claude/settings.*.json",
-    "**/.claude/hooks/**/*",
-    "**/.mcp.json",
-    "**/.claude-plugin/**/*",
+    ".claude/settings.json",
+    ".claude/settings.*.json",
+    ".claude/hooks/**/*",
+    ".mcp.json",
+    ".claude-plugin/**/*",
 )
 
 #: What a harness settings file is *permitted* to carry, as an allow-list -- not a list of the
@@ -209,11 +214,23 @@ HARNESS_CONFIG_GLOBS = (
 #: permission in this checkout, which `.gitignore` names as per-user session state. So that
 #: shape is permitted and everything else is reported: `permissions` with the three lists in
 #: it, and the schema pointer an editor adds.
+#: This is narrower than everything the harness *may* write here, on purpose:
+#: `enabledMcpjsonServers` and `enableAllProjectMcpServers` are approvals too, and each starts
+#: a process for every session in the checkout, so they go in the operator's own
+#: `~/.claude/` rather than at a path inside this repository.
 PERMITTED_SETTINGS_KEYS = frozenset({"$schema", "permissions"})
-PERMITTED_PERMISSION_KEYS = frozenset({"allow", "deny", "ask", "defaultMode"})
-#: The one `defaultMode` that is not a preference: it stops the harness asking at all, for
-#: every session anyone starts in this checkout.
-REFUSED_DEFAULT_MODE = "bypassPermissions"
+PERMITTED_PERMISSION_KEYS = frozenset(
+    # `additionalDirectories` is what `/add-dir` records, so it is one of the approvals this
+    # shape is about. It widens what a session may *read and write*, not what it runs.
+    {"allow", "deny", "ask", "additionalDirectories", "defaultMode"}
+)
+#: And the values `defaultMode` may take, as an allow-list for the same reason the keys are
+#: one. It was a single refused string for one round -- and `acceptEdits`, which stops the
+#: harness asking before any write in any session started here, went straight past it, as did
+#: `"BYPASSPERMISSIONS"` and a trailing space. Both modes below leave the asking in place;
+#: `acceptEdits` and `bypassPermissions` each take some of it away, which is a decision for
+#: an operator's own settings and not for a file in this tree.
+PERMITTED_DEFAULT_MODES = frozenset({"default", "plan"})
 
 #: Paths whose *location* is what binds, so there is no shape to check: a hook script is a
 #: script, and a plugin manifest brings its own directory with it. Nothing writes a file here
@@ -222,13 +239,39 @@ BINDING_BY_LOCATION = ("/.claude/hooks/", "/.claude-plugin/")
 
 
 def _harness_config_files() -> set[str]:
-    """Whatever is present matching one of those, tracked or not."""
+    """Whatever is present at the project's own harness paths, tracked or not."""
     return {
         path.relative_to(ROOT).as_posix()
         for pattern in HARNESS_CONFIG_GLOBS
         for path in ROOT.glob(pattern)
         if path.is_file()
     }
+
+
+def _tracked_harness_config() -> set[str]:
+    """The same names among the *tracked* files, at any depth.
+
+    Any depth here and not above, because this reads `git ls-files`: a `.claude/` directory is
+    honoured wherever it sits, so `app/.claude/settings.json` is the same file by another path
+    -- and asking git rather than walking means an ignored `.venv` full of vendored packages
+    cannot answer for this repository.
+    """
+    found: set[str] = set()
+    for path in _shipped_files():
+        relative = path.relative_to(ROOT)
+        parts = relative.parts
+        if ".claude" in parts:
+            below = parts[parts.index(".claude") + 1 :]
+            settings = (
+                len(below) == 1
+                and below[0].startswith("settings")
+                and below[0].endswith(".json")
+            )
+            if settings or below[:1] == ("hooks",):
+                found.add(relative.as_posix())
+        if relative.name == ".mcp.json" or ".claude-plugin" in parts:
+            found.add(relative.as_posix())
+    return found
 
 
 def _outside_the_permitted_shape(path: Path) -> str | None:
@@ -268,8 +311,9 @@ def _outside_the_permitted_shape(path: Path) -> str | None:
     beyond = sorted(set(permissions) - PERMITTED_PERMISSION_KEYS)
     if beyond:
         return f"declares permissions.{beyond}"
-    if permissions.get("defaultMode") == REFUSED_DEFAULT_MODE:
-        return f"sets permissions.defaultMode to {REFUSED_DEFAULT_MODE}"
+    mode = permissions.get("defaultMode")
+    if mode is not None and mode not in PERMITTED_DEFAULT_MODES:
+        return f"sets permissions.defaultMode to {mode!r}"
     return None
 
 
@@ -307,8 +351,7 @@ def test_the_repository_commits_no_harness_configuration_anywhere() -> None:
     Tracked rather than present, unlike the check below: a committed one is what a *clone*
     gets, and that is the thing this repository controls.
     """
-    shipped = {path.relative_to(ROOT).as_posix() for path in _shipped_files()}
-    committed = sorted(shipped & _harness_config_files())
+    committed = sorted(_tracked_harness_config())
     assert not committed, (
         f"{committed} is committed and configures the harness of every session started in a "
         "clone. The operator's agent environment is theirs to configure (#21, #34, #35)."
