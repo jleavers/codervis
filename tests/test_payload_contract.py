@@ -15,6 +15,7 @@ import json
 import logging
 import math
 import os
+import re
 import socket
 import ssl
 import urllib.error
@@ -509,6 +510,53 @@ def deployment(monkeypatch, tmp_path):
     return _Deployment(monkeypatch, tmp_path)
 
 
+# ─── The schema, restated here rather than read from the module it bounds ────
+#
+# These are the numbers and the character class `app/main.py` enforces, written out again in
+# this file. The assertions below used `main.MAX_TEXT_CHARS` and `main._UNPRINTABLE` directly,
+# which made the schema check move with whatever it was checking: raising `MAX_TEXT_CHARS` from
+# 120 to 100,000, or taking `\u2028` out of the unprintable class, widened the module and the
+# assertion about the module in one edit, with the suite green (#78).
+#
+# `test_the_schema_the_boundary_enforces_is_the_one_stated_here` below is the other half: it
+# requires the module to still agree with these, so a deliberate change is one line there and
+# a reviewer reading the number move -- rather than nothing at all.
+SCHEMA_MAX_TEXT_CHARS = 120
+#: C0, DEL and C1, plus the two Unicode line terminators. The last two are the ones that matter
+#: most here and the easiest to drop by accident: JavaScript ends a line on U+2028 and U+2029,
+#: so a payload embedded in a <script> block carries them out of the string it was put in.
+SCHEMA_UNPRINTABLE = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+SCHEMA_MIN_PERCENT = 0.0
+SCHEMA_MAX_PERCENT = 100.0
+SCHEMA_MIN_DATE = datetime(1970, 1, 1, tzinfo=timezone.utc)
+SCHEMA_MAX_DATE = datetime(2100, 1, 1, tzinfo=timezone.utc)
+
+
+def test_the_schema_the_boundary_enforces_is_the_one_stated_here() -> None:
+    """What `app/main.py` holds must be what this file asserts against.
+
+    Without this, restating the schema above would merely make the two drift apart quietly
+    instead of widening together; with it, they are one statement checked in two places.
+    """
+    assert main.MAX_TEXT_CHARS == SCHEMA_MAX_TEXT_CHARS
+    assert main._UNPRINTABLE.pattern == SCHEMA_UNPRINTABLE.pattern
+    assert (main.MIN_PERCENT, main.MAX_PERCENT) == (SCHEMA_MIN_PERCENT, SCHEMA_MAX_PERCENT)
+    assert (main.MIN_DATE, main.MAX_DATE) == (SCHEMA_MIN_DATE, SCHEMA_MAX_DATE)
+
+
+def test_the_unprintable_class_catches_each_kind_of_character_it_names() -> None:
+    """A class is only what it matches, so each region of it is exercised by a character.
+
+    `\u2028` was in the pattern and in nothing else: deleting it left every other test green
+    while a payload gained a way to end a JavaScript line.
+    """
+    for char in ("\x00", "\x1f", "\x7f", "\x9f", "\u2028", "\u2029"):
+        assert SCHEMA_UNPRINTABLE.search(char), repr(char)
+        assert main._text(f"plan{char}name") == "plan name"
+    for char in ("a", " ", "é", "☃"):
+        assert not SCHEMA_UNPRINTABLE.search(char), repr(char)
+
+
 def _assert_text_in_schema(value: object) -> None:
     """A free-form string is bounded and printable, or null.
 
@@ -520,8 +568,8 @@ def _assert_text_in_schema(value: object) -> None:
     if value is None:
         return
     assert isinstance(value, str)
-    assert 0 < len(value) <= main.MAX_TEXT_CHARS
-    assert main._UNPRINTABLE.search(value) is None
+    assert 0 < len(value) <= SCHEMA_MAX_TEXT_CHARS
+    assert SCHEMA_UNPRINTABLE.search(value) is None
     value.encode("utf-8")
 
 
@@ -533,14 +581,14 @@ def _assert_window_in_schema(window: dict) -> None:
     if percent is not None:
         assert isinstance(percent, float) and not isinstance(percent, bool)
         assert math.isfinite(percent)
-        assert main.MIN_PERCENT <= percent <= main.MAX_PERCENT
+        assert SCHEMA_MIN_PERCENT <= percent <= SCHEMA_MAX_PERCENT
     for field in ("resets_at", "detail"):
         value = window[field]
         assert value is None or isinstance(value, str)
     _assert_text_in_schema(window["detail"])
     if window["resets_at"] is not None:
         moment = datetime.fromisoformat(window["resets_at"])
-        assert main.MIN_DATE <= moment <= main.MAX_DATE
+        assert SCHEMA_MIN_DATE <= moment <= SCHEMA_MAX_DATE
 
 
 def assert_payload_in_schema(payload: dict) -> str:
@@ -1128,7 +1176,7 @@ def test_a_control_character_in_a_plan_string_is_scrubbed_not_just_bounded() -> 
     cleaned = main._text(hostile)
 
     assert cleaned == "pro   X-Evil: 1 alert(1)"
-    assert main._UNPRINTABLE.search(cleaned) is None
+    assert SCHEMA_UNPRINTABLE.search(cleaned) is None
     # A string that is nothing but control characters scrubs to whitespace,
     # which is still truthy. Without the strip it would be served as a plan
     # name of three spaces instead of dropped.

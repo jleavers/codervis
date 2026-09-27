@@ -163,18 +163,20 @@ def test_the_dashboard_mounts_the_two_agent_trees_read_only_and_nothing_more(
 
 
 def test_the_dashboard_runs_the_image_s_own_bounded_server(config: dict) -> None:
-    """The head cap and the connection ceiling are armed by the command the image starts (#43),
-    so a `command:` here that replaced it would disarm both while every other pin stayed green.
-    An override is allowed only where it still launches that module."""
+    """The four front-door bounds are armed by the command the image starts (#43), so a
+    `command:` here that replaced it would disarm all four while every other pin stayed green.
+
+    Asserted as the exact rendered shape -- `SERVICE_COMMANDS` below, which says `codervis`
+    carries no override at all -- and not as "the override mentions `app.server`". That
+    substring reading passed `["python", "-m", "uvicorn", "app.main:app", "--header",
+    "x=app.server"]`, which arms none of them (#78). This is the rendered half of
+    `test_each_service_runs_exactly_the_command_named_here`; interpolation cannot reach a
+    `command:` that is not there, but a pin on the bound the image's `CMD` carries belongs on
+    what the daemon would actually be handed too.
+    """
     service = config["services"]["codervis"]
-    for key in ("entrypoint", "command"):
-        override = service.get(key)
-        if not override:
-            continue
-        # Compose accepts both forms, and a list is joined rather than searched element by element,
-        # because a command may name the module inside a shell invocation of its own.
-        text = override if isinstance(override, str) else " ".join(override)
-        assert "app.server" in text, (override, key)
+    assert service.get("command") == SERVICE_COMMANDS["codervis"], service.get("command")
+    assert "entrypoint" not in service, service.get("entrypoint")
 
 
 def test_the_dashboard_reaches_the_proxy_through_both_spellings(config: dict) -> None:
@@ -239,12 +241,17 @@ def test_every_service_rotates_its_log(config: dict, service: str) -> None:
 
 @pytest.mark.parametrize("service", ["egress", "ingress"])
 def test_the_gateway_services_run_with_nothing_to_spare(config: dict, service: str) -> None:
-    """They hold no credential and are the two processes with a leg on the outside."""
+    """They hold no credential and are the two processes with a leg on the outside.
+
+    Every value is an equality against `GATEWAY_PRIVILEGE` below. What was here before refused
+    `None`, `""`, `"root"`, `"0"` and `"0:0"` and so admitted `"0:65534"` and `"root:root"`,
+    which are the same uid under two spellings the list did not think of (#78), and asked
+    whether `no-new-privileges:true` was *among* the `security_opt` entries rather than
+    whether it was the only one.
+    """
     svc = config["services"][service]
-    assert svc.get("user") not in (None, "", "root", "0", "0:0")
-    assert svc.get("read_only") is True
-    assert svc.get("cap_drop") == ["ALL"]
-    assert "no-new-privileges:true" in (svc.get("security_opt") or [])
+    for key, permitted in GATEWAY_PRIVILEGE.items():
+        assert svc.get(key) == permitted, (service, key, svc.get(key))
     assert "volumes" not in svc
 
 # The pins above need the Docker CLI to render the compose file, so they skip where it is
@@ -303,3 +310,166 @@ def test_ci_asserts_the_inside_bridge_holds_no_address() -> None:
     assert "ip -4 address show" in script
     assert "exit 1" in script
     assert "python -m app.egress check" in script
+
+
+# ─── The shape of the file itself, as an allow-list written here ─────────────
+#
+# The pins above read the *rendered* config, which needs the Docker CLI and so skips wherever
+# it is absent. These read `docker-compose.yml` directly, for two reasons. They cover what a
+# rendered pin cannot state cheaply -- the exact set of keys a service carries, which is the
+# only form of this check that a *widening* has to go through rather than around (#78) -- and
+# they run everywhere, including the developer checkout with no Docker installed, where every
+# pin above is a skip.
+#
+# What is asserted is an equality against a table written out below, never a "not one of these
+# bad values" and never a substring. A privilege pin that refuses `root` and `0` says nothing
+# about `0:65534`; a command pin that greps for `app.server` says nothing about a bare uvicorn
+# invocation that merely mentions it in an argument. Both of those widenings were green.
+#
+# `yaml.safe_load` rather than the CLI: the file uses one anchor (`x-logging`), which the
+# loader resolves, and no `extends`, `include` or profile, so what is parsed here is what the
+# CLI would render minus the `${VAR:-default}` interpolation the rendered pins above cover.
+
+COMPOSE_FILE = ROOT / "docker-compose.yml"
+
+
+@pytest.fixture(scope="module")
+def source() -> dict:
+    """The compose file as committed, with its anchors resolved and nothing interpolated."""
+    return yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
+
+
+#: Every key each service may carry, exactly. A key absent from its service's set is a
+#: widening whoever adds it has to come here and declare, which is the whole point: `privileged`,
+#: `cap_add`, `pid: host`, `ipc: host`, `userns_mode`, `devices`, `group_add`, `sysctls`,
+#: `network_mode` and `ports` are all keys that grant something, and not one of them is listed.
+#: Naming the permitted keys rather than the forbidden ones is what makes that true of the
+#: next such key as well as of today's.
+SERVICE_KEYS: dict[str, frozenset[str]] = {
+    "codervis": frozenset(
+        {
+            "build",
+            "container_name",
+            "networks",
+            "environment",
+            "volumes",
+            "depends_on",
+            "restart",
+            "logging",
+        }
+    ),
+    "egress": frozenset(
+        {
+            "build",
+            "command",
+            "networks",
+            "environment",
+            "healthcheck",
+            "user",
+            "read_only",
+            "cap_drop",
+            "security_opt",
+            "restart",
+            "logging",
+        }
+    ),
+    "ingress": frozenset(
+        {
+            "build",
+            "command",
+            "networks",
+            "ports",
+            "depends_on",
+            "user",
+            "read_only",
+            "cap_drop",
+            "security_opt",
+            "restart",
+            "logging",
+        }
+    ),
+}
+
+
+def test_the_file_declares_these_three_services_and_no_others(source: dict) -> None:
+    assert set(source["services"]) == set(SERVICE_KEYS)
+
+
+@pytest.mark.parametrize("service", sorted(SERVICE_KEYS))
+def test_each_service_carries_exactly_the_keys_named_here(source: dict, service: str) -> None:
+    """The permitted shape, not a list of the spellings someone thought of.
+
+    `cap_add`, `privileged`, `pid: host` and the rest of the keys that widen what a container
+    holds were each added to a scratch copy and left the suite green (#78), because every pin
+    on this file asked whether a *good* key was still there. An equality on the key set is
+    what makes adding one of them red without anybody having had to predict it.
+    """
+    assert set(source["services"][service]) == SERVICE_KEYS[service], (
+        f"{service} no longer carries exactly the keys this test names. A key that grants "
+        "something -- capabilities, a namespace, a device, a published port -- is a widening "
+        "to make on purpose: add it here, in the same change, and say why."
+    )
+
+
+#: What the two gateway services run as, exactly. They hold no credential and are the two
+#: processes with a leg on the outside, so this is an equality: `0:65534` and `root:root` are
+#: both root, and both passed the refuse-`root`-and-`0` check this replaces.
+GATEWAY_PRIVILEGE: dict[str, object] = {
+    "user": "65534:65534",
+    "read_only": True,
+    "cap_drop": ["ALL"],
+    "security_opt": ["no-new-privileges:true"],
+}
+
+
+@pytest.mark.parametrize("service", ["egress", "ingress"])
+@pytest.mark.parametrize("key", sorted(GATEWAY_PRIVILEGE))
+def test_the_gateway_services_run_as_exactly_what_is_named_here(
+    source: dict, service: str, key: str
+) -> None:
+    assert source["services"][service][key] == GATEWAY_PRIVILEGE[key], (
+        f"{service}.{key} is not what this test names. Any other value is a widening: "
+        "a uid of 0 under a second name is still uid 0."
+    )
+
+
+#: What each service runs, exactly. `None` means the service carries no `command:` at all and
+#: so runs the image's own `CMD`.
+#:
+#: `codervis` is `None` on purpose and is the one that matters: `CMD ["python", "-m",
+#: "app.server", ...]` is where the head cap, the head deadline, the body deadline and the
+#: connection ceiling are armed, and none of them has a default (CLAUDE.md, "Keep the bound
+#: whole"). The check this replaces asked whether the override *mentioned* `app.server`, so
+#: `command: ["python", "-m", "uvicorn", "app.main:app", "--header", "x=app.server"]` passed
+#: with all four bounds disarmed. An override that genuinely still launches the module is
+#: welcome -- it just has to be written out here, where a reviewer reads it.
+SERVICE_COMMANDS: dict[str, list[str] | None] = {
+    "codervis": None,
+    "egress": ["python", "-m", "app.egress", "serve", "--bind", "0.0.0.0", "--port", "3128"],
+    "ingress": [
+        "python",
+        "-m",
+        "app.ingress",
+        "--bind",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--target",
+        "codervis:8000",
+    ],
+}
+
+
+@pytest.mark.parametrize("service", sorted(SERVICE_COMMANDS))
+def test_each_service_runs_exactly_the_command_named_here(source: dict, service: str) -> None:
+    assert source["services"][service].get("command") == SERVICE_COMMANDS[service]
+
+
+@pytest.mark.parametrize("service", sorted(SERVICE_KEYS))
+def test_no_service_replaces_the_images_entrypoint(source: dict, service: str) -> None:
+    """An `entrypoint:` replaces the `CMD` as surely as a `command:` does, and nothing asked.
+
+    It is absent from `SERVICE_KEYS` above too; this says which key it was and why, so the
+    failure names the bound rather than a set difference.
+    """
+    assert "entrypoint" not in source["services"][service]

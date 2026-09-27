@@ -63,10 +63,25 @@ ARCHIVED_MARKER = "> **Archived —"
 
 TEXT_SUFFIXES = {".md", ".js", ".json", ".yml", ".yaml", ".py", ".sh", ".toml", ".ini"}
 
-# A fixed name under shared `/tmp`, which any other local principal can create and fill
-# before the command that reads it runs. The pattern is deliberately blunt rather than a list
-# of the spellings two plans happened to use: the next author will use a third.
-FIXED_TMP_PATH = re.compile(r"(?<![\w/])/tmp/[\w.${}-]+")
+# A fixed name under a world-writable shared directory, which any other local principal can
+# create and fill before the command that reads it runs. The pattern is deliberately blunt
+# rather than a list of the spellings two plans happened to use: the next author will use a
+# third.
+#
+# Every such directory, not the one instance that was found. `/tmp` was the spelling #21 met,
+# and so the only one this matched, which left `/var/tmp/<name>` and `/dev/shm/<name>` passing
+# -- the same defect one directory over (#78). Each of these is mode 1777 on a stock image,
+# and the sticky bit stops another principal *removing* the operator's file, not creating the
+# name first and owning it when the operator's command opens it. `/private/tmp` is where macOS
+# keeps the first.
+SHARED_DIRS = ("/tmp", "/var/tmp", "/dev/shm", "/private/tmp")
+FIXED_TMP_PATH = re.compile(
+    # Longest first, so `/var/tmp/x` is reported whole rather than as the `/tmp/x` inside it.
+    # The lookbehind is what keeps `/home/me/tmp/x` and a path inside a URL out.
+    r"(?<![\w/])(?:"
+    + "|".join(re.escape(shared) for shared in sorted(SHARED_DIRS, key=len, reverse=True))
+    + r")/[\w.${}-]+"
+)
 
 # No exemptions. There was one, for the synthetic credential files `.github/workflows/ci.yml`
 # used to build under a fixed `/tmp/codervis-ci`; #30 moved them to the runner's own temp
@@ -130,6 +145,72 @@ def _prompt_body(source: str, name: str) -> str:
     return source[opening.end() : end.start()]
 
 
+#: Every tracked file under `.claude/`, exactly. This is the register of what the repository
+#: hands an agent's harness, and it is an equality rather than an absence check for the reason
+#: #78 gives: "the repository ships no agent configuration" was pinned on the one file name
+#: somebody had already seen, so `.claude/settings.local.json` -- which the harness reads
+#: exactly as it reads `settings.json`, and which can carry a `SessionStart` hook that runs a
+#: command in every session in the checkout -- landed with the suite green. So did every other
+#: name the harness honours: a `hooks/` directory, an `mcp.json`, a `settings.*.json` for a
+#: named profile.
+#:
+#: The five `sweep-*.md` profiles and the skill and workflow beside them are here because they
+#: are the kind of file AGENTS.md draws the distinction about: a subagent definition constrains
+#: no session and grants none of them anything they do not already hold. A settings file does
+#: both, which is why none is listed and why adding one has to be a line in this test.
+SHIPPED_AGENT_FILES = frozenset(
+    {
+        ".claude/README.md",
+        ".claude/agents/sweep-lane-web.md",
+        ".claude/agents/sweep-lane.md",
+        ".claude/agents/sweep-recon.md",
+        ".claude/agents/sweep-report.md",
+        ".claude/agents/sweep-triage.md",
+        ".claude/skills/security-sweep/SKILL.md",
+        ".claude/workflows/security-sweep.js",
+    }
+)
+
+
+#: The names the harness reads as its own configuration, as globs under `.claude/`. Matched
+#: against the working tree rather than against `git ls-files`, because an untracked one binds
+#: a session just as well as a committed one does: `settings.local.json` is git-ignored by
+#: convention and was the spelling #78 found passing.
+HARNESS_CONFIG_GLOBS = ("settings.json", "settings.*.json", "mcp.json", "hooks/**/*")
+
+
+def _harness_config_files() -> set[str]:
+    """Whatever is present under `.claude/` matching one of those, tracked or not."""
+    base = ROOT / ".claude"
+    return {
+        path.relative_to(ROOT).as_posix()
+        for pattern in HARNESS_CONFIG_GLOBS
+        for path in base.glob(pattern)
+        if path.is_file()
+    }
+
+
+def test_the_repository_ships_exactly_these_agent_facing_files() -> None:
+    """What a clone hands the harness, stated here rather than inferred from one file's absence.
+
+    A file added under `.claude/` is a change to what every session in this checkout inherits,
+    on a host that holds two live tokens. Whether it is the benign kind -- another subagent
+    profile -- or the kind that binds the operator is not something a test can tell from the
+    name, so the rule is that it arrives here, in the same change, and a reviewer decides.
+    """
+    tracked = {
+        path.relative_to(ROOT).as_posix()
+        for path in _shipped_files()
+        if path.relative_to(ROOT).parts[:1] == (".claude",)
+    }
+    assert tracked == SHIPPED_AGENT_FILES, (
+        "the set of files this repository ships under .claude/ has changed. Each one is read "
+        "by the harness of every session started in a clone: list it here, in the same "
+        "change, and say what it grants -- see \"What repo-shipped agent text may say\" in "
+        "AGENTS.md."
+    )
+
+
 def test_the_repository_does_not_configure_the_operators_agent_environment() -> None:
     """A committed project settings file binds every session in the checkout, the operator's.
 
@@ -139,16 +220,46 @@ def test_the_repository_does_not_configure_the_operators_agent_environment() -> 
     wants to constrain agents belongs in the text they read or in the operator's own
     settings, not here. If a settings file is ever needed, it is a decision to make on
     purpose -- delete this test in the same change, and say why.
+
+    Kept beside the equality above, and not folded into it, because it names the bound: the
+    set check says "this file is not on the list" and this says why that particular file is
+    not, and what happened when it was. It is also the half that catches an untracked one --
+    a `settings.local.json` written into a checkout is not on any list `git ls-files` returns,
+    and it binds the session all the same.
     """
     assert not PROJECT_SETTINGS.exists(), (
         f"{PROJECT_SETTINGS.relative_to(ROOT)} would bind the operator's own sessions"
     )
+    present = sorted(_harness_config_files())
+    assert not present, (
+        f"{present} configures the harness of every session started in this checkout. The "
+        "operator's agent environment is theirs to configure (#21, #34, #35)."
+    )
+
+
+def test_the_shared_directory_rule_covers_every_such_directory_and_not_one() -> None:
+    """The pattern's own reach, stated here, because the pattern *is* the rule.
+
+    A scanner is only as wide as what it matches, and nothing asked what this matched until a
+    document naming `/var/tmp` went through it green. So each directory is asserted to be
+    caught, and the near-misses beside it asserted not to be: a rule this blunt earns its keep
+    only by being blunt in both directions.
+    """
+    for shared in SHARED_DIRS:
+        assert FIXED_TMP_PATH.search(f"cache wheels under {shared}/codervis-cache first"), shared
+        # The directory itself is not a fixed name *in* it; neither is one that merely ends
+        # with the same characters, nor a path inside a URL.
+        assert not FIXED_TMP_PATH.search(f"clean {shared} out"), shared
+        assert not FIXED_TMP_PATH.search(f"under /home/me{shared}/cache"), shared
+        assert not FIXED_TMP_PATH.search(f"https://example.test{shared}/cache"), shared
+    # Reported whole, rather than as the shorter directory nested inside the longer one.
+    assert FIXED_TMP_PATH.search("under /var/tmp/cache").group(0) == "/var/tmp/cache"
 
 
 def test_no_shipped_document_names_a_fixed_path_in_shared_tmp() -> None:
-    """The instance #21 found.
+    """The instance #21 found, and every directory of its kind (#78).
 
-    A fixed name under world-writable `/tmp` is a directory any other local principal can
+    A fixed name under a world-writable directory is one any other local principal can
     pre-create and fill, and the command that reads it runs as the operator. Nothing in a
     shipped document should name one.
     """
