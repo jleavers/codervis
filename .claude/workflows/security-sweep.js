@@ -1277,9 +1277,11 @@ Enumerate what GitHub will serve, not what a checkout holds:
 - **The tracker.** Every issue and pull request, with its body, comments and review comments,
   issuebot's workpad comments included, since those carry command output from runs on this
   host. Scan them with the same rules, and also for what identifies the host rather than the
-  project: absolute home paths, host names, LAN and bridge addresses, the names of other private
+  project: absolute home paths, host names, LAN and bridge addresses, references to other
   repositories, e-mail addresses beyond the commit identity, tool versions that date the host's
-  patch level. Say which of those the tracked tree carries as well.
+  patch level. Report a repository reference as you find it in the text; never list an
+  account's repositories to match against, since whoever runs this sweep would be listing their
+  own. Say which of those the tracked tree carries as well.
 - **The attack paths the tracker already states.** The tracker holds every issue this sweep has
   filed -- each earlier run directory beside ${runDir} lists its own in \`06-filed.json\` --
   and others that describe attack paths just as exactly. All of them are closed. For each, say
@@ -1317,8 +1319,8 @@ The fourth run's supply-chain lane covered CI at the file level: its record is t
 field of \`02-findings-supply-chain.json\` in the run directory \`20260925T153837Z\`, beside
 ${runDir}. \`contents: read\` at the top and widened by no job; no \`pull_request_target\`,
 \`workflow_run\` or interpolated event text; no secrets, variables or environments; a gha cache
-that no fork build can poison. Read that record rather than re-deriving it, and go past it to
-what the change to public alters:
+that no fork build can poison. Where that record is there, read it rather than re-deriving it,
+and go past it to what the change to public alters:
 
 - **Repository settings.** Read them with GET calls only: the repository object
   (\`allow_forking\`, \`security_and_analysis\`), Actions permissions and the default workflow
@@ -1333,9 +1335,10 @@ what the change to public alters:
   stage reads every issue and pull request body. issuebot, which works this repository's
   issues, reads every review comment on its pull requests and every human comment on its
   issues, and runs the steps of any \`Validation\` or \`Test Plan\` section of an issue it is
-  given. Establish issuebot's rules from its tracked configuration alone, if its checkout sits
-  beside this one (\`git -C ~/_dev/issuebot-codervis ls-files\`, then \`git show HEAD:<path>\`):
-  never its \`.env\`, never an untracked file, never its running process. For each reader, say
+  given. Establish issuebot's rules from its published repository alone (\`jleavers/issuebot\`:
+  \`configs/WORKFLOW.md\` and the files it names, read with \`gh api\` or from a clone in your
+  scratch directory): never a deployment's \`.env\`, untracked overlay or running process, and
+  never a path on this host. For each reader, say
   what a stranger can put in front of it after the change that they could not before, and what
   stands between that text and the reader's shell. A fix that lives in issuebot belongs to
   issuebot's own tracker; say so in the finding rather than shaping it as a change here.
