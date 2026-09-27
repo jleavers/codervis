@@ -700,8 +700,13 @@ def _resolve_within(
     timeout_s: float,
     family: int = socket.AF_UNSPEC,
     kind: int = socket.SOCK_STREAM,
+    flags: int = 0,
 ) -> list[tuple] | None:
     """`getaddrinfo` under a deadline: what the name resolved to, or None inside that time.
+
+    This is the module's one resolver call. A caller that needs to ask differently -- the
+    direct probe's `AI_ADDRCONFIG` -- widens these arguments rather than growing a second
+    lookup beside it (#51 and #68 each bounded one, and merged as two).
 
     The deadline is put round the lookup from outside, by joining a thread doing it, because
     there is no timeout to give `getaddrinfo` itself -- see the note above this function for
@@ -731,7 +736,7 @@ def _resolve_within(
 
     def resolve() -> None:
         try:
-            answer.append(("ok", socket.getaddrinfo(host, port, family, kind)))
+            answer.append(("ok", socket.getaddrinfo(host, port, family, kind, flags=flags)))
         except Exception as exc:  # re-raised below, in the thread that asked
             answer.append(("error", exc))
 
@@ -999,19 +1004,8 @@ def _direct_errno_outcome(err: int | None) -> str:
 def _resolve_direct(host: str, port: int, *, timeout_s: float) -> list[tuple] | None:
     """`getaddrinfo` for `host`, under a deadline, or None where it did not answer inside one.
 
-    There is no timeout to give `socket.getaddrinfo`: it is a blocking call into the platform
-    resolver, which spends its *own* budget -- `/etc/resolv.conf`'s `timeout:` (5 s by default)
-    times `attempts:` times the nameservers listed -- and `socket.create_connection`'s timeout
-    does not start until it returns. That is why the deadline is put around it from outside,
-    by joining a thread doing the lookup (#51).
-
-    A lookup still running when the join returns is abandoned, not cancelled: there is no way
-    to cancel it, and the thread is a daemon so it cannot hold the process open. `check` is a
-    short-lived command, so at worst one resolver socket outlives the answer by the rest of the
-    run. What the caller gets is the honest one: nothing was looked up in the time it had.
-
-    The lookup's own failure is re-raised in the calling thread rather than swallowed, so a
-    name that does not resolve still reads as a name that does not resolve.
+    The lookup and its deadline are `_resolve_within`'s, which says why there is no timeout to
+    give `getaddrinfo` and what an abandoned lookup costs (#51). This asks it one thing more.
 
     `AI_ADDRCONFIG` because a candidate in a family this container holds no address in is not
     an address it could ever have reached, so asking about it can only cost the probe an
@@ -1022,31 +1016,7 @@ def _resolve_direct(host: str, port: int, *, timeout_s: float) -> list[tuple] | 
     which is a local failure and fails the whole check. `socket.create_connection` did not ask
     for the flag, and got away with it by reporting only the last candidate's error.
     """
-    answer: list[tuple[str, object]] = []
-
-    def resolve() -> None:
-        try:
-            answer.append(
-                (
-                    "ok",
-                    socket.getaddrinfo(
-                        host, port, type=socket.SOCK_STREAM, flags=socket.AI_ADDRCONFIG
-                    ),
-                )
-            )
-        except Exception as exc:  # re-raised below, in the thread that asked
-            answer.append(("error", exc))
-
-    # Named so that a thread dump during a hung `check` says which lookup is outstanding.
-    thread = threading.Thread(target=resolve, name=f"egress-resolve-{host}", daemon=True)
-    thread.start()
-    thread.join(timeout_s)
-    if not answer:
-        return None
-    kind, value = answer[0]
-    if kind == "error":
-        raise value  # type: ignore[misc]
-    return list(value)  # type: ignore[arg-type]
+    return _resolve_within(host, port, timeout_s=timeout_s, flags=socket.AI_ADDRCONFIG)
 
 
 def _dial_direct(

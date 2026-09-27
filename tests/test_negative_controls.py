@@ -315,7 +315,9 @@ MUTATIONS: tuple[Mutation, ...] = (
         rule="the network the dashboard joins is internal, so it has no default route",
         path="docker-compose.yml",
         before="  inside:\n    internal: true\n",
-        after="  inside: {}\n",
+        # `internal: false` rather than dropping the key: the network's `driver` and gateway
+        # lines sit beneath it, and a mutant that no longer parses errors instead of failing.
+        after="  inside:\n    internal: false\n",
         caught_by=(
             f"{COMPOSE_TESTS}::test_the_dashboard_container_joins_internal_networks_alone",
         ),
