@@ -318,11 +318,19 @@ This matters because CI's `Egress bound` job runs this command into a public
 Actions log.
 
 An override the command cannot read a host and a port out of — an unclosed
-bracket, a port that is not a number, or nothing but whitespace — is a `FAIL`
-line naming the variable rather than a crash, and the other upstream is still
-probed and still reported. The value is read exactly as the live client's urllib
-reads it, leading whitespace and all, so a trailing space is reported as part of
-the host rather than tidied away: the client dials it that way too.
+bracket, a port out of range, a control character, or nothing at all — is a
+`FAIL` line naming the variable rather than a crash, and the other upstream is
+still probed and still reported.
+
+The value is read the way the live client reads it, which is why the command
+does not tidy it up. Leading whitespace goes, because the client's urllib
+removes it too. A *trailing* space does not, because by the time the client has
+appended the request path that space is in the middle of the URL: the client
+ends up with `claude.ai ` as its host and is refused before it dials, so a check
+that tidied the space away would report `claude.ai:443 admitted` for a client
+that reaches nothing. An empty override is the same — the clients default only
+when the variable is *unset*, so `CLAUDE_AI_HOST=` is a `FAIL` here rather than
+a silent fallback to `claude.ai`.
 
 The address on the on-link line is whatever the container's own routing tables
 yield — the first address of each on-link subnet, plus any gateway a route
@@ -578,7 +586,7 @@ browser-disabled cards are dimmed.
 | Every chip reads `unavailable` and `docker compose logs egress` shows a refused host | The host is not on the egress allow-list: a `CLAUDE_AI_HOST`/`CHATGPT_HOST` override without a matching `EGRESS_ALLOW` entry, or the vendor redirected to another host. |
 | Browser shows `Host not served by this dashboard` (`403`) | The name in the address bar is not in `DASHBOARD_ALLOWED_HOSTS`. Add it (and widen `DASHBOARD_BIND` if the request comes from another machine), then `docker compose up -d`. |
 | `python -m app.egress check` reports a `FAIL` on the on-link line, naming an address that accepted or refused | Something that is neither this container nor the proxy is on-link. On an engine older than 28.0 that is the host: a 26.x engine ignores `gateway_mode_ipv4` without a word and keeps its address on the bridge. Upgrade, or see [Check the egress bound](#check-the-egress-bound) for the firewall rule that replaces it — and for the case where the address is another container in this project. |
-| `python -m app.egress check` reports a `FAIL` naming `CLAUDE_AI_HOST=` or `CHATGPT_HOST=` and says the bound is `unverified for that upstream` | That override is not a URL with a host and a numeric port — an unclosed `[` in an IPv6 literal, or a port that is not a number. Nothing could be asked about that upstream, so nothing was. Fix the value in `.env` and run `docker compose up -d`; the live client cannot reach it either. |
+| `python -m app.egress check` reports a `FAIL` naming `CLAUDE_AI_HOST=` or `CHATGPT_HOST=` and says the bound is `unverified for that upstream` | That override is not a URL with a host and a port the live client could dial — an unclosed `[` in an IPv6 literal, a port that is not a number in 0–65535, a stray control character, nothing in front of the host that reads as a scheme, or an empty value (the clients default only when the variable is *unset*). Nothing could be asked about that upstream, so nothing was. Fix the value in `.env` and run `docker compose up -d`; the live client cannot reach it either. |
 | `docker compose up` fails creating the `inside` network with `unknown gateway mode isolated` | A 27.x engine: it knows the option but not that value. Upgrade to 28.0+, or delete the `driver_opts` block from the `inside` network and use the firewall rule instead. |
 | `docker compose up` reports `dependency failed to start` | The `egress` proxy is unhealthy, and the dashboard waits for it. Check `docker compose logs egress`. |
 

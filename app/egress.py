@@ -247,32 +247,29 @@ def configured_proxy(environ: Mapping[str, str]) -> str | None:
     return None
 
 
-# What `urlsplit` takes off the front of a URL before reading one: WHATWG's
-# C0-control-or-space set, U+0000 to U+0020. Spelled out rather than imported from
-# `urllib.parse._WHATWG_C0_CONTROL_OR_SPACE`, which is private.
-URL_LEADING_STRIP = "".join(chr(code) for code in range(0x21))
-
-
 def upstream_urls(environ: Mapping[str, str]) -> list[tuple[str, str]]:
     """``(variable, base URL)`` for each live client, as the clients themselves read them.
 
-    **Leading whitespace only, and the same set `urlsplit` removes**, because the point is to
-    read the override exactly as the live client's urllib will. `app/quota.py` and
-    `app/codex_quota.py` hand the raw value to `Request`, which lstrips it, so
-    `" https://claude.ai"` really is `https://claude.ai` to them and the check must say so.
+    Every part of this is "what does the live client do with the value", because a check that
+    reads the variable differently from the client asserts about a host the client never dials.
+    `app/quota.py` and `app/codex_quota.py` do `os.environ.get(name, default)`, append the
+    path, and hand the result to `Request`, whose `unwrap` is `str(url).strip()`.
 
-    Stripping the *trailing* end would be the check asserting something untrue:
-    `urlsplit` deliberately does not (CPython: "Only lstrip url as some applications rely on
-    preserving trailing space"), so `"https://claude.ai "` leaves the client dialling a host
-    with a space in it, and a check that tidied the value away would report `claude.ai:443
-    admitted` about a host that client never reaches.
-
-    A whitespace-only override is left as the empty string rather than falling back to the
-    default, for the same reason: it is a value `Request` refuses, so it has to reach
-    `split_upstream_url` as unreadable and be reported against the variable that holds it.
+    * **The default is taken for an unset variable and for nothing else.** `os.environ.get`
+      defaults on absence, not on emptiness, so `CLAUDE_AI_HOST=` leaves the client with `""`
+      and a `Request` that refuses it. Falling back to the default here -- which `or default`
+      did -- reported `claude.ai:443 admitted` for a client that reaches nothing.
+    * **Leading whitespace goes, by `str.lstrip`'s set**, because that is the set `unwrap`
+      removes, and the front of `host + path` is the front of the host. Not `urlsplit`'s
+      narrower C0-or-space set: a non-breaking space pasted out of rendered documentation is
+      stripped by the client and would otherwise be reported here as a URL with no host.
+    * **Trailing whitespace stays.** Once the path is appended it is interior, so `unwrap` does
+      not reach it: `"https://claude.ai "` leaves the client with `claude.ai ` as its host, and
+      `http.client` then refuses to dial a host with a control character in it. Tidying it away
+      here would turn that into a passing line.
     """
     return [
-        (name, (environ.get(name) or default).lstrip(URL_LEADING_STRIP))
+        (name, (default if environ.get(name) is None else environ[name]).lstrip())
         for name, default in UPSTREAM_ENV
     ]
 
@@ -289,7 +286,17 @@ def split_upstream_url(url: str) -> SplitResult | None:
 
     A URL with no host is ``None`` too. There is no host for a live client to dial and none for
     the check to ask the proxy about, so it is the same answer as a value that would not parse.
+
+    So is one carrying a control character, and that case is here because `urlsplit` is the
+    *more* forgiving of the two readers: it drops `\t`, `\r` and `\n` from anywhere in a URL
+    and ignores a C0 control in front of the scheme, while the live client keeps them --
+    `Request` reads `"\x01https://claude.ai"` as the scheme `\x01https` and `http.client`
+    refuses to dial a host with one in it. Reading such a value as a host and a port would
+    have this check pass on a configuration the client cannot use, which is the one direction
+    it may not be wrong in.
     """
+    if any(char < " " or char == "\x7f" for char in url):
+        return None
     try:
         parts = urlsplit(url)
         parts.port
@@ -301,9 +308,10 @@ def split_upstream_url(url: str) -> SplitResult | None:
 def upstream_targets(environ: Mapping[str, str]) -> list[tuple[str, int] | None]:
     """The ``(host, port)`` each live client connects to, or ``None`` where there is no reading it.
 
-    One entry per `upstream_urls` entry, in step with it, so `check` zips the two and keeps the
-    variable's name beside the answer -- which is what the `FAIL` line for an unreadable value
-    is named from.
+    One entry per `upstream_urls` entry, in step with it. `check` needs the names beside the
+    answers, so it builds the same list from `_upstream_target` over one read of the
+    environment rather than calling this and reading the environment twice; this is the same
+    thing for anyone who wants only the targets.
     """
     return [_upstream_target(url) for _, url in upstream_urls(environ)]
 
@@ -1747,10 +1755,11 @@ def check(
                 (
                     False,
                     f"{name}={without_userinfo(url)} is not a URL with a host and a numeric "
-                    "port -- an unclosed bracket, a port that is not a number, no host in it, "
-                    "or nothing in front of the host that urllib reads as a scheme: the host "
-                    "the live client would dial cannot be read out of it, so nothing was "
-                    "asked about it and the bound is unverified for that upstream",
+                    "port -- an unclosed bracket, a port that is not a number in 0-65535, a "
+                    "control character, no host in it, or nothing in front of the host that "
+                    "urllib reads as a scheme: the host the live client would dial cannot be "
+                    "read out of it, so nothing was asked about it and the bound is "
+                    "unverified for that upstream",
                 )
             )
             continue

@@ -2881,7 +2881,7 @@ def test_no_userinfo_survives_without_userinfo_whatever_surrounds_it() -> None:
         # proxy that could not be reached at all.
         ("refused", lambda _p, host, *_a, **_k: (403, "Forbidden") if host == PROBE_DENIED_HOST else (200, "OK")),
         ("tunnelled", lambda *_a, **_k: (200, "OK")),
-        ("unreachable", lambda *_a, **_k: "egress:3128 did not answer (TimeoutError)"),
+        ("unreachable", lambda *_a, **_k: "did not answer (TimeoutError)"),
     ],
 )
 def test_no_result_line_carries_the_proxy_variables_userinfo(
@@ -3002,6 +3002,17 @@ def test_upstream_urls_are_read_the_way_the_live_clients_urllib_reads_them() -> 
     assert upstream_urls({"CLAUDE_AI_HOST": "\t\n https://usage.example.test"})[0][1] == (
         "https://usage.example.test"
     )
+    # `str.lstrip`'s set, not `urlsplit`'s narrower C0-or-space one: `unwrap` is
+    # `str(url).strip()`, so a non-breaking space pasted out of rendered documentation is
+    # removed by the client, and reporting it here as a URL with no host would fail a
+    # configuration that works.
+    assert upstream_urls({"CLAUDE_AI_HOST": "\xa0https://usage.example.test"})[0][1] == (
+        "https://usage.example.test"
+    )
+    assert upstream_targets({"CLAUDE_AI_HOST": "\xa0https://usage.example.test"})[0] == (
+        "usage.example.test",
+        443,
+    )
     # Trailing whitespace is part of the host urllib hands the client, so it is part of the
     # host this check asks the proxy about, and the answer is a refusal rather than a pass.
     assert upstream_urls({"CLAUDE_AI_HOST": "https://usage.example.test "})[0][1] == (
@@ -3011,15 +3022,41 @@ def test_upstream_urls_are_read_the_way_the_live_clients_urllib_reads_them() -> 
         "usage.example.test ",
         443,
     )
-    # A whitespace-only override does not fall back to the default. `Request` refuses it, so
-    # the client is broken and the check has to say which variable broke it -- collapsing it to
-    # the default would report a pass about `claude.ai`, which that client will never reach.
+    # Neither a whitespace-only nor an empty override falls back to the default. The clients
+    # do `os.environ.get(name, default)`, which defaults on absence and not on emptiness, so
+    # both leave `Request` with a value it refuses -- and collapsing either to the default
+    # would report a pass about `claude.ai`, a host that client will never reach.
     assert upstream_urls({"CLAUDE_AI_HOST": "   "})[0] == ("CLAUDE_AI_HOST", "")
     assert upstream_targets({"CLAUDE_AI_HOST": "   "})[0] is None
-    # Unset and empty are the genuine "no override" cases, and those do take the default.
+    assert upstream_urls({"CLAUDE_AI_HOST": ""})[0] == ("CLAUDE_AI_HOST", "")
+    assert upstream_targets({"CLAUDE_AI_HOST": ""})[0] is None
+    # Unset is the one genuine "no override" case, and only it takes the default.
     assert upstream_urls({})[0] == ("CLAUDE_AI_HOST", CLAUDE_AI_HOST)
-    assert upstream_urls({"CLAUDE_AI_HOST": ""})[0] == ("CLAUDE_AI_HOST", CLAUDE_AI_HOST)
+    assert upstream_targets({})[0] == ("claude.ai", 443)
     assert upstream_targets({"CHATGPT_HOST": " https://c.test:8443"})[1] == ("c.test", 8443)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # `urlsplit` is the more forgiving reader of the two: it ignores a C0 control in front
+        # of the scheme and drops `\t\r\n` from anywhere. The client keeps them -- `Request`
+        # reads the first as the scheme `\x01https` -- so reading a host out of these would
+        # pass the check on a configuration the client cannot use.
+        "\x01https://usage.example.test",
+        "https://usage.example.test\t",
+        "https://usage.\rexample.test",
+        "https://usage.example.test\n",
+    ],
+)
+def test_a_control_character_makes_an_upstream_unreadable_rather_than_normalised(
+    url: str,
+) -> None:
+    # What urllib would have made of it, so the case is pinned against the reason it exists
+    # rather than against a rule someone could delete as arbitrary.
+    assert urlsplit(url).hostname == "usage.example.test"
+    assert split_upstream_url(url) is None
+    assert upstream_targets({"CLAUDE_AI_HOST": url})[0] is None
 
 
 @UPSTREAM_VARIABLES
