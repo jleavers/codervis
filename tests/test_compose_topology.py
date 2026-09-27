@@ -26,10 +26,12 @@ rules in a checkout with no Docker installed.
 Be exact about what reading the file rather than the rendered config does *not* see, since
 that is the half the rendered pins still carry: what `${VAR:-default}` becomes once a `.env` or
 a shell variable has been applied, which is what `bare_config` above is for; and anything
-merged in from another file. The second is closed here rather than left to CI -- the top-level
-key set, `extends:` on every service, and the absence of a committed `docker-compose.override.yml`
-are each pinned below, because an override is merged by every `docker compose` command and
-every assertion in this half reads the base file alone.
+merged in from another file, or given to the daemon instead of it. Both are closed here rather
+than left to CI -- the top-level key set, `extends:` on every service, and the absence of a
+committed second compose file, whether one that is *merged over* `docker-compose.yml`
+(`docker-compose.override.yml` and its three spellings) or one that is *resolved ahead of* it
+(`compose.yaml`, `compose.yml`, `docker-compose.yaml`). Every assertion in this half reads
+`docker-compose.yml`, so a second file leaves them green while the stack changes underneath.
 """
 
 from __future__ import annotations
@@ -196,8 +198,13 @@ def test_the_dashboard_runs_the_image_s_own_bounded_server(config: dict) -> None
     what the daemon would actually be handed too.
     """
     service = config["services"]["codervis"]
-    assert service.get("command") == SERVICE_COMMANDS["codervis"], service.get("command")
-    assert "entrypoint" not in service, service.get("entrypoint")
+    # `None` and `[]` both mean "no override" in a rendered config, and which one the CLI
+    # emits is its business, not this bound's: the exact-shape assertion is
+    # `test_each_service_runs_exactly_the_command_named_here`, on the file itself, which runs
+    # everywhere. What this adds is that interpolation cannot put one back.
+    for key in ("command", "entrypoint"):
+        override = service.get(key)
+        assert override in (None, [], SERVICE_COMMANDS["codervis"]), (key, override)
 
 
 def test_the_dashboard_reaches_the_proxy_through_both_spellings(config: dict) -> None:
@@ -272,8 +279,20 @@ def test_the_gateway_services_run_with_nothing_to_spare(config: dict, service: s
     """
     svc = config["services"][service]
     for key, permitted in GATEWAY_PRIVILEGE.items():
-        assert svc.get(key) == permitted, (service, key, svc.get(key))
-    assert "volumes" not in svc
+        rendered = svc.get(key)
+        # Compared as a set where the permitted value is a list, so this cannot go red on the
+        # CLI's ordering while the exact-order assertion lives on the file itself
+        # (`test_the_gateway_services_run_as_exactly_what_is_named_here`). This half is here
+        # for what interpolation does, and neither of these values is interpolated.
+        if isinstance(permitted, list):
+            assert isinstance(rendered, list) and set(rendered) == set(permitted), (
+                service,
+                key,
+                rendered,
+            )
+        else:
+            assert rendered == permitted, (service, key, rendered)
+    assert not svc.get("volumes")
 
 # The pins above need the Docker CLI to render the compose file, so they skip where it is
 # absent unless `REQUIRE_DOCKER` says they must not. That makes CI's own configuration part of
@@ -623,10 +642,23 @@ def test_no_service_extends_another_file(source: dict, service: str) -> None:
     assert "extends" not in source["services"][service]
 
 
-#: What `docker compose` merges on top of `docker-compose.yml` without being asked. A committed
-#: one is a second file granting `privileged: true` or a published port, with every pin in this
-#: module green: they read the base file, and the rendered half is CI-only.
-OVERRIDE_NAMES = (
+#: Every filename `docker compose` reads besides the one this half asserts on, and both ways
+#: it can be reached.
+#:
+#: The `.override.` four are *merged* over the base file, so a committed one grants
+#: `privileged: true` or a published port on top of a `docker-compose.yml` that still reads
+#: exactly as pinned. The other three are resolved *ahead of* `docker-compose.yml` --
+#: `compose.yaml`, then `compose.yml`, then `docker-compose.yaml` -- so a committed one does
+#: not merge with it at all: it replaces it, and every assertion in this half goes on reading
+#: a file the daemon is no longer given. Either way the pins stay green while the stack
+#: changes, which is what makes this the file-reading half's own boundary rather than a
+#: tidiness rule.
+SECOND_COMPOSE_FILES = (
+    # Resolved ahead of `docker-compose.yml`, in this order.
+    "compose.yaml",
+    "compose.yml",
+    "docker-compose.yaml",
+    # Merged on top of whichever of those was resolved.
     "docker-compose.override.yml",
     "docker-compose.override.yaml",
     "compose.override.yml",
@@ -634,22 +666,26 @@ OVERRIDE_NAMES = (
 )
 
 
-def test_the_repository_ships_no_compose_override() -> None:
-    """An override in an operator's own checkout is theirs; a committed one is the project's.
+def test_the_repository_ships_no_second_compose_file() -> None:
+    """One in an operator's own checkout is theirs; a committed one is the project's.
 
-    Tracked rather than present, for that reason -- the file is the documented way to adapt a
+    Tracked rather than present, for that reason: an override is the documented way to adapt a
     deployment locally, and this is only about what a clone gets.
     """
     listed = subprocess.run(
-        ["git", "ls-files", "-z", "--", *OVERRIDE_NAMES],
+        ["git", "ls-files", "-z", "--", *SECOND_COMPOSE_FILES],
         cwd=ROOT,
         capture_output=True,
         text=True,
         timeout=60,
         check=True,
+        # `cwd` decides which repository this reads, so nothing in the environment may -- the
+        # same reason `tests/test_agent_tooling_context.py` filters these.
+        env={name: value for name, value in os.environ.items() if not name.startswith("GIT_")},
     ).stdout
     committed = [name for name in listed.split("\0") if name]
     assert not committed, (
-        f"{committed} is merged over docker-compose.yml by every `docker compose` command, "
-        "and every pin in this file reads the base file alone."
+        f"{committed} is read by every `docker compose` command -- merged over "
+        "docker-compose.yml, or resolved ahead of it -- and every pin in this half of the "
+        "file reads docker-compose.yml alone."
     )

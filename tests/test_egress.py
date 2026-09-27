@@ -178,7 +178,11 @@ def test_the_default_entries_admit_the_two_hosts_and_no_name_under_them() -> Non
     """
     rules, complaints = allow_rules({})
     assert complaints == ()
-    for host in DEFAULT_ALLOW:
+    # Restated rather than looped from `DEFAULT_ALLOW` alone: emptying that tuple would make
+    # a loop over it vacuously green, which is the shape #78 is about even where a second
+    # test pins the value.
+    assert DEFAULT_ALLOW == ("claude.ai", "chatgpt.com")
+    for host in ("claude.ai", "chatgpt.com"):
         assert allowed(host, 443, rules), host
         for under in (f"evil.{host}", f"a.b.{host}"):
             assert not allowed(under, 443, rules), under

@@ -202,6 +202,10 @@ red. Both halves have a rule, and the second one is the one that was missing.
   assertion with it. Where a value has to agree in two places, state it in the
   test and assert the module still equals it — that way a deliberate change is
   one line a reviewer reads, rather than nothing at all.
+  This applies at every level of the thing being pinned, not just the top one:
+  a check that permits a file and then refuses three dangerous keys inside it
+  has the same defect one level down, and the key somebody actually adds will
+  be a fourth. Name what a file may carry, not what it may not.
 - **The control widens the bound, not only deletes it.** A mutation that removes
   a check answers "is this check still here". It does not answer "does this
   check still bite", and those are not the same question: the change somebody

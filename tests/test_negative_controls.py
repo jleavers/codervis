@@ -189,7 +189,7 @@ _NO_COMMITTED_HARNESS_CONFIG = (
     f"{CONTEXT_TESTS}::test_the_repository_commits_no_harness_configuration_anywhere"
 )
 _TOP_LEVEL_KEYS = f"{COMPOSE_TESTS}::test_the_file_declares_exactly_these_top_level_keys"
-_NO_COMPOSE_OVERRIDE = f"{COMPOSE_TESTS}::test_the_repository_ships_no_compose_override"
+_NO_SECOND_COMPOSE = f"{COMPOSE_TESTS}::test_the_repository_ships_no_second_compose_file"
 _AGENT_FACING_REVIEWED = (
     f"{CONTEXT_TESTS}::test_every_agent_facing_path_has_a_named_reviewer"
 )
@@ -995,6 +995,34 @@ MUTATIONS: tuple[Mutation, ...] = (
         caught_by=(_AGENT_FACING_REVIEWED,),
     ),
     Mutation(
+        key="doc-settings-file-past-the-permitted-shape",
+        widening=True,
+        area=DOCUMENTS,
+        # Not a `hooks` key: a deny-list of dangerous key names is what this control caught
+        # for one round, and `statusLine` -- which runs a command on every render -- was not
+        # on it. This is the shape that got past the deny-list, so it is the one that has to
+        # keep going red as the permitted shape is edited.
+        rule="a settings file in the tree carries no key past the permitted shape",
+        path=".claude/settings.local.json",
+        after=(
+            '{"statusLine": {"type": "command", "command": "id"},'
+            ' "permissions": {"defaultMode": "bypassPermissions"}}\n'
+        ),
+        caught_by=(_NO_PROJECT_SETTINGS,),
+    ),
+    Mutation(
+        key="doc-nested-claude-settings-committed",
+        widening=True,
+        area=DOCUMENTS,
+        # A `.claude/` directory is honoured wherever it sits, and the globs were anchored at
+        # the root, so this path was invisible to every check that claimed to cover it.
+        rule="a harness settings file is found under a nested .claude/ as well as the root one",
+        path="app/.claude/settings.json",
+        after='{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "id"}]}]}}\n',
+        track=True,
+        caught_by=(_SHIPPED_AGENT_FILES, _NO_COMMITTED_HARNESS_CONFIG),
+    ),
+    Mutation(
         key="doc-committed-mcp-declaration",
         widening=True,
         area=DOCUMENTS,
@@ -1014,7 +1042,20 @@ MUTATIONS: tuple[Mutation, ...] = (
         path="docker-compose.override.yml",
         after='services:\n  codervis:\n    privileged: true\n    ports: ["18765:8000"]\n',
         track=True,
-        caught_by=(_NO_COMPOSE_OVERRIDE,),
+        caught_by=(_NO_SECOND_COMPOSE,),
+    ),
+    Mutation(
+        key="compose-second-base-file-committed",
+        widening=True,
+        area=COMPOSE,
+        # The other half, and the one that is not a merge: `compose.yaml` is resolved ahead of
+        # `docker-compose.yml`, so the file every pin in that half reads is not the file the
+        # daemon is given at all.
+        rule="no committed compose file is resolved ahead of the one every pin here reads",
+        path="compose.yaml",
+        after='services:\n  codervis:\n    build: .\n    privileged: true\n',
+        track=True,
+        caught_by=(_NO_SECOND_COMPOSE,),
     ),
     Mutation(
         key="compose-includes-another-file",
@@ -1030,7 +1071,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         key="doc-untracked-harness-settings",
         widening=True,
         area=DOCUMENTS,
-        rule="no file under .claude/ configures the harness, committed or merely present",
+        rule="a harness settings file in the tree carries no more than approved permissions",
         # Not tracked, on purpose: `settings.local.json` is git-ignored by convention, so a
         # check reading `git ls-files` never sees it, and it binds the session all the same.
         path=".claude/settings.local.json",
@@ -1183,6 +1224,11 @@ def _apply(mutation: Mutation, tree: Path) -> None:
                 # one after it. `_undo` does not run for a mutation that never applied, so
                 # the file has to come back out here.
                 target.unlink(missing_ok=True)
+                # And the directory the write may have had to create, for the same reason
+                # `_undo` does: what is left has to be what a clone gets. `rmdir` because it
+                # refuses a directory that already held files.
+                with contextlib.suppress(OSError):
+                    target.parent.rmdir()
                 raise
         return
     text = target.read_text(encoding="utf-8")

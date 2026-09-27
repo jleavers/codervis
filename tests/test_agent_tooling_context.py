@@ -155,7 +155,11 @@ def _prompt_body(source: str, name: str) -> str:
 #: exactly as it reads `settings.json`, and which can carry a `SessionStart` hook that runs a
 #: command in every session in the checkout -- landed with the suite green. So did every other
 #: name the harness honours: a `hooks/` directory, an `mcp.json`, a `settings.*.json` for a
-#: named profile.
+#: named profile, and any of them under a nested `.claude/` rather than this one.
+#:
+#: This is the half that answers for a *committed* file, of any shape at all, which is what
+#: the rule is really about: the check below is about an operator's own working tree and so
+#: permits the file the harness writes for them there.
 #:
 #: The five `sweep-*.md` profiles and the skill and workflow beside them are here because they
 #: are the kind of file AGENTS.md draws the distinction about: a subagent definition constrains
@@ -176,28 +180,45 @@ SHIPPED_AGENT_FILES = frozenset(
 
 
 #: The names the harness reads as its own configuration, as globs relative to the repository
-#: root. Root-relative rather than anchored under `.claude/`, because two of them are not
-#: there: Claude Code reads the project-scoped MCP declaration from `.mcp.json` at the root,
-#: and a plugin manifest from `.claude-plugin/`. A glob written as `mcp.json` under `.claude/`
-#: matches nothing at all, which is the "register that covers every name the harness honours"
-#: failing in exactly the way #78 is about.
+#: root. Two of them are not under `.claude/` at all -- Claude Code reads the project-scoped
+#: MCP declaration from `.mcp.json` and a plugin manifest from `.claude-plugin/` -- and a glob
+#: written as `.claude/mcp.json` matches nothing whatever, which is a register that claims to
+#: cover "every name the harness honours" failing in exactly the way #78 is about.
+#:
+#: `**/` on every one of them, because a `.claude/` directory is honoured wherever it sits and
+#: not only at the root: `app/.claude/settings.json` carrying a `SessionStart` hook is the same
+#: file by another path, and a root-anchored glob does not see it.
 HARNESS_CONFIG_GLOBS = (
-    ".claude/settings.json",
-    ".claude/settings.*.json",
-    ".claude/hooks/**/*",
-    ".mcp.json",
-    ".claude-plugin/**/*",
+    "**/.claude/settings.json",
+    "**/.claude/settings.*.json",
+    "**/.claude/hooks/**/*",
+    "**/.mcp.json",
+    "**/.claude-plugin/**/*",
 )
 
-#: The keys that make one of those files run something in every session started in this
-#: checkout. `env` is beside `hooks` because it is the other key that reaches a command's
-#: execution rather than describing what a session may do, and `mcpServers` because a declared
-#: server is a process the harness starts.
-SESSION_BINDING_KEYS = ("hooks", "env", "mcpServers")
+#: What a harness settings file is *permitted* to carry, as an allow-list -- not a list of the
+#: keys that happen to be dangerous.
+#:
+#: This was three bad key names for one round of review and that was the defect this whole
+#: change exists to fix, one level down: `{"statusLine": {"type": "command", "command": ...}}`
+#: runs an attacker-chosen command on every status-line render and was not among the three, and
+#: neither were `apiKeyHelper`, `awsAuthRefresh`, `enableAllProjectMcpServers` or
+#: `permissions.defaultMode`. The next key the harness gains will not be among them either.
+#:
+#: What an operator legitimately has here is the file the harness writes when they approve a
+#: permission in this checkout, which `.gitignore` names as per-user session state. So that
+#: shape is permitted and everything else is reported: `permissions` with the three lists in
+#: it, and the schema pointer an editor adds.
+PERMITTED_SETTINGS_KEYS = frozenset({"$schema", "permissions"})
+PERMITTED_PERMISSION_KEYS = frozenset({"allow", "deny", "ask", "defaultMode"})
+#: The one `defaultMode` that is not a preference: it stops the harness asking at all, for
+#: every session anyone starts in this checkout.
+REFUSED_DEFAULT_MODE = "bypassPermissions"
 
-#: Paths whose *location* is what binds, so there is no key to look for: a hook script is a
-#: script, and a plugin manifest brings its own directory with it.
-BINDING_BY_LOCATION = (".claude/hooks/", ".claude-plugin/")
+#: Paths whose *location* is what binds, so there is no shape to check: a hook script is a
+#: script, and a plugin manifest brings its own directory with it. Nothing writes a file here
+#: on an operator's behalf -- one is put there on purpose -- so any is reported.
+BINDING_BY_LOCATION = ("/.claude/hooks/", "/.claude-plugin/")
 
 
 def _harness_config_files() -> set[str]:
@@ -210,23 +231,26 @@ def _harness_config_files() -> set[str]:
     }
 
 
-def _binds_the_session(path: Path) -> str | None:
-    """The key by which a harness-config file runs something, or `None` if it declares none.
+def _outside_the_permitted_shape(path: Path) -> str | None:
+    """Why this harness-config file is more than an operator's own record, or `None`.
 
     Read rather than assumed, because `.gitignore` names `.claude/settings.local.json` as
     per-user session state: the harness writes one the first time an operator approves a
-    permission in this checkout, and failing the suite on its *presence* would fail every
-    developer for doing the thing AGENTS.md says is theirs to do. What the repository's rule
-    is actually about is text that runs -- the `SessionStart` hook #78 names -- so that is
-    what is looked for. A committed one of any shape is caught by the tracked-set equality
-    above, which is where "the repository ships no agent configuration" really lives.
+    permission in this checkout, and failing the suite on its mere *presence* would fail every
+    developer for doing the thing AGENTS.md says is theirs to do.
+
+    So what is checked is the shape, as an allow-list. Not a list of dangerous keys -- that was
+    here for one round and `statusLine`, which runs a command on every render, was not on it,
+    which is #78's own defect one level down. A committed file of any shape is caught by the
+    tracked-set checks instead, which is where "the repository ships no agent configuration"
+    really lives.
     """
-    relative = path.relative_to(ROOT).as_posix()
+    relative = "/" + path.relative_to(ROOT).as_posix()
     for directory in BINDING_BY_LOCATION:
         # A file the harness executes *because of where it sits* -- a hook script, a plugin
-        # manifest -- is not JSON to inspect, and its content is beside the point.
-        if relative.startswith(directory):
-            return f"sits under {directory}, which the harness runs from"
+        # manifest -- has no JSON shape to check, and its content is beside the point.
+        if directory in relative:
+            return f"sits under {directory.strip('/')}, which the harness runs from"
     try:
         loaded = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -234,10 +258,18 @@ def _binds_the_session(path: Path) -> str | None:
         # it says so rather than passing it over.
         return "is at a harness-configuration path and could not be read as JSON"
     if not isinstance(loaded, dict):
-        return None
-    for key in SESSION_BINDING_KEYS:
-        if loaded.get(key):
-            return key
+        return "is at a harness-configuration path and is not a JSON object"
+    beyond = sorted(set(loaded) - PERMITTED_SETTINGS_KEYS)
+    if beyond:
+        return f"declares {beyond}, which is more than a record of approved permissions"
+    permissions = loaded.get("permissions") or {}
+    if not isinstance(permissions, dict):
+        return "declares a `permissions` that is not an object"
+    beyond = sorted(set(permissions) - PERMITTED_PERMISSION_KEYS)
+    if beyond:
+        return f"declares permissions.{beyond}"
+    if permissions.get("defaultMode") == REFUSED_DEFAULT_MODE:
+        return f"sets permissions.defaultMode to {REFUSED_DEFAULT_MODE}"
     return None
 
 
@@ -252,7 +284,9 @@ def test_the_repository_ships_exactly_these_agent_facing_files() -> None:
     tracked = {
         path.relative_to(ROOT).as_posix()
         for path in _shipped_files()
-        if path.relative_to(ROOT).parts[:1] == (".claude",)
+        # Any depth, not just the root: a `.claude/` directory is honoured wherever it sits,
+        # so `app/.claude/settings.json` is the same kind of file by another path.
+        if ".claude" in path.relative_to(ROOT).parts
     }
     assert tracked == SHIPPED_AGENT_FILES, (
         "the set of files this repository ships under .claude/ has changed. Each one is read "
@@ -300,16 +334,16 @@ def test_the_repository_does_not_configure_the_operators_agent_environment() -> 
     assert not PROJECT_SETTINGS.exists(), (
         f"{PROJECT_SETTINGS.relative_to(ROOT)} would bind the operator's own sessions"
     )
-    binding = {
+    beyond = {
         name: reason
         for name in sorted(_harness_config_files())
-        if (reason := _binds_the_session(ROOT / name)) is not None
+        if (reason := _outside_the_permitted_shape(ROOT / name)) is not None
     }
-    assert not binding, (
-        f"{binding} runs something in every session started in this checkout. The operator's "
-        "agent environment is theirs to configure (#21, #34, #35), and a file that merely "
-        "records their own permission choices is part of that -- but a `hooks` or `env` key "
-        "is a command, and belongs in their own settings rather than at this path."
+    assert not beyond, (
+        f"{beyond}. The operator's agent environment is theirs to configure (#21, #34, #35), "
+        "and a file recording the permissions they approved in this checkout is part of that "
+        "-- but anything past that shape binds every session anyone starts here, and belongs "
+        "in their own `~/.claude/` rather than at this path."
     )
 
 
