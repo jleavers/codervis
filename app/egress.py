@@ -290,17 +290,25 @@ def split_upstream_url(url: str) -> SplitResult | None:
     So is one carrying a control character, and that case is here because `urlsplit` is the
     *more* forgiving of the two readers: it drops `\t`, `\r` and `\n` from anywhere in a URL
     and ignores a C0 control in front of the scheme, while the live client keeps them --
-    `Request` reads `"\x01https://claude.ai"` as the scheme `\x01https` and `http.client`
-    refuses to dial a host with one in it. Reading such a value as a host and a port would
-    have this check pass on a configuration the client cannot use, which is the one direction
-    it may not be wrong in.
+    `Request` reads `"\x01https://claude.ai"` as the scheme `\x01https`, which the opener then
+    refuses outright, and `http.client` refuses to dial a host holding one, which is what
+    `"https://claude.ai\t"` and a trailing space come to. Reading such a value as a host and a
+    port would have this check pass on a configuration the client cannot use, which is the one
+    direction it may not be wrong in.
     """
     if any(char < " " or char == "\x7f" for char in url):
         return None
     try:
         parts = urlsplit(url)
-        parts.port
+        port = parts.port
     except ValueError:
+        return None
+    if port == 0:
+        # Syntactically a number, and `urlsplit` hands it back as one, but not a port anything
+        # dials: `parse_connect_target` refuses it, so the proxy answers 400 and the client
+        # reaches nothing. It has to be `None` here rather than fall to `or default` further
+        # on, which read `:0` as 443 and had the check print `claude.ai:443 admitted` for a
+        # client that gets a 400 -- a pass on a configuration that does not work.
         return None
     return parts if parts.hostname else None
 
@@ -1755,7 +1763,7 @@ def check(
                 (
                     False,
                     f"{name}={without_userinfo(url)} is not a URL with a host and a numeric "
-                    "port -- an unclosed bracket, a port that is not a number in 0-65535, a "
+                    "port -- an unclosed bracket, a port that is not a number in 1-65535, a "
                     "control character, no host in it, or nothing in front of the host that "
                     "urllib reads as a scheme: the host the live client would dial cannot be "
                     "read out of it, so nothing was asked about it and the bound is "

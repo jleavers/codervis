@@ -2292,6 +2292,10 @@ UNREADABLE_UPSTREAMS = pytest.mark.parametrize(
         pytest.param("https://[::1", id="unclosed-bracket"),
         pytest.param("https://claude.ai:notanumber", id="port-not-a-number"),
         pytest.param("https://claude.ai:-1", id="negative-port"),
+        pytest.param("https://claude.ai:99999", id="port-out-of-range"),
+        # Syntactically a number, and `urlsplit` returns it as one -- but nothing dials port 0,
+        # and `or default` used to read it as 443 and report the upstream as admitted.
+        pytest.param("https://claude.ai:0", id="port-zero"),
         pytest.param("https:///no-host", id="no-host"),
     ],
 )
@@ -3047,14 +3051,20 @@ def test_upstream_urls_are_read_the_way_the_live_clients_urllib_reads_them() -> 
         "https://usage.example.test\t",
         "https://usage.\rexample.test",
         "https://usage.example.test\n",
+        # `http.client`'s own disallowed set is `[\x00-\x20\x7f]`, so DEL belongs here too.
+        "https://usage.example.test\x7f",
     ],
 )
 def test_a_control_character_makes_an_upstream_unreadable_rather_than_normalised(
     url: str,
 ) -> None:
-    # What urllib would have made of it, so the case is pinned against the reason it exists
-    # rather than against a rule someone could delete as arbitrary.
-    assert urlsplit(url).hostname == "usage.example.test"
+    # What `urlsplit` would have made of it, so the case is pinned against the reason the rule
+    # exists rather than against a rule someone could delete as arbitrary: it reads a host out
+    # of every one of these, and that host is what would have been probed and reported.
+    # Two families -- the ones it normalises the character away from, where the host it reads
+    # is the clean one, and `\x7f`, which it keeps and which is undialable all the same.
+    assert urlsplit(url).hostname is not None
+    assert urlsplit(url).hostname.startswith("usage.example.test")
     assert split_upstream_url(url) is None
     assert upstream_targets({"CLAUDE_AI_HOST": url})[0] is None
 
