@@ -57,6 +57,21 @@ def test_the_default_serves_this_machine(host: str) -> None:
     assert client(host).get("/healthz").status_code == 200
 
 
+#: The set an operator who set nothing gets. Written out here rather than read back from
+#: `main.DEFAULT_ALLOWED_HOSTS`, because a pin that reads the constant it is pinning widens
+#: with it: the dashboard has no login, so this default is the access control on a deployment
+#: nobody configured, and a fourth name appearing in it is a decision, not a detail (#78).
+DEFAULT_SERVED_NAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def test_the_default_is_exactly_these_three_loopback_names() -> None:
+    assert main.parse_allowed_hosts(None) == DEFAULT_SERVED_NAMES
+    assert main.parse_allowed_hosts("") == DEFAULT_SERVED_NAMES
+    assert main.parse_allowed_hosts("   ") == DEFAULT_SERVED_NAMES
+    # And the literal the compose file interpolates, which is the other place it is spelled.
+    assert main.DEFAULT_ALLOWED_HOSTS == "localhost,127.0.0.1,::1"
+
+
 def test_the_default_serves_the_ipv6_loopback_literal() -> None:
     # The brackets and the port are the client's spelling of the same address.
     assert client("[::1]:8765").get("/healthz").status_code == 200

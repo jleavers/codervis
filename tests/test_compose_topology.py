@@ -6,9 +6,22 @@ networks give the host no address on their bridge, the proxy is the one service 
 each kind, and only the ingress relay publishes a port. The same file grants the other axis of
 that container's budget, so what it may read is pinned here too (#45): the two agent data roots,
 read-only, and nothing else.
-Rendering needs the Docker CLI but no daemon; the test is skipped where Docker is not installed,
-unless `REQUIRE_DOCKER` says it must not be -- CI sets that, because a pin that skips silently
-where the CLI has gone missing is a pin that disappears with a green build.
+This file has two halves. The first renders the compose file with the CLI, which is what
+resolves `${VAR:-default}` interpolation and the short volume syntax, and so is the only way to
+assert what the daemon would actually be handed. Rendering needs the CLI but no daemon; those
+tests skip where Docker is not installed, unless `REQUIRE_DOCKER` says they must not be -- CI
+sets that, because a pin that skips silently where the CLI has gone missing is a pin that
+disappears with a green build.
+
+The second half, from "The shape of the file itself" below, reads `docker-compose.yml` with
+`yaml.safe_load` and asserts equalities against tables written out here: the keys each service
+carries, what the two gateways run as, the command each service runs, the networks, the mounts,
+the published port and the settings that decide who may reach the dashboard. That shape is what
+a *widening* has to go through rather than around (#78) -- a key that grants a capability, a
+`user` that is root under a second spelling, a `command:` that merely mentions the bounded
+module all passed the "is the good value still here" pins this half replaces. It also runs
+wherever pytest does, which is why `tests/test_negative_controls.py` can witness the compose
+rules in a checkout with no Docker installed.
 """
 
 from __future__ import annotations
@@ -473,3 +486,108 @@ def test_no_service_replaces_the_images_entrypoint(source: dict, service: str) -
     failure names the bound rather than a set difference.
     """
     assert "entrypoint" not in source["services"][service]
+
+
+#: What each service joins, exactly. `codervis` on `inside` alone is the egress bound's other
+#: half: a second network with a route off the host makes the proxy advisory.
+SERVICE_NETWORKS: dict[str, list[str]] = {
+    "codervis": ["inside"],
+    "egress": ["inside", "outside"],
+    "ingress": ["inside", "outside"],
+}
+
+
+@pytest.mark.parametrize("service", sorted(SERVICE_NETWORKS))
+def test_each_service_joins_exactly_the_networks_named_here(source: dict, service: str) -> None:
+    assert source["services"][service]["networks"] == SERVICE_NETWORKS[service]
+
+
+#: The two networks, as declared. `inside` is spelled out whole rather than checked key by
+#: key, because `internal: true` and the gateway mode are one bound in two lines: either
+#: without the other leaves the host an address on the dashboard's bridge (#37).
+NETWORKS: dict[str, dict] = {
+    "inside": {
+        "internal": True,
+        "driver": "bridge",
+        "driver_opts": {"com.docker.network.bridge.gateway_mode_ipv4": "isolated"},
+    },
+    "outside": {},
+}
+
+
+def test_the_two_networks_are_declared_exactly_as_named_here(source: dict) -> None:
+    assert source["networks"] == NETWORKS, (
+        "the networks this file declares have changed. `internal: true` withholds the default "
+        "route; `gateway_mode_ipv4: isolated` is what leaves the bridge with no address of "
+        "the host's to dial. Neither is the bound on its own, and `enable_ipv6` without "
+        "`gateway_mode_ipv6: isolated` beside it is a second gateway address."
+    )
+
+
+#: The read half of the dashboard's budget, as the entries are written (#45). Two trees,
+#: read-only, and the sources are the compose file's own defaults: a default widened from
+#: `~/.claude` to `~` would hand this container the whole home directory.
+DASHBOARD_VOLUMES = [
+    "${CLAUDE_HOME:-~/.claude}:/data/claude:ro",
+    "${CODEX_HOME:-~/.codex}:/data/codex:ro",
+]
+
+
+def test_the_dashboard_mounts_exactly_these_two_trees(source: dict) -> None:
+    assert source["services"]["codervis"]["volumes"] == DASHBOARD_VOLUMES
+
+
+@pytest.mark.parametrize("service", ["codervis", "egress"])
+def test_no_service_but_the_relay_publishes_a_port(source: dict, service: str) -> None:
+    """`ports` is absent from both key sets above; this says which key and why.
+
+    Docker ignores a published port on an internal-only container, so one here would be a
+    silent no-op on `codervis` -- and `egress` holds the outside leg, so a port on it is a way
+    in to the one service that can reach the internet.
+    """
+    assert "ports" not in source["services"][service]
+
+
+#: Where the relay publishes, as written: the host address is the default an operator who set
+#: nothing gets, and the dashboard has no login.
+RELAY_PORTS = [
+    {
+        "host_ip": "${DASHBOARD_BIND:-127.0.0.1}",
+        "published": "${DASHBOARD_PORT:-8765}",
+        "target": 8000,
+        "protocol": "tcp",
+    }
+]
+
+
+def test_the_relay_publishes_exactly_this_one_port(source: dict) -> None:
+    assert source["services"]["ingress"]["ports"] == RELAY_PORTS
+
+
+#: The environment settings on `codervis` that carry a bound, with the defaults an operator who
+#: wrote no `.env` gets. Not the whole environment: the cadence and budget knobs below it are
+#: passed through empty on purpose, and `README.md`'s two tables are where those live. These
+#: are the ones that decide who may reach the dashboard and where it may reach.
+DASHBOARD_EXPOSURE = {
+    # Which names the dashboard answers at all, the other half of `DASHBOARD_BIND` (#15).
+    "DASHBOARD_ALLOWED_HOSTS": "${DASHBOARD_ALLOWED_HOSTS:-localhost,127.0.0.1,::1}",
+    # Both cases, because urllib's callers disagree about which they honour, and every one of
+    # them points at the proxy: a spelling that went missing is a client dialling direct.
+    "HTTP_PROXY": PROXY_URL,
+    "HTTPS_PROXY": PROXY_URL,
+    "http_proxy": PROXY_URL,
+    "https_proxy": PROXY_URL,
+    "NO_PROXY": "localhost,127.0.0.1,::1",
+    "no_proxy": "localhost,127.0.0.1,::1",
+    # Where the two read-only mounts land, which is what the app reads.
+    "CLAUDE_DATA_DIR": "/data/claude",
+    "CODEX_DATA_DIR": "/data/codex",
+}
+
+
+@pytest.mark.parametrize("name", sorted(DASHBOARD_EXPOSURE))
+def test_the_dashboards_exposure_settings_are_the_ones_named_here(
+    source: dict, name: str
+) -> None:
+    environment = source["services"]["codervis"]["environment"]
+    assert environment.get(name) == DASHBOARD_EXPOSURE[name], name

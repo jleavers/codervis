@@ -30,6 +30,8 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_SETTINGS = ROOT / ".claude" / "settings.json"
 
@@ -585,3 +587,61 @@ def test_the_post_run_audit_looks_for_what_a_stage_still_holds() -> None:
         "environ",
     ):
         assert probe in command, f"the audit command does not look for {probe!r}"
+
+
+# ─── Who reviews the text an agent reads ─────────────────────────────────────
+
+CODEOWNERS = ROOT / ".github" / "CODEOWNERS"
+
+#: Every path whose contents reach an agent before it acts. A change to one of these is a
+#: change to what the next unattended session is told to do, on a host holding two live
+#: tokens, so each needs a named reviewer. `.github/` is here because it owns CI and this file
+#: itself; `.claude/` because it is the harness's own; `docs/superpowers/` because everything
+#: in it is text written to be executed.
+AGENT_FACING_PATHS = (
+    "/CLAUDE.md",
+    "/AGENTS.md",
+    "/README.md",
+    "/CONTRIBUTING.md",
+    "/SECURITY.md",
+    "/.claude/",
+    "/.github/",
+    "/docs/superpowers/",
+)
+
+
+def _codeowner_patterns() -> dict[str, str]:
+    """Each rule in the file as `pattern -> owners`, comments and blank lines dropped."""
+    rules: dict[str, str] = {}
+    for line in CODEOWNERS.read_text(encoding="utf-8").splitlines():
+        text = line.split("#", 1)[0].strip()
+        if not text:
+            continue
+        pattern, _, owners = text.partition(" ")
+        rules[pattern] = owners.strip()
+    return rules
+
+
+@pytest.mark.parametrize("path", AGENT_FACING_PATHS)
+def test_every_agent_facing_path_has_a_named_reviewer(path: str) -> None:
+    """`CODEOWNERS` named four of these and not the rest (#78).
+
+    An imperative added to `README.md` or to a document under `docs/superpowers/` reaches the
+    next session exactly as one added to `CLAUDE.md` does; what differed was only whether
+    GitHub would put the change in front of someone. Stated as a list here rather than derived
+    from the tree, because "which files an agent reads" is a judgement and not a glob.
+    """
+    rules = _codeowner_patterns()
+    assert path in rules, (
+        f"{path} is read by an agent before it acts and has no owner in .github/CODEOWNERS. "
+        "Add it there, or take it off this list and say why it is no longer agent-facing."
+    )
+    assert rules[path], f"{path} is named in CODEOWNERS with no owner"
+
+
+def test_every_agent_facing_path_that_is_a_file_is_actually_there() -> None:
+    """So the list above cannot quietly become a list of names nothing matches."""
+    for path in AGENT_FACING_PATHS:
+        target = ROOT / path.strip("/")
+        assert target.exists(), path
+        assert target.is_dir() == path.endswith("/"), path
