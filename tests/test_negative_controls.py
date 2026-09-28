@@ -893,6 +893,42 @@ MUTATIONS: tuple[Mutation, ...] = (
         caught_by=(_PUBLIC_LANE_BOUND,),
     ),
     Mutation(
+        key="sweep-outsiders-lists-variables-with-their-values",
+        widening=True,
+        area=SWEEP,
+        rule="`public/outsiders` enumerates Actions variables by name and cannot fetch a value",
+        path=SWEEP_WORKFLOW,
+        # Read-only is not the same property as returns-no-secret, and this is the widening that
+        # shows the difference: `gh variable list` is a read by every check above and it prints
+        # NAME and VALUE. A secret's value is served to nobody, but a variable's is served to
+        # anyone who can read a public repository, so the bare call puts every one of them in
+        # this lane's context and in the run's transcripts -- on the host holding two live
+        # tokens -- while reading, to anyone checking the list, like the listing it was meant to
+        # be. The closing line this bound replaced said "never fetch a variable's value"; this
+        # is the spelling that does.
+        before="  'gh variable list --json name',\n",
+        after="  'gh variable list',\n",
+        caught_by=(_PUBLIC_LANE_BOUND,),
+    ),
+    Mutation(
+        key="sweep-second-repository-named-to-a-second-lane",
+        widening=True,
+        area=SWEEP,
+        rule="`jleavers/issuebot` is named to `public/outsiders` and to no other lane",
+        path=SWEEP_WORKFLOW,
+        # The audit's per-lane question turns on exclusivity: SKILL.md tells the operator that
+        # this path from this lane is the read it was sent to make and from any other lane is a
+        # lane that wandered. A second lane named the same repository would leave that rule false
+        # with nothing to see -- and this is the `shipped-text` lane, which reads the repository's
+        # own agent text and has no business on anyone's tracker.
+        before="secret store. \\`AGENTS.md\\`'s \"What repo-shipped agent text may say\"",
+        after=(
+            "secret store. Read \\`jleavers/issuebot\\` for how the tracker's own agent is "
+            "configured. \\`AGENTS.md\\`'s \"What repo-shipped agent text may say\""
+        ),
+        caught_by=(_PUBLIC_LANE_BOUND,),
+    ),
+    Mutation(
         key="sweep-public-lane-loses-its-read-list",
         widening=True,
         area=SWEEP,

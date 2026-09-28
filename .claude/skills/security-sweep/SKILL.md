@@ -92,17 +92,26 @@ and no other. An artifact's *contents* are the one surface it is told to record 
 rather than to fetch.
 
 `public/outsiders` reads settings rather than text, so its list is its own: `gh repo view`,
-`gh api -X GET`, `gh ruleset list` and `gh ruleset view`, `gh secret list` and
-`gh variable list`, and `git clone --depth 1`. **It is the one lane in the sweep that reads a
-second repository, and its list names which**: `jleavers/issuebot`, issuebot's published
-repository, for `configs/WORKFLOW.md` and the files it names and nothing else — because the
-question it asks about the agents that read this tracker cannot be answered from the swept
-repository at all. Nothing of a deployment: no `.env`, no untracked overlay, no running process,
-no path on this host. A third repository is not on the list, and neither is a listing of an
-account's repositories — whoever runs this sweep would be listing their own. And a *name* is
-what that lane records: a secret's value is served to nobody, but a variable's value comes back
-from every call that lists them and a webhook URL's query string can carry one, so what goes in
-a finding is the name, the event list and a URL's host.
+`gh api -X GET`, `gh ruleset list` and `gh ruleset view`, `gh secret list`,
+`gh variable list --json name`, and `git clone --depth 1`. **It is the one lane in the sweep
+that reads a second repository, and its list names which**: `jleavers/issuebot`, issuebot's
+published repository, for `configs/WORKFLOW.md` and the files it names and nothing else —
+because the question it asks about the agents that read this tracker cannot be answered from the
+swept repository at all. Nothing of a deployment: no `.env`, no untracked overlay, no running
+process, no path on this host. A third repository is not on the list, and neither is a listing
+of an account's repositories — whoever runs this sweep would be listing their own.
+
+**One entry on that list is spelled the way it is for the same reason `gh api` names its
+method.** The closing line this bound replaced said "never fetch a secret's or a variable's
+value", and a bare `gh variable list` fetches one: a secret's value is served to nobody, but a
+*variable's* is served to anyone who can read a public repository, and both `gh variable list`
+and `GET /repos/{owner}/{repo}/actions/variables` return it beside the name. So the entry is
+`gh variable list --json name`, which cannot return one, and the bound says in as many words
+that neither the bare form nor that endpoint through `gh api -X GET` is how this lane enumerates
+them. The prohibition is on the fetch and not only on what the lane writes down, because the
+value would otherwise be in the lane's context and in this run's transcripts whatever the
+finding said. A webhook URL is the same shape: the host and the event list, never the rest of
+the URL.
 
 After a run, audit what the agents actually ran before presenting: the per-agent transcripts sit
 beside the workflow's `journal.jsonl`, in the directory the task notification names. Look for:
@@ -145,8 +154,8 @@ hit is a thing to explain.
 grep -ohE '(gh (api|issue|pr|repo|ruleset|run|search|release|workflow|cache|secret|variable)|git (ls-remote|clone|fetch|push))( [-a-zA-Z0-9@:/{}._]+)*' <transcript-dir>/*.jsonl | sort | uniq -c | sort -rn | head -40
 ```
 
-Read it against the four lanes' own `coverage` records, which are required to say what each
-of them read. A call in a transcript that no record accounts for, and a record that claims more than
+Read it against the four lanes' own `coverage` records, which are required to say
+what each of them read. A call in a transcript that no record accounts for, and a record that claims more than
 the transcripts show, are the two halves of one question: whether what a lane says it examined
 is what it examined.
 

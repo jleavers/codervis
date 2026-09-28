@@ -61,7 +61,9 @@ A tool list still cannot say "read-only `gh`" for any of the four, so each brief
 repository the sweep resolved, and what it read goes in its `coverage` record. One list per lane,
 because a bound is a block of text and a lane that interpolates another's name acquires the whole
 of that lane's reach — `public/outsiders` is the one lane sent to a second repository, and
-`jleavers/issuebot` is named on its list and on no other's. Prose is what that bound is made of,
+`jleavers/issuebot` is named on its list and on no other's, which
+`tests/test_agent_tooling_context.py` pins because it is what the audit tells a sent read from
+a wandering one by. Prose is what that bound is made of,
 which is why the audit has a second pass that reads the record against the transcripts — the
 profile is not what makes it true.
 

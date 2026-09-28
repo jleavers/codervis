@@ -488,7 +488,7 @@ const OUTSIDERS_READ_CALLS = [
   "gh ruleset list",
   "gh ruleset view",
   "gh secret list",
-  "gh variable list",
+  "gh variable list --json name",
   "git clone --depth 1",
 ];
 
@@ -674,6 +674,13 @@ test("the public set's two GitHub-side lanes are told what they may read, and to
   assert.ok(
     outsiders.includes("No third repository"),
     "outsiders: the bound names a second repository without closing the list at two",
+  );
+  assert.ok(
+    outsiders.includes("gh variable list --json name") &&
+      outsiders.includes("never the bare") &&
+      outsiders.includes("endpoint through"),
+    "outsiders: the lane is not told which call enumerates Actions variables without their " +
+      "values, or is not told the other two ways to the same value are closed",
   );
   for (const surface of [
     "repository object",

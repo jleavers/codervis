@@ -995,6 +995,15 @@ def test_no_issue_form_asks_a_stranger_for_an_executable_section() -> None:
             )
 
 
+#: The one spelling that enumerates Actions variables without returning their values. `--json`
+#: takes a field list and `name` is one of the seven fields the command offers, `value` being
+#: another, so this is a projection GitHub honours rather than a flag that asks it nicely. Stated
+#: here because the closing line the `public/outsiders` bound replaced said "never fetch a
+#: secret's or a variable's value" and the bare `gh variable list` fetches one: read-only is not
+#: the same property as returns-no-secret, and a list checked only for the first admitted it.
+VARIABLE_LISTING_PROJECTION = "gh variable list --json name"
+
+
 def _assert_read_only_on_their_face(calls: list[str], which: str) -> None:
     """Each entry of a lane's read list reads, spelled so that a checker can see that it does.
 
@@ -1028,6 +1037,18 @@ def _assert_read_only_on_their_face(calls: list[str], which: str) -> None:
             assert methods == {"GET"}, (
                 f"{which}: {call!r} does not name its method, and `gh api`'s default is "
                 f"whichever of GET and POST the rest of the arguments imply"
+            )
+        # And the same shape of defect one level down, on the *fields* a read returns rather
+        # than the method it sends. An Actions **variable**'s value is served to anyone who can
+        # read a public repository -- unlike a secret's, which is served to nobody -- and both
+        # `gh variable list` and `GET /repos/{owner}/{repo}/actions/variables` return it beside
+        # the name. A lane told to enumerate "the names and nothing else" and handed the bare
+        # call has every value in its context and in this run's transcripts whatever its finding
+        # says, so the entry has to be the projection that cannot return one.
+        if call.startswith("gh variable"):
+            assert call == VARIABLE_LISTING_PROJECTION, (
+                f"{which}: {call!r} enumerates Actions variables in a form that returns each "
+                f"one's value; {VARIABLE_LISTING_PROJECTION!r} is the projection that does not"
             )
 
 
@@ -1115,7 +1136,7 @@ OUTSIDERS_READ_CALLS = [
     "gh ruleset list",
     "gh ruleset view",
     "gh secret list",
-    "gh variable list",
+    "gh variable list --json name",
     "git clone --depth 1",
 ]
 
@@ -1387,15 +1408,42 @@ def test_the_public_sets_github_side_lanes_bound_and_record_their_reads() -> Non
     rendered_outsiders = re.sub(r"\s+", " ", briefs["public/outsiders"])
     for other in repos:
         assert other in rendered_outsiders, f"the lane is not handed the name {other!r}"
+    # And on no other lane's brief. SKILL.md tells the operator that this path from this lane is
+    # the read it was sent to make and from any other lane is a lane that wandered, so the rule's
+    # whole value is that it appears once: a second lane picking the name up leaves a documented
+    # audit rule false, which is the failure mode #95 was filed about one level up.
+    for other in repos:
+        elsewhere = sorted(
+            lane for lane, brief in briefs.items() if "/" in lane and lane != "public/outsiders"
+            and other in brief
+        )
+        assert not elsewhere, (
+            f"{other!r} is named in {elsewhere} as well as in `public/outsiders`' own brief. "
+            f"The post-run audit tells a read this lane was sent to make from a lane that "
+            f"wandered by which lane the path came from, so the name has to appear once"
+        )
     assert "No third repository" in flat_outsiders, (
         "`public/outsiders`' bound names a second repository without closing the list at two"
     )
-    # A secret's value is served to nobody; a variable's comes back from every call that lists
-    # them, and a webhook URL's query string can carry one. So the rule is about what is
-    # written down, not only about what is called.
-    assert "never the value" in flat_outsiders.lower(), (
-        "`public/outsiders` is told to list variables and webhooks without being told that a "
-        "value is what it never records"
+    # A secret's value is served to nobody; a variable's is served to anyone who can read a
+    # public repository. So the projection on the list is not the whole of it: the bound has to
+    # close the two other ways to the same value, because `gh api -X GET` is on the list too and
+    # the endpoint returns values to it. And the prohibition is on the *fetch*, not on what ends
+    # up in a finding -- a value the lane fetched is in its context and in this run's transcripts
+    # whatever it wrote down.
+    assert VARIABLE_LISTING_PROJECTION in flat_outsiders, (
+        f"`public/outsiders`' bound does not name {VARIABLE_LISTING_PROJECTION!r} as how it "
+        f"enumerates Actions variables"
+    )
+    for way_round in ("never the bare", "endpoint through"):
+        assert way_round in flat_outsiders, (
+            f"`public/outsiders`' bound names a projection for listing variables without "
+            f"closing the other way to the same value ({way_round!r} is missing): `gh api "
+            f"-X GET` is on its list, and that endpoint returns every value"
+        )
+    assert "never fetch at all" in flat_outsiders, (
+        "`public/outsiders`' bound makes the variable rule one about what the lane records. A "
+        "value it fetched is in its context and in this run's transcripts whatever it wrote"
     )
 
     # And the operator's copy of each list is the lane's copy. SKILL.md is where the decision is
@@ -1413,7 +1461,10 @@ def test_the_public_sets_github_side_lanes_bound_and_record_their_reads() -> Non
             "`public/disclosure` reads the same corpus",
             "`public/outsiders` reads settings",
         ),
-        "public/outsiders": ("`public/outsiders` reads settings", None),
+        "public/outsiders": (
+            "`public/outsiders` reads settings",
+            "**One entry on that list",
+        ),
     }
     for lane, (start, stop) in paragraphs.items():
         assert start in flat, f"SKILL.md has no paragraph recording {lane}'s list"
@@ -1439,13 +1490,13 @@ def test_the_public_sets_github_side_lanes_bound_and_record_their_reads() -> Non
     )
 
 
-
 def test_the_post_run_audit_looks_for_what_a_stage_still_holds() -> None:
     """Scoping is not the whole control, so the audit covers what the profiles cannot.
 
     A shell can reach the network whatever the web tools say, and `gh` is on the `PATH` of
-    every stage that holds one -- the `publication` lanes, which are sent to the GitHub side
-    on purpose, included. SKILL.md's audit is what stands behind those, so it names them.
+    every stage that holds one -- the four lanes that are sent to the GitHub side on purpose
+    included. SKILL.md's audit is what stands behind those, so it names them, and its second
+    pass has to be able to print every subcommand their own lists permit (#95).
     """
     skill = SKILL.read_text(encoding="utf-8")
 
@@ -1481,10 +1532,19 @@ def test_the_post_run_audit_looks_for_what_a_stage_still_holds() -> None:
     )
     # The second pass reaches every `gh` surface the bounded lanes read, by subcommand, because
     # a pass that named `api` alone would leave `gh run view --log` -- the Actions logs, the
-    # surface the bound exists for -- out of what the operator is shown.
-    for probe in ("gh ", "api", "issue", "pr", "run", "ls-remote", "clone", "uniq"):
+    # surface the bound exists for -- out of what the operator is shown. Derived from the four
+    # lists rather than listed here, because that is the set the question is about: `gh repo` and
+    # `gh ruleset` arrived with `public/outsiders` (#95), and a probe list written out by hand
+    # goes stale exactly when a lane gains a surface, which is when it matters.
+    subcommands = {
+        call.split()[1]
+        for call in PUBLICATION_READ_CALLS + DISCLOSURE_READ_CALLS + OUTSIDERS_READ_CALLS
+    }
+    for probe in sorted(subcommands) + ["gh ", "uniq"]:
         assert probe in read_passes[0], (
-            f"the audit's GitHub-side read pass does not look for {probe!r}"
+            f"the audit's GitHub-side read pass does not look for {probe!r}, which is on a lane's "
+            f"own list of permitted reads: a surface it cannot print is one the operator cannot "
+            f"check a lane's `coverage` record against"
         )
     # Without its ERE escapes, so a probe reads as the thing looked for rather than as the
     # spelling: `\.credentials\.json` and `\bnc ` are what the command has to say.
