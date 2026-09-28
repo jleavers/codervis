@@ -36,16 +36,23 @@ JSON object; it now holds that and no shell at all.
 | `sweep-lane` | a scan lane and its refuters | read, write, edit, shell; no web |
 | `sweep-lane-web` | a lane whose brief sends it to vendor documentation or an advisory database | the above, plus WebFetch and WebSearch |
 | `sweep-triage` | triage and the completeness critic | read and write; no shell, no web |
-| `sweep-report` | dedupe and the report | read, write, and a shell for two read-only `gh` listings |
+| `sweep-report` | dedupe and the report | read and write; no shell, no web |
 
-Two things these profiles do not do, both of which are the operator's to close, and both of
-which are why the post-run audit in `.claude/skills/security-sweep/SKILL.md` is not optional:
+**A lane's shell can reach the network** whatever the web tools say, so "no WebFetch" bounds
+the tool, not the host. That is the operator's to close, and it is why the post-run audit in
+`.claude/skills/security-sweep/SKILL.md` is not optional.
 
-- **A tool list cannot say "read-only `gh`".** The report stage's dedupe is
-  `gh issue list` and `gh pr list`, and the only way to run them is a shell that could equally
-  run `gh issue close`. Its prompt names the two commands; the audit looks for write verbs.
-- **A lane's shell can reach the network** whatever the web tools say, so "no WebFetch" bounds
-  the tool, not the host.
+The report stage held a shell until #80, and the reason it no longer does is worth keeping:
+a tool list cannot say "read-only `gh`". Its dedupe was `gh issue list` and `gh pr list`, and
+the only way to run them was a shell that could equally run `gh issue close` — and what those
+listings returned was issue bodies with no author, from a tracker any GitHub account can write
+to. The listing is now the launching session's to fetch and filter to maintainer-authored
+items, and the workflow relays it to the stage through the fence like every other hand-off.
+
+That is the dedupe pass and not the whole sweep: the `publication` lanes of the `gaps` and
+`fixes` sets read the GitHub side unfiltered, because what they are auditing is what a stranger
+can make public. `.claude/skills/security-sweep/SKILL.md` says so beside the audit that stands
+behind them.
 
 Which profile a lane gets is the `web` flag on the lane in the workflow, and the reason is a
 comment beside it.

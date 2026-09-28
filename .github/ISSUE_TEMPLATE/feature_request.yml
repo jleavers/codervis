@@ -41,14 +41,15 @@ body:
       required: true
 
   - type: textarea
-    id: validation
+    id: how-you-would-know
     attributes:
-      label: Validation
-      description: The commands that must pass. Concrete commands are worth more than prose.
+      label: How you would know it is done
+      description: >
+        Anything beyond the acceptance criteria above that would show it: a behaviour to look
+        at, an area of the suite you expect to cover it. Describe it rather than writing the
+        commands; this field is not a script.
       placeholder: |
-        python -m pytest
-        node --test 'tests/test_*.js'
-      render: shell
+        The gauge and its countdown agree on the first paint and after the next SSE tick.
 
   - type: textarea
     id: alternatives

@@ -36,6 +36,10 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_SETTINGS = ROOT / ".claude" / "settings.json"
 
+# `*.y*ml`, not `*.yml`: GitHub reads a form named `.yaml` exactly the same, so the narrower
+# glob left `bug.yaml` with a `render: shell` field invisible to every check in this module.
+ISSUE_FORMS = sorted((ROOT / ".github" / "ISSUE_TEMPLATE").glob("*.y*ml"))
+
 DOCS_DIR = ROOT / "docs" / "superpowers"
 PLANS_DIR = DOCS_DIR / "plans"
 WORKFLOW = ROOT / ".claude" / "workflows" / "security-sweep.js"
@@ -44,16 +48,17 @@ AGENTS_DIR = ROOT / ".claude" / "agents"
 
 # What each stage's agent may hold. The value is the exact `tools:` list its definition
 # declares, in order, because "the triage pass has no shell" is the whole point of the file and
-# a tool added to it is a decision, not a detail. `Bash` on the report stage is the one
-# residual the tool layer cannot express: its dedupe is two read-only `gh` listings, and a
-# shell that can run those can run `gh issue close` too, which is why SKILL.md's post-run audit
-# looks for write verbs.
+# a tool added to it is a decision, not a detail. The report stage held `Bash` until #80, for a
+# dedupe that was two read-only `gh` listings -- which a tool list cannot say, since a shell
+# that runs those runs `gh issue close` too, and which is why SKILL.md's post-run audit looks
+# for write verbs. The tracker listing is the launching session's now, filtered to
+# maintainer-authored items and relayed through the fence, so the stage holds no shell at all.
 STAGE_TOOLS = {
     "sweep-recon": "Read, Glob, Grep, Bash, Write",
     "sweep-lane": "Read, Glob, Grep, Bash, Edit, Write",
     "sweep-lane-web": "Read, Glob, Grep, Bash, Edit, Write, WebFetch, WebSearch",
     "sweep-triage": "Read, Glob, Grep, Write",
-    "sweep-report": "Read, Glob, Grep, Write, Bash",
+    "sweep-report": "Read, Glob, Grep, Write",
 }
 
 # What an archived document opens with. The plans carry this sentence; the two design specs
@@ -121,6 +126,54 @@ def _shipped_files() -> list[Path]:
 def _shipped_text_files() -> list[Path]:
     """The shipped files this module can scan as text."""
     return [path for path in _shipped_files() if path.suffix in TEXT_SUFFIXES]
+
+
+# The sweep text that sends its agent to the GitHub side on purpose, and why. Both are the
+# `publication` lane of a lane set, sent to every issue, comment, review comment and Actions
+# run log to find a credential that becomes readable by anyone on the day this repository is
+# public. The filtered listing the dedupe pass is handed cannot do that work: what a stranger
+# wrote is exactly what those lanes audit. They read unfiltered and unfenced, with a shell, and
+# SKILL.md says so beside the post-run audit that stands behind them. Anything else that
+# acquires it is a decision, and this set is where the decision is argued for.
+GITHUB_SIDE_BY_DESIGN = {"gaps/publication", "fixes/publication"}
+
+# How a brief says it: a `gh` subcommand, or GitHub's own name for the logs. Two markers rather
+# than one, because the `fixes/publication` brief names no command at all -- it says "all issue
+# and PR threads, #1 onwards" and leaves the agent to pick the call -- and a check keyed on
+# `gh` alone would have pinned one of the two exceptions and left the other invisible, which is
+# the failure mode this whole test exists to prevent.
+GITHUB_SIDE = re.compile(r"\bgh |Actions run")
+
+
+def _sweep_briefs(source: str) -> dict[str, str]:
+    """Every prompt the workflow writes, and every lane brief it interpolates into one.
+
+    A lane's `brief` is a template literal inside a `<SET>_LANES` array, not a `const
+    <name>Prompt`, and `scanPrompt` renders it in the prompt's own voice -- so a check that
+    reads only the prompt builders reads none of the text that actually reaches a scan agent.
+    The keys are `<lane set>/<lane key>`, spelled as `LANE_SETS` and `args.lanes` spell them.
+    """
+    texts = {
+        name: _prompt_body(source, name)
+        for name in re.findall(r"const (\w*[Pp]rompt\w*) = ", source)
+    }
+    sets = dict(re.findall(r"\n  (\w+): (\w+_LANES),", source))
+    assert sets, "no lane sets found; has LANE_SETS moved?"
+    for set_name, array in sets.items():
+        body = re.search(rf"const {array} = \[(.*?)\n\]\n", source, re.S)
+        assert body is not None, f"no array named {array}"
+        lanes = re.findall(r"key: '([^']+)',(.*?)\n  \}", body.group(1), re.S)
+        assert lanes, f"no lanes parsed out of {array}"
+        for key, brief in lanes:
+            texts[f"{set_name}/{key}"] = brief
+    return texts
+
+
+def _const_body_list(source: str, name: str) -> list[str]:
+    """The string literals of ``const <name> = ['a', 'b']``, which is not a template literal."""
+    match = re.search(rf"const {name} = \[([^\]]*)\]", source)
+    assert match is not None, f"no const {name} array"
+    return re.findall(r"'([^']*)'", match.group(1))
 
 
 def _const_body(source: str, name: str) -> str:
@@ -624,6 +677,7 @@ def test_relayed_material_reaches_an_agent_fenced_and_labelled() -> None:
         "clusters",
         "singletons",
         "coverage gaps",
+        "tracker items",
     ):
         assert any(label.startswith(relayed) for label in labelled), (
             f"{relayed!r} no longer reaches the next stage through the fence; relayed: {labelled}"
@@ -692,6 +746,10 @@ def test_every_stage_holds_a_named_tool_profile_and_nothing_wider() -> None:
     # above already ties each file to the table, so these add no reach -- they say which parts of
     # those tool lists are load-bearing, so that a change to one arrives with an explanation.
     assert "Bash" not in held["sweep-triage"], "the triage stage has acquired a shell"
+    assert "Bash" not in held["sweep-report"], (
+        "the report stage has acquired a shell; its dedupe reads a tracker listing relayed to "
+        "it, and a shell is how it would go and fetch an unfiltered one itself (#80)"
+    )
     assert "Web" not in held["sweep-report"], "the report stage has acquired the web"
     assert "Web" not in held["sweep-lane"], (
         "the default lane profile has acquired the web; a lane whose brief needs it declares "
@@ -699,11 +757,197 @@ def test_every_stage_holds_a_named_tool_profile_and_nothing_wider() -> None:
     )
 
 
+def test_no_sweep_stage_goes_and_reads_the_tracker() -> None:
+    """Who wrote a tracker item is a bound on what may reach an agent; a preamble is not.
+
+    The dedupe pass used to run `gh issue list` and `gh pr list` in its own shell, on the host
+    that holds this dashboard's two live tokens, and the bodies it read carried no author and
+    no fence (#80). Any GitHub account can open an issue on a public repository, edit its own
+    and close it, so a stranger's self-closed "fixed" issue was enough to make a genuine new
+    cluster read as a duplicate -- no disobedience needed, and so nothing in the prompt to
+    disobey. The listing is the launching session's now, and this script's to filter.
+    """
+    source = WORKFLOW.read_text(encoding="utf-8")
+
+    # Every prompt the workflow writes, and every lane brief it interpolates into one. The
+    # briefs are the half worth saying out loud: they live in `LANE_SETS`, not in a `*Prompt*`
+    # constant, and `scanPrompt` puts them in the prompt's own voice, outside the fence. A
+    # check scoped to the prompts alone would have read as this whole property while the lane
+    # briefs went unexamined.
+    #
+    # `gh` is on the `PATH` of every stage that holds a shell, so what is pinned is what the
+    # text asks for, not what the tool lists allow.
+    reaches_github = {
+        name for name, body in _sweep_briefs(source).items() if GITHUB_SIDE.search(body)
+    }
+    assert reaches_github == GITHUB_SIDE_BY_DESIGN, (
+        f"the sweep text that sends an agent to the GitHub side is {sorted(reaches_github)}, "
+        f"not {sorted(GITHUB_SIDE_BY_DESIGN)}. Tracker and Actions text an agent reads with a "
+        f"shell is bounded by nothing but the preamble (#80); a stage that needs it says so "
+        f"here, and SKILL.md and .claude/README.md say the same to the operator."
+    )
+
+    # The filter is the script's, because the command that produces the listing is one line in
+    # a skill document and the association is the whole of what makes an item trustworthy.
+    associations = _const_body_list(source, "MAINTAINER_ASSOCIATIONS")
+    assert associations == ["OWNER", "MEMBER", "COLLABORATOR"], (
+        f"the maintainer associations are {associations}; anything wider admits an account "
+        f"with no commit rights to this repository"
+    )
+    filterer = source[source.index("const maintainerAuthored = ") :]
+    filterer = filterer[: filterer.index("\n}\n")]
+    assert "MAINTAINER_ASSOCIATIONS.includes(item.authorAssociation)" in filterer, (
+        "maintainerAuthored() does not check the association, so args.tracker reaches the "
+        "dedupe pass however the launching session built it"
+    )
+    assert "String(item.author || AUTHOR_UNKNOWN)" in filterer, (
+        "a relayed tracker item does not carry its author. An item whose author GitHub no "
+        "longer has still has one recorded, because an empty string reads the same as a field "
+        "nobody filled in"
+    )
+    assert "const AUTHOR_UNKNOWN = '(author unknown)'" in source, (
+        "the sentinel for a deleted author is missing or is one an account could hold; "
+        "`unknown` is a valid GitHub login, so a deleted author would read as a real account"
+    )
+
+    # The cap bounds records; this bounds bytes. One issue body can be 65,536 characters, so
+    # 300 capped records is still a prompt of any size -- and the same text crosses the
+    # launching session's own context on the way. Both halves are pinned, since either alone
+    # leaves the other free to go.
+    assert re.search(r"const TRACKER_BODY_CHARS = (\d+)\b", source), (
+        "no per-body cap on the relayed listing"
+    )
+    body_chars = int(re.search(r"const TRACKER_BODY_CHARS = (\d+)\b", source).group(1))
+    assert body_chars <= 8000, (
+        f"TRACKER_BODY_CHARS is {body_chars}; a cap that large stops bounding the prompt, "
+        f"which is the whole of what it is for"
+    )
+    assert "body: cut(String(item.body || ''))" in filterer, (
+        "a relayed tracker item's body does not go through the cut, so the cap on how many "
+        "items are relayed is the only bound and it does not bound bytes"
+    )
+    assert "body.slice(0, TRACKER_BODY_CHARS) + BODY_TRUNCATED" in filterer, (
+        "the cut does not bound the body to TRACKER_BODY_CHARS, or does not mark where it cut"
+    )
+    # Counted and said, not only done. This module's own rule for the record cap is that a cut
+    # the stage cannot see is a search it reports as whole, and a body that stops early is the
+    # same cut on the other axis.
+    assert "truncated += 1" in filterer, "a cut body is not counted"
+    assert "the report must say that bodies were cut" in source, (
+        "the dedupe pass is not told that bodies were cut, so it reports having read issues it "
+        "only read the first part of"
+    )
+
+    # And it is applied: a listing that reached the relay unfiltered would leave every constant
+    # above in place and change nothing about what the report stage reads.
+    assert "maintainerAuthored(args.tracker)" in source, (
+        "args.tracker is not put through the filter"
+    )
+    # Matched on every spelling of the read, not on the one the script happens to use:
+    # `args['tracker']` and a destructure reach the same property and would have gone past a
+    # fixed-substring check, which is the narrowing this whole module exists to catch.
+    # Comments stripped first: this file is unusually comment-dense, and a comment that names
+    # the property is not a read of it -- counting one would turn this red for prose.
+    code = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+    code = re.sub(r"^\s*//.*$", "", code, flags=re.M)
+    reads = re.findall(r"""args\s*(?:\.\s*tracker\b|\[\s*['"]tracker)""", code)
+    assert len(reads) == 1, (
+        f"args.tracker is read {len(reads)} times; it reaches the relay only through "
+        f"maintainerAuthored(), so a second read is a way round the filter"
+    )
+    assert re.search(r"\{[^}]*\btracker\b[^}]*\}\s*=\s*args\b", code) is None, (
+        "args is destructured for `tracker`, which reads it without going through the filter"
+    )
+    assert "'tracker items'," in source, (
+        "the tracker listing does not reach the dedupe pass as a labelled relayed block"
+    )
+
+    # The command that produces the listing names no repository literal. SKILL.md says twice
+    # that `repo` is what `gh repo view` printed and never a literal, and nothing pinned it:
+    # the first draft of this very change shipped `repos/jleavers/codervis/issues`. In a clone
+    # or a fork -- which the skill supports, and #77 is about -- that deduped the swept tree's
+    # clusters against a different project's tracker, so a real finding matched an upstream
+    # issue and was suppressed as a duplicate. And `author_association` is relative to the
+    # repository in the URL, so the maintainer filter would have been enforcing the wrong
+    # repository's trust boundary under the right name.
+    skill = SKILL.read_text(encoding="utf-8")
+    listing = skill[skill.index("### The tracker listing") :]
+    listing = listing[: listing.index("\n## ")]
+    literals = re.findall(r"repos/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)", listing)
+    assert not literals, (
+        f"the phase 0 tracker command names {literals!r} rather than the repository the sweep "
+        f"resolved. The tracker it reads and the tree it audits have to be one repository, and "
+        f"an author association means nothing without knowing which repository it is relative to"
+    )
+    assert "repos/{owner}/{repo}/issues" in listing or "repos/$REPO/issues" in listing, (
+        "the phase 0 tracker command does not read the repository the sweep resolved. `gh`'s "
+        "own `{owner}`/`{repo}` placeholders are the spelling to prefer -- they resolve from "
+        "the current directory, so unlike a shell variable they do not need the fences of this "
+        "document to run in one shell"
+    )
+
+    # And it asks for an order, because `TRACKER_CAP` keeps the front of the list. `/issues`
+    # defaults to newest-first, which would have cut exactly the oldest issues -- the "reported
+    # and fixed, or reported and forgotten" material the dedupe prompt says matters most. An
+    # order left to a default is a decision nobody made.
+    assert "-f sort=created -f direction=asc" in listing, (
+        "the phase 0 tracker command does not ask for an order, so which items the workflow's "
+        "cap keeps is GitHub's newest-first default -- which drops the oldest issues, the ones "
+        "the dedupe pass is told matter most"
+    )
+    assert re.search(r'\(item\.get\("body"\) or ""\)\[:BODY_CHARS\]', listing), (
+        "the phase 0 command does not cut issue bodies, so the whole of every maintainer issue "
+        "crosses the launching session's context before the workflow's own cap can bound it"
+    )
+    skill_body_chars = re.search(r"^BODY_CHARS = (\d+)$", listing, re.M)
+    assert skill_body_chars, "the phase 0 command declares no body cut"
+    assert int(skill_body_chars.group(1)) == body_chars, (
+        f"the phase 0 command cuts bodies at {skill_body_chars.group(1)} and the workflow at "
+        f"{body_chars}. They are one bound written twice -- the command so the text never "
+        f"reaches the launching session's context, the script because it is the enforcement "
+        f"point -- and two numbers that may drift are not one bound"
+    )
+
+
+def test_no_issue_form_asks_a_stranger_for_an_executable_section() -> None:
+    """A form any GitHub account fills in should not solicit input shaped as steps to run.
+
+    Both forms ended in a `Validation` textarea rendered as a `shell` block, asking for "the
+    commands that must pass" (#80). GitHub writes that into the issue body under `### Validation`
+    as a fenced shell block, and an automated agent working this tracker reads a section of that
+    name as steps to run -- which is what the body of this repository's own issue workflow says
+    it does.
+    """
+    assert ISSUE_FORMS, "no issue forms found; has .github/ISSUE_TEMPLATE moved?"
+    for form in ISSUE_FORMS:
+        text = form.read_text(encoding="utf-8")
+        where = form.relative_to(ROOT)
+        # Allow-listed, not deny-listed: `render: python`, `render: yaml` and `render: console`
+        # read as executable too, and a list of four forbidden spellings says nothing about the
+        # fifth. `text` is the one permitted value -- GitHub writes it as a fenced block with no
+        # language, which is a quoted log and not a section of steps. A form that wants another
+        # argues for it here, in the test, rather than in a pull request nobody reads twice.
+        rendered = {value for value in re.findall(r"^\s*render:\s*(\S+)", text, re.M)}
+        assert rendered <= {"text"}, (
+            f"{where} renders a field a stranger fills in as {sorted(rendered - {'text'})!r}; "
+            f"GitHub writes that into the issue body as a fenced block of that language, and an "
+            f"agent working this tracker reads one as steps to run"
+        )
+        # The name matters on its own: the section heading is what an agent reads for intent,
+        # whatever the field renders as.
+        for heading in ("label: Validation", "label: Test Plan", "label: Testing"):
+            assert heading not in text, (
+                f"{where} names a field a stranger fills in {heading.split(': ')[1]!r}; an agent "
+                f"working this tracker treats a section of that name as steps to run"
+            )
+
+
 def test_the_post_run_audit_looks_for_what_a_stage_still_holds() -> None:
     """Scoping is not the whole control, so the audit covers what the profiles cannot.
 
-    A shell can reach the network whatever the web tools say, and the report stage's `gh` can
-    write as well as list. SKILL.md's audit is what stands behind those, so it names them.
+    A shell can reach the network whatever the web tools say, and `gh` is on the `PATH` of
+    every stage that holds one -- the `publication` lanes, which are sent to the GitHub side
+    on purpose, included. SKILL.md's audit is what stands behind those, so it names them.
     """
     skill = SKILL.read_text(encoding="utf-8")
 
