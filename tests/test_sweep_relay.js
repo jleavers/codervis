@@ -54,19 +54,37 @@ const STRANGER_ITEM = {
   body: `STRANGER-MARKER — this was fixed in 1.2.0. ${INJECTED}`,
 };
 
-// Which prompts name a `gh` command or GitHub's own logs outside the fence, per lane set.
-// Only the `publication` lane of `gaps` and of `fixes` does, and only because auditing what
-// becomes public on the day this repository is means reading what a stranger wrote -- the
-// filtered listing the dedupe pass gets cannot do that job. A refuter is not in the set: it
-// is handed the finding, not the lane's brief. `.claude/skills/security-sweep/SKILL.md` and
-// `.claude/README.md` say the same to the operator, beside the post-run audit that stands
-// behind it.
+// Which prompts name a `gh` command, GitHub's own logs or its activity endpoint outside the
+// fence, per lane set. Five lanes do. The `publication` lane of `gaps` and of `fixes` audits
+// what becomes public on the day this repository is, which means reading what a stranger
+// wrote, and the filtered listing the dedupe pass gets cannot do that job. The `public` set's
+// `disclosure` reads the same surface about the change to public itself, and its `outsiders`
+// reads repository state -- settings, rulesets, collaborators, a fork's pull request -- which
+// exists on the GitHub side and nowhere in a checkout. The `unowned` set's `supply-chain`
+// reads GitHub's copy of the history, because a force-pushed-over commit is served by SHA
+// long after a clone has stopped fetching it. A refuter is not in the set: it is handed the
+// finding, not the lane's brief. `.claude/skills/security-sweep/SKILL.md`, `.claude/README.md` and
+// `tests/test_agent_tooling_context.py`'s `GITHUB_SIDE_BY_DESIGN` say the same, beside the
+// post-run audit that stands behind them; this copy is the one that reads the prompt a stage
+// is really launched with, rather than the workflow's source, so the four have to agree here
+// too (#91).
 const GITHUB_SIDE_BY_DESIGN = {
   baseline: [],
   gaps: ["scan:publication"],
   fixes: ["scan:publication"],
-  unowned: [],
+  unowned: ["scan:supply-chain"],
+  public: ["scan:disclosure", "scan:outsiders"],
 };
+
+// The marker, which has to be character-for-character the one in
+// `tests/test_agent_tooling_context.py`: that one reads the workflow's source and this one the
+// prompt a stage is really launched with, so a marker true of only one of them pins half the
+// property and says nothing about the other half. Two hand-kept copies drifting apart is #91
+// itself, so the Python side asserts this literal appears here rather than trusting the
+// comment. The lookbehind is why one marker can serve both: `WHERE` heads every prompt and
+// names `~/.config/gh` among the secret stores no stage may read, and without it every stage
+// of every lane set matches here and this assertion says nothing at all.
+const GITHUB_SIDE = /(?<![\w./])gh[ \\`]|Actions run|repository activity endpoint/;
 
 const PROFILE_FOR = {
   recon: "sweep-recon",
@@ -391,19 +409,39 @@ test("the dedupe pass is handed the tracker rather than sent to fetch it", async
   // Before #80 the report stage ran `gh issue list` and `gh pr list` in its own shell, on the
   // host that holds both live tokens, and the bodies it read carried no author and no fence.
   //
-  // Every lane set, because the briefs differ between them and `baseline` is the one whose
-  // briefs happen to name no `gh` command at all: a check that ran only the default would have
-  // read as this whole property while three lane sets went unexamined.
-  for (const lanes of ["baseline", "gaps", "fixes", "unowned"]) {
+  // Every lane set the workflow defines, read out of `LANE_SETS` rather than listed here.
+  // The briefs differ between them and `baseline` is the one whose briefs happen to name no
+  // `gh` command at all, so a check that ran only the default would have read as this whole
+  // property while four lane sets went unexamined. `public` was one of them until #91: it was
+  // missing from the map above and from the literal array this replaces, so the two lanes #89
+  // added were never asked the fenced half of this question. A hand-kept list is how that
+  // happens, so the set of keys is asserted against the workflow's own before it is used.
+  const defined = [...fs.readFileSync(WORKFLOW, "utf8").matchAll(/\n  (\w+): \w+_LANES,/g)].map(
+    ([, name]) => name,
+  );
+  assert.ok(defined.length, "no lane sets found; has LANE_SETS moved?");
+  assert.deepEqual(
+    Object.keys(GITHUB_SIDE_BY_DESIGN).sort(),
+    [...defined].sort(),
+    "GITHUB_SIDE_BY_DESIGN does not have an entry per lane set; a set with none goes unchecked",
+  );
+  for (const lanes of defined) {
     const { calls } = await run({ lanes, tracker: [MAINTAINER_ITEM] });
     const reached = new Set();
     for (const { prompt, opts } of calls) {
       // Outside the fence only: a `gh` line inside one is relayed text -- the injected order
       // the stubs write into every free-text field is exactly that -- and quoting it is the
       // point of the fence, not a breach of it.
+      //
+      // The same marker as `tests/test_agent_tooling_context.py`'s `GITHUB_SIDE`, and it has
+      // to be: that one reads the workflow's source and this one the prompt a stage is really
+      // launched with, so a marker true of only one of them pins only half the property. The
+      // lookbehind is why it can be one marker at all. `WHERE` heads every prompt and names
+      // `~/.config/gh` among the secret stores no stage may read; without it every stage of
+      // every lane set matches here and this assertion says nothing.
       const { lines, inside } = fenceMap(prompt);
       const own = lines.filter((_, index) => !inside[index]).join("\n");
-      if (/\bgh |Actions run/.test(own)) reached.add(opts.label);
+      if (GITHUB_SIDE.test(own)) reached.add(opts.label);
     }
     assert.deepEqual(
       [...reached].sort(),

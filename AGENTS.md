@@ -278,17 +278,28 @@ What the repository does control is the text itself:
   (#80). The sweep's dedupe pass no longer lists the tracker: the launching
   session fetches it, filtered to author associations `OWNER`, `MEMBER` and
   `COLLABORATOR`, and `maintainerAuthored()` in the workflow re-checks every
-  item and carries its author into the fence. The `publication` lanes still read
-  the GitHub side whole, because what a stranger wrote is exactly what they
-  audit; that is the shape an exception takes, and it is written down beside
-  the post-run audit rather than left implicit. What bounds an exception like
-  that is what the brief says and what the audit checks: those lanes may make
-  only the read-only calls their brief lists, against the repository the sweep
-  resolved, and their `coverage` record is what says what they read (#85).
+  item and carries its author into the fence. Some lanes still read the GitHub
+  side whole, and which ones is `GITHUB_SIDE_BY_DESIGN` in
+  `tests/test_agent_tooling_context.py`, where the argument for each is written
+  down beside it — what a stranger wrote, for the `publication` lanes and
+  `public/disclosure`; repository state, for `public/outsiders`; and the
+  history GitHub serves after a clone has stopped fetching it, for
+  `unowned/supply-chain`. That is the shape an exception takes, and it is
+  written down beside the post-run audit rather than left implicit. What bounds
+  an exception like that is what the brief says and what the audit checks, and
+  it is per lane: the `publication` lanes may make only the read-only calls
+  their brief lists, against the repository the sweep resolved, with their
+  `coverage` record saying what they read (#85); the two `public` lanes forbid
+  every write verb in a closing line of their own; `unowned/supply-chain` has
+  no such bound written into it, so the audit is the only thing behind that
+  one. A lane admitted to the list without a bound of its own is a gap to close
+  rather than a precedent. Read the membership from the allow-list rather than
+  from a count restated here: #91 is what happened when the workflow gained
+  lanes and none of the four statements of that list did.
   This repository's issue forms are the rule facing outward: no field a
-  stranger fills in is named, or rendered, as an executable validation
-  section, because an agent working this tracker reads a section of that name
-  as steps to run.
+  stranger fills in is named, or rendered, as an executable validation section,
+  because an agent working this tracker reads a section of that name as steps
+  to run.
 - **Text one agent hands another is that same text, one step further on.** The
   sweep's findings quote the code, commands and tracker prose they are about,
   because its evidence rule requires them to, so an imperative somebody wrote

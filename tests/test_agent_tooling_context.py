@@ -45,6 +45,8 @@ PLANS_DIR = DOCS_DIR / "plans"
 WORKFLOW = ROOT / ".claude" / "workflows" / "security-sweep.js"
 SKILL = ROOT / ".claude" / "skills" / "security-sweep" / "SKILL.md"
 AGENTS_DIR = ROOT / ".claude" / "agents"
+CLAUDE_README = ROOT / ".claude" / "README.md"
+RELAY_TEST = ROOT / "tests" / "test_sweep_relay.js"
 
 # What each stage's agent may hold. The value is the exact `tools:` list its definition
 # declares, in order, because "the triage pass has no shell" is the whole point of the file and
@@ -128,21 +130,100 @@ def _shipped_text_files() -> list[Path]:
     return [path for path in _shipped_files() if path.suffix in TEXT_SUFFIXES]
 
 
-# The sweep text that sends its agent to the GitHub side on purpose, and why. Both are the
-# `publication` lane of a lane set, sent to every issue, comment, review comment and Actions
-# run log to find a credential that becomes readable by anyone on the day this repository is
-# public. The filtered listing the dedupe pass is handed cannot do that work: what a stranger
-# wrote is exactly what those lanes audit. They read unfiltered and unfenced, with a shell, and
-# SKILL.md says so beside the post-run audit that stands behind them. Anything else that
-# acquires it is a decision, and this set is where the decision is argued for.
-GITHUB_SIDE_BY_DESIGN = {"gaps/publication", "fixes/publication"}
+# The sweep text that sends its agent to the GitHub side on purpose, and why. They read
+# unfiltered and unfenced, with a shell, and SKILL.md and `.claude/README.md` say so beside the
+# post-run audit that stands behind them. Anything else that acquires it is a decision, and
+# this set is where the decision is argued for -- so the argument is per lane, because the five
+# do not all have the same one, and a new lane is weighed against whichever of the three it
+# claims.
+#
+# - **What a stranger wrote**, which a listing filtered to maintainer-authored items is exactly
+#   the removal of. The `publication` lane of the `gaps` and `fixes` sets is sent to every
+#   issue, comment, review comment and Actions run log, to find a credential that becomes
+#   readable by anyone on the day this repository is public; `public/disclosure` (#89) asks
+#   that of the change to public itself, over every reachable object and pull-request ref, the
+#   tracker, and the Actions logs and artifacts. The dedupe pass's filtered listing cannot
+#   stand in for any of it.
+# - **Repository state, which exists only on the GitHub side.** `public/outsiders` (#89) is the
+#   one lane here for this second reason rather than the first: its reads are GETs on the
+#   repository object, the Actions permissions, the `main` ruleset, collaborators, deploy keys
+#   and webhook hosts, and the *names* of secrets. None of that is stranger-written text, and
+#   the filtered listing is not a poor substitute for it but no substitute at all -- it carries
+#   no settings. A checkout cannot answer what an account with no role may do to the repository
+#   once anyone can reach it.
+# - **GitHub's copy of the history, which a clone does not hold.** `unowned/supply-chain`'s
+#   last bullet is sent to the repository activity endpoint, because GitHub serves a
+#   force-pushed-over commit by SHA after no ref names it and a clone has stopped fetching it;
+#   what the lane is asking is how far back that reaches and what the retention is. The object
+#   it is looking for is the one a checkout is missing by definition, so there is nowhere else
+#   to ask. It was not in this set until #91 and should have been from the start: its brief
+#   names no `gh` command and no Actions run, so the marker below never saw it, and being
+#   invisible to a spelling check is not the same as not going.
+#
+# Four of the five bound themselves to reads in the brief itself, which is text and not a tool
+# list: the two `publication` lanes through `PUBLICATION_READ_BOUND` and its named call list
+# (#85), and both `public` lanes in their closing line. `unowned/supply-chain` is the one that
+# does not, and admitting it here without saying so would be the silence this set exists to
+# prevent. The post-run audit's `gh` write-verb grep is what stands behind it meanwhile, which
+# is detection after the fact rather than a bound; giving that lane the same closing line is a
+# change to a brief and belongs to whoever owns the lane, so it is filed rather than made here.
+#
+# The lanes that are not here and should not be: `public/cloner` runs the stack on a stranger's
+# machine, `public/shipped-text` mutates a copy of the tree, and `unowned/assurance` mutates
+# this one. None of them needs the GitHub side to do it.
+GITHUB_SIDE_BY_DESIGN = {
+    "gaps/publication",
+    "fixes/publication",
+    "public/disclosure",
+    "public/outsiders",
+    "unowned/supply-chain",
+}
 
 # How a brief says it: a `gh` subcommand, or GitHub's own name for the logs. Two markers rather
 # than one, because the `fixes/publication` brief names no command at all -- it says "all issue
 # and PR threads, #1 onwards" and leaves the agent to pick the call -- and a check keyed on
 # `gh` alone would have pinned one of the two exceptions and left the other invisible, which is
 # the failure mode this whole test exists to prevent.
-GITHUB_SIDE = re.compile(r"\bgh |Actions run")
+#
+# The character class is the third spelling, and it is load-bearing: `\bgh ` alone requires a
+# space, and a brief writes the command in a code span -- `` \`gh\` listings `` -- far more
+# often than bare. This reads the workflow's *source*, where that is `gh` followed by a
+# backslash, so `public/disclosure` matched on one occurrence and it was the closing
+# prohibition ("never pass `-X` ... to `` \`gh api\` ``") rather than the bullet that sends it
+# to the Actions logs; its tracker bullet names no command at all, exactly as
+# `fixes/publication`'s does not. (That count was taken before #94's `_expand_constants`, which
+# inlines shared constants and raises every lane's hit count; the lanes it picks out are the
+# same.) A lane writing `` \`gh\` `` throughout would have matched
+# nothing and gone green -- the #89 shape one layer down, caught here rather than in a run.
+# (#89's own two lanes did not ship green; they shipped red, which is #91.) The backtick is in
+# the class because
+# `tests/test_sweep_relay.js` runs this same marker over the *rendered* prompt, where the
+# escape is gone.
+#
+# The lookbehind is what keeps that widening from swallowing the whole sweep. `\b` already
+# excludes "through" and "high", but not a *path*: `HANDS_OFF` names `` \`~/.config/gh\` ``
+# among the secret stores no stage may read, and `WHERE` puts it at the top of every prompt,
+# outside the fence. So the marker excludes a `gh` that follows a word character, a `/` or a
+# `.`, which is a command the moment it does not.
+#
+# It is load-bearing on **both** sides, which it was not when it was written. It went in for
+# the relay test, which reads the rendered prompt; this module read `${WHERE}` unexpanded and
+# would have stayed green. `_expand_constants` (#94) inlines it, so `.config/gh` is now in all
+# seven prompt bodies here too -- drop the lookbehind and this module gains seven spurious
+# matches and fails. Do not narrow it back on the theory that only the JS reader needs it.
+#
+# The third alternative is a phrase rather than a command, and it is here because a brief can
+# send an agent to the GitHub side without naming the tool it gets there with:
+# `unowned/supply-chain` asks for the **repository activity endpoint** and names no `gh` at
+# all. That is the honest shape of this marker and the reason it is not the whole control --
+# it reads what a brief *says*, so "with the GitHub CLI", a bare `api.github.com` URL or
+# "mirror-clone the remote" would each evade it. What it catches is a lane acquiring the
+# GitHub side in the spelling lanes actually use; a lane that reaches it some other way is
+# caught by a reviewer, and the set below is where the argument for each one is written so
+# that a reviewer has something to check it against.
+GITHUB_SIDE = re.compile(
+    r"(?<![\w./])gh[ \\`]|Actions run|repository activity endpoint"
+)
 
 
 def _sweep_briefs(source: str) -> dict[str, str]:
@@ -203,6 +284,18 @@ def _expand_constants(source: str, text: str) -> str:
                 continue
             unresolved.add(name)
     return text
+
+
+def _between(text: str, opening: str, closing: str) -> str:
+    """The span of ``text`` between two anchors, both of which must be there.
+
+    A missing anchor is an error rather than an empty span: a check scoped to a passage that
+    has been renamed away would otherwise pass by finding nothing to look at, which is the
+    same defect as scoping it to the whole file.
+    """
+    start = text.index(opening)
+    end = text.index(closing, start)
+    return text[start:end]
 
 
 def _const_body_list(source: str, name: str) -> list[str]:
@@ -823,6 +916,51 @@ def test_no_sweep_stage_goes_and_reads_the_tracker() -> None:
         f"here, and SKILL.md and .claude/README.md say the same to the operator."
     )
 
+    # And they do say it, rather than the set being the only place it is written down. Both
+    # documents claim a widening is a change to them as well, and until #91 nothing made that
+    # true: a lane went green the moment the two allow-lists agreed, with the operator still
+    # reading "the `publication` lanes of the `gaps` and `fixes` sets".
+    #
+    # SKILL.md is read between its two anchors rather than whole, and that is the difference
+    # between a check and the appearance of one. It carries a per-set lane table naming every
+    # lane of every set, so a whole-file search finds any real lane there whatever the
+    # exception paragraph says -- the half would have passed for a lane nobody had argued for.
+    # `.claude/README.md` has no such table and is read whole. What is checked is the lane's
+    # own key, which is what a reader needs to know which lane is meant; neither half can bound
+    # *where* within its span the name falls, so this fails the change that never went near the
+    # paragraph rather than standing in for reading it. The key is also all it checks, so the
+    # two `publication` lanes stand or fall together here -- a document naming one set's and
+    # not the other's passes. Which set a `publication` lane belongs to is the reasons above,
+    # and those are prose a reviewer reads.
+    where_it_is_argued = {
+        SKILL: _between(
+            SKILL.read_text(encoding="utf-8"),
+            "lanes still read the GitHub side",
+            "\n**Handing the two",
+        ),
+        CLAUDE_README: CLAUDE_README.read_text(encoding="utf-8"),
+    }
+    for lane in sorted(GITHUB_SIDE_BY_DESIGN):
+        key = lane.split("/", 1)[1]
+        for doc, text in where_it_is_argued.items():
+            assert key in text, (
+                f"{doc.relative_to(ROOT)} does not name the `{key}` lane where it says which "
+                f"lanes read the GitHub side, though GITHUB_SIDE_BY_DESIGN says it does. The "
+                f"operator reads that passage to know which stages the post-run audit has to "
+                f"stand behind, so a lane added to the set is argued for in both documents."
+            )
+
+    # The relay test runs this same marker over the rendered prompt, and two hand-kept copies
+    # drifting apart is what #91 was. So the literal is asserted to be there rather than
+    # promised in a comment: a narrowing on the JS side is otherwise silent, because that
+    # assertion simply stops finding lanes and keeps passing.
+    relay = RELAY_TEST.read_text(encoding="utf-8")
+    assert f"const GITHUB_SIDE = /{GITHUB_SIDE.pattern}/" in relay, (
+        f"{RELAY_TEST.relative_to(ROOT)} does not carry this module's marker verbatim. It "
+        f"reads the prompt a stage is really launched with and this one reads the workflow's "
+        f"source, so a marker true of only one of them pins half of this property."
+    )
+
     # The filter is the script's, because the command that produces the listing is one line in
     # a skill document and the association is the whole of what makes an item trustworthy.
     associations = _const_body_list(source, "MAINTAINER_ASSOCIATIONS")
@@ -1141,8 +1279,9 @@ def test_the_post_run_audit_looks_for_what_a_stage_still_holds() -> None:
     """Scoping is not the whole control, so the audit covers what the profiles cannot.
 
     A shell can reach the network whatever the web tools say, and `gh` is on the `PATH` of
-    every stage that holds one -- the `publication` lanes, which are sent to the GitHub side
-    on purpose, included. SKILL.md's audit is what stands behind those, so it names them.
+    every stage that holds one -- the lanes `GITHUB_SIDE_BY_DESIGN` names, which are sent
+    to the GitHub side on purpose, included. SKILL.md's audit is what stands behind those, so
+    it names them.
     """
     skill = SKILL.read_text(encoding="utf-8")
 
