@@ -45,6 +45,22 @@ day the repository is public. The filtered listing cannot do that work: the text
 audit is precisely the text a stranger wrote. They hold a shell, and the post-run audit below
 is what stands behind them — do not read the paragraph above as covering them.
 
+**Handing them the text instead was considered and refused (#85), on those lanes' own terms.**
+A relayed body is cut to a few thousand characters, and a cut through a corpus is a cut through
+the middle of the value being looked for; an Actions run log does not survive a relay at any
+workable size; and relaying that corpus would copy every candidate secret into a prompt, into
+this run's journal and into your own session's context — while this is the lane told never to
+write a candidate value down anywhere. Attribution buys little here either, where the lane is
+looking for a value rather than reasoning about what the text asks for. So the shell stays, and
+the reach is bounded in the lane's own brief instead (`PUBLICATION_READ_BOUND` in the
+workflow): read-only calls from a list it names — `gh issue list` and `gh issue view`,
+`gh pr list` and `gh pr view`, `gh run list`, `gh run view --log`, and `gh api` with no
+`-X`/`--method` flag or with `-X GET` — against the repository the sweep resolved and no
+other, with no write verb, no GraphQL mutation and no other host. The lane's `coverage` is
+what says what it read: which of those calls it made, with what filters, and how many issues,
+PR threads, comments, review comments and Actions runs. Widening that list is a decision, and
+`tests/test_agent_tooling_context.py` stays red until it is made on purpose.
+
 After a run, audit what the agents actually ran before presenting: the per-agent transcripts sit
 beside the workflow's `journal.jsonl`, in the directory the task notification names. Look for:
 
@@ -55,6 +71,12 @@ beside the workflow's `journal.jsonl`, in the directory the task notification na
   `api` with `-X` / `--method` and `POST`, `PATCH`, `PUT` or `DELETE` — and any `git push`.
   Filing is phase 7, which you do yourself after the operator names the clusters; no agent in
   the run has any business writing to the tracker.
+- **what a `publication` lane read**, which is the other half of that same surface: for those
+  two lanes the read *is* the exposure, and no bullet above looks at one. Every GitHub-side
+  call in the run has to be one the bound above names, on the repository the sweep resolved,
+  and in one of those two transcripts — a `gh` read from any other stage is one that went
+  outside its brief, and a path naming another repository or another host is that whether or
+  not it was a write.
 - a `WebFetch`, `curl`, `wget` or `nc` to anything that is not loopback, and any call at all to
   `claude.ai` or `chatgpt.com`
 - a call to an MCP connector. The profiles grant none, so one in a transcript means a stage did
@@ -68,9 +90,23 @@ stage did not launch with its profile, went unasked:
 grep -nE 'docker exec|gh [a-z]+ (create|edit|close|comment|merge|delete)|(-X|--method) (POST|PATCH|PUT|DELETE)|git push|WebFetch|curl |wget |\bnc |mcp__|printenv|/proc/[0-9]+/environ|\.credentials\.json|auth\.json|\.config/gh|\.ssh\b|\.docker\b|\.env\b|claude\.ai|chatgpt\.com' <transcript-dir>/*.jsonl | head -80
 ```
 
-It is a starting point and not a verdict, in both directions.
+A second pass for the bullet that one cannot carry, because this one is *expected* to print
+lines: the question about a GitHub-side read is what it says, not whether it happened, and an
+alternation that is allowed to match forty times an audit does not belong in a grep whose every
+hit is a thing to explain.
 
-It matches things that are fine: a lane that read `.env.example`, one that quoted `auth.json`
+```bash
+grep -ohE 'gh (api|issue|pr|run|search|release|workflow|cache|secret|variable)( [-a-zA-Z0-9@:/{}._]+)*' <transcript-dir>/*.jsonl | sort | uniq -c | sort -rn | head -40
+```
+
+Read it against the two lanes' own `coverage` records, which are required to say what they
+read. A call in a transcript that no record accounts for, and a record that claims more than
+the transcripts show, are the two halves of one question: whether what a lane says it examined
+is what it examined.
+
+Both are a starting point and not a verdict, in both directions.
+
+The first matches things that are fine: a lane that read `.env.example`, one that quoted `auth.json`
 while explaining why it never opened it, a path like `/usr/bin/nc` in a tool's own output, this
 repository's own `app/egress.py` discussing `claude.ai`.
 
