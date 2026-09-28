@@ -87,8 +87,8 @@ stage that falls back to the default subagent (below) inherits all of it.
 
 - Disconnect any MCP connector this run does not need.
 - Use a `gh` credential that can read this repository's tracker and not write to it. Phase 7 is
-  the only step that needs write, it happens after the operator names the clusters, and you run
-  it yourself.
+  the only step that needs more — a draft advisory needs admin or maintain on the repository —
+  it happens after the operator names the clusters, and you run it yourself.
 
 That is advice about your own environment, not something this repository configures for you:
 a committed settings file was tried for #21 and reverted (#34, #35).
@@ -108,6 +108,7 @@ git fetch origin
 git rev-list --count main..origin/main          # informational only
 git worktree add --detach "$WT" origin/main
 git -C "$WT" rev-parse HEAD                     # the swept SHA
+gh repo view --json nameWithOwner --jq .nameWithOwner   # the repo: where origin points
 mkdir -p "$RD" "$WT-scratch"
 ```
 
@@ -119,11 +120,16 @@ ignores it. The workflow derives it from `worktree` unless `scratch` is passed.
 Then write `$RD/run.json`:
 
 ```json
-{"stamp": "...", "sha": "...", "repo": "jleavers/codervis",
+{"stamp": "...", "sha": "...", "repo": "<owner>/<name>",
  "worktree": "<absolute>", "run_dir": "<absolute>", "lane_set": "baseline", "phases": {}}
 ```
 
-Three things about this, each load-bearing:
+Four things about this, each load-bearing:
+
+- **`repo` is what `gh repo view` printed, never a literal.** It is the tracker the dedupe reads
+  and where Phase 7 reports. In a clone of somebody else's project it is that project, and
+  Phase 7 then reports to it privately rather than filing on it (#77). Check it names the
+  repository you mean before going on: a fork with more than one remote can resolve either way.
 
 - **The worktree is cut from `origin/main`, not from local `main`.** That makes the local
   checkout's state irrelevant to what is audited, which is a stronger guarantee than
@@ -192,8 +198,11 @@ The `gaps` lanes (`args.lanes: "gaps"`), built from the first run's completeness
 | `ambient-inputs` | inputs nobody typed for this app: proxy/CA variables, Docker client config, uvicorn env, `${USERPROFILE}`, the Codex tree |
 
 The `fixes` lanes (`args.lanes: "fixes"`) are for the tree after the first two runs' issues
-were fixed (from `9b0612b`). Pass the closed issues as `known`, so the lanes test the fixes
-rather than rediscover the original findings:
+were fixed (from `9b0612b`). Pass as `known` the issues whose fix you have checked at `main`, so
+the lanes test the fixes rather than rediscover the original findings. Checked, not merely
+closed: #48 was closed by a stray keyword in a commit message ("filed rather than fixed: #48")
+and stayed open in the code, and on a public tracker anyone can close an issue they opened
+(#80). What `known` says is fixed, every lane goes past:
 
 | Lane | Threat model |
 | --- | --- |
@@ -227,8 +236,11 @@ the Write tool. If the session died after the workflow finished, take the text f
 agent's result in the workflow's `journal.jsonl` (the task notification names its directory).
 
 Read `<runDir>/report-<stamp>.md`. Present the clusters ranked by severity; for each give the
-title, the **invariant**, the blast radius, and the dedupe verdict with the issue numbers it
-matched. Then ask which to file.
+title, the **invariant**, the blast radius, and the dedupe verdict with the issue numbers and
+advisory ids it matched. Then ask which to file, and, for each, whether it may be described in public now.
+The default is no: a cluster goes to a private draft advisory (Phase 7), and a public issue is
+for one the operator judges safe to describe before it is fixed, such as a test that pins too
+little or documentation that overclaims.
 
 Say explicitly:
 
@@ -239,32 +251,78 @@ Say explicitly:
 Do not file anything the operator did not name. Do not file a `duplicate` without saying so
 first.
 
-## Phase 7: file the approved clusters
+## Phase 7: file the approved clusters, privately by default
 
-Filing with `gh issue create` and title or body flags is blocked by a PreToolUse hook. Use
-`gh api`, and write the body file in a **separate** Bash call — the hook aborts the whole call,
-so a chained heredoc never runs and the API call then fails with a misleading "no such file or
-directory".
+A cluster describes a flaw, usually one that is not fixed yet. On a public repository an issue
+is world-readable the moment it is filed, so filing one discloses the attack path before
+anybody has fixed it, and does exactly what `SECURITY.md` asks every other reporter not to do
+(#77). So each approved cluster goes to a **draft security advisory**, which only the
+repository's maintainers can read, unless the operator said at approval that it may be
+described in public now.
 
-Write the body to a temp `.md` file (Write tool), then:
+Where it goes is decided by run.json's `repo` and your role on it, never by a literal:
 
 ```bash
-gh api repos/jleavers/codervis/issues -X POST \
+gh api repos/<repo> --jq '.permissions | {admin, maintain}'
+```
+
+- **You maintain `<repo>`** (either is `true`): a draft advisory per cluster, or a public issue
+  for one the operator named as safe to describe.
+- **You do not.** You are reporting to somebody else's project; a clone of this repository
+  reports upstream. Check that private reporting is on
+  (`gh api repos/<repo>/private-vulnerability-reporting --jq .enabled`) and submit a private
+  report. If it is off, follow that project's `SECURITY.md` and stop. Never a public issue, and
+  never a draft on your own fork, which the project cannot see.
+
+Write every body with the Write tool, in a **separate** call from the `gh` one. Filing with
+`gh issue create` and title or body flags is blocked by a PreToolUse hook, which aborts the
+whole call, so a chained heredoc never runs and the API call then fails with a misleading "no
+such file or directory".
+
+**A draft advisory.** Write the description to `advisory.md`, and the rest to `advisory.json`:
+
+```json
+{"summary": "TITLE", "severity": "high",
+ "vulnerabilities": [{"package": {"ecosystem": "other", "name": "<repo name>"}}]}
+```
+
+then merge the two and file it:
+
+```bash
+jq --rawfile d advisory.md '.description=$d' advisory.json > advisory-full.json
+gh api repos/<repo>/security-advisories -X POST --input advisory-full.json --jq .ghsa_id
+```
+
+A private report to a project you do not maintain takes the same JSON at
+`repos/<repo>/security-advisories/reports`.
+
+**A public issue**, only for a cluster the operator named as safe to describe now:
+
+```bash
+gh api repos/<repo>/issues -X POST \
   -f title='TITLE' \
   -F body=@bodyfile.md
 ```
 
 Capital `-F` for the body file; lowercase `-f` posts the literal string `@bodyfile.md`.
 
-The body carries the cluster's root cause, invariant, blast radius and fix shape, and the
+Either body carries the cluster's root cause, invariant, blast radius and fix shape, and the
 finding ids behind it. It does **not** link to the run directory, which is local and stays
-local: the issue has to stand alone. It does not carry a patch, and it does not carry any part
-of a credential beyond what the report already quotes.
+local: the filing has to stand alone. It does not carry a patch, and it does not carry any part
+of a credential beyond what the report already quotes. An issue does not describe what a draft
+advisory holds, even in passing: the issue is public and the advisory is not.
 
-Record what was filed in `<runDir>/06-filed.json` as
-`[{"cluster_title": "...", "issue_number": N}]`. A later sweep's report pass reads every
-sibling run's `06-filed.json` to say "that is the cluster filed as #N and not yet fixed"
-instead of re-finding it as new.
+**A draft advisory is not an issue, so nothing that works issues picks it up.** Make the fix
+from the advisory, where GitHub can open a temporary private fork for it, or open an issue
+once the operator judges the flaw no longer worth keeping private. Publish the advisory when
+the fix is on `main`.
+
+Record what was filed in `<runDir>/06-filed.json`, one entry per cluster:
+`{"cluster_title": "...", "ghsa_id": "GHSA-..."}` for an advisory, or
+`{"cluster_title": "...", "issue_number": N}` for an issue. A later sweep's report pass reads
+every sibling run's `06-filed.json` to say "that is the cluster already filed, and not yet
+fixed" instead of re-finding it as new. For an advisory, that file is the only record it has,
+because the tracker listing it dedupes against cannot see a draft.
 
 ## Phase 8: cleanup
 

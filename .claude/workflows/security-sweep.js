@@ -166,6 +166,9 @@ const DEDUPE = {
           cluster_title: str,
           status: { type: 'string', enum: ['new', 'duplicate', 'related'] },
           issue_numbers: { type: 'array', items: { type: 'integer' } },
+          // A cluster an earlier run filed privately is a draft advisory, which no tracker
+          // listing shows; its only record is that run's `06-filed.json` (#77).
+          advisory_ids: { type: 'array', items: str },
           reasoning: str,
         },
         required: ['cluster_title', 'status', 'issue_numbers', 'reasoning'],
@@ -1445,12 +1448,16 @@ proposed as new:
 Closed issues matter more than open ones here: what you are looking for is something already
 reported and fixed, or reported and forgotten. Match on the invariant, not on wording — a
 cluster is a duplicate when an existing issue would be closed by the same fix. Return, per
-cluster, a \`status\` of \`new\`, \`duplicate\` or \`related\`, the \`issue_numbers\` you
-matched (empty for \`new\`), and \`reasoning\`. An empty tracker is a valid answer: say so in
+cluster, a \`status\` of \`new\`, \`duplicate\` or \`related\`, the \`issue_numbers\` and any
+\`advisory_ids\` you matched (both empty for \`new\`), and \`reasoning\`. An empty tracker is a valid answer: say so in
 the report rather than implying a search found nothing to match.
 
 Previous sweeps, if any, are siblings of ${runDir}. Read each one's \`06-filed.json\` if it
-exists: a cluster that matches something filed there is that issue, not a new one.
+exists: a cluster that matches something filed there is that filing, not a new one. An entry
+names an \`issue_number\`, or a \`ghsa_id\` for a cluster filed as a private draft advisory. The
+listings above cannot show a draft advisory, so for those this file is the only record there is.
+Return a match to one in \`advisory_ids\`, and say nothing in the report about what it holds
+beyond what the cluster itself already says.
 
 **Second, compose the report** as Markdown and return it in \`report_markdown\`. Do not write
 it to a file yourself -- the harness refuses report files from subagents -- and do not look
