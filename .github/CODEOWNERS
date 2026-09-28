@@ -6,3 +6,14 @@
 /AGENTS.md     @jleavers
 /.claude/      @jleavers
 /.github/      @jleavers
+
+# The rest of the text an agent reads before it acts, which was not named here (#78). An
+# imperative added to any of these reaches the next unattended session exactly as one added to
+# the two files above does: README.md and CONTRIBUTING.md are what a contributing agent is
+# pointed at, SECURITY.md is what one reports through, and everything under docs/superpowers/
+# is text written to be executed -- which is why a separate check requires each document there
+# to say up front that its work is over.
+/README.md         @jleavers
+/CONTRIBUTING.md   @jleavers
+/SECURITY.md       @jleavers
+/docs/superpowers/ @jleavers

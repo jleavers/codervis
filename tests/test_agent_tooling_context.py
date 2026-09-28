@@ -25,10 +25,13 @@ needs and no more.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_SETTINGS = ROOT / ".claude" / "settings.json"
@@ -66,10 +69,25 @@ ARCHIVED_MARKER = "> **Archived —"
 
 TEXT_SUFFIXES = {".md", ".js", ".json", ".yml", ".yaml", ".py", ".sh", ".toml", ".ini"}
 
-# A fixed name under shared `/tmp`, which any other local principal can create and fill
-# before the command that reads it runs. The pattern is deliberately blunt rather than a list
-# of the spellings two plans happened to use: the next author will use a third.
-FIXED_TMP_PATH = re.compile(r"(?<![\w/])/tmp/[\w.${}-]+")
+# A fixed name under a world-writable shared directory, which any other local principal can
+# create and fill before the command that reads it runs. The pattern is deliberately blunt
+# rather than a list of the spellings two plans happened to use: the next author will use a
+# third.
+#
+# Every such directory, not the one instance that was found. `/tmp` was the spelling #21 met,
+# and so the only one this matched, which left `/var/tmp/<name>` and `/dev/shm/<name>` passing
+# -- the same defect one directory over (#78). Each of these is mode 1777 on a stock image,
+# and the sticky bit stops another principal *removing* the operator's file, not creating the
+# name first and owning it when the operator's command opens it. `/private/tmp` is where macOS
+# keeps the first.
+SHARED_DIRS = ("/tmp", "/var/tmp", "/dev/shm", "/private/tmp")
+FIXED_TMP_PATH = re.compile(
+    # Longest first, so `/var/tmp/x` is reported whole rather than as the `/tmp/x` inside it.
+    # The lookbehind is what keeps `/home/me/tmp/x` and a path inside a URL out.
+    r"(?<![\w/])(?:"
+    + "|".join(re.escape(shared) for shared in sorted(SHARED_DIRS, key=len, reverse=True))
+    + r")/[\w.${}-]+"
+)
 
 # No exemptions. There was one, for the synthetic credential files `.github/workflows/ci.yml`
 # used to build under a fixed `/tmp/codervis-ci`; #30 moved them to the runner's own temp
@@ -181,6 +199,216 @@ def _prompt_body(source: str, name: str) -> str:
     return source[opening.end() : end.start()]
 
 
+#: Every tracked file under `.claude/`, exactly. This is the register of what the repository
+#: hands an agent's harness, and it is an equality rather than an absence check for the reason
+#: #78 gives: "the repository ships no agent configuration" was pinned on the one file name
+#: somebody had already seen, so `.claude/settings.local.json` -- which the harness reads
+#: exactly as it reads `settings.json`, and which can carry a `SessionStart` hook that runs a
+#: command in every session in the checkout -- landed with the suite green. So did every other
+#: name the harness honours: a `hooks/` directory, an `mcp.json`, a `settings.*.json` for a
+#: named profile, and any of them under a nested `.claude/` rather than this one.
+#:
+#: This is the half that answers for a *committed* file, of any shape at all, which is what
+#: the rule is really about: the check below is about an operator's own working tree and so
+#: permits the file the harness writes for them there.
+#:
+#: The five `sweep-*.md` profiles and the skill and workflow beside them are here because they
+#: are the kind of file AGENTS.md draws the distinction about: a subagent definition constrains
+#: no session and grants none of them anything they do not already hold. A settings file does
+#: both, which is why none is listed and why adding one has to be a line in this test.
+SHIPPED_AGENT_FILES = frozenset(
+    {
+        ".claude/README.md",
+        ".claude/agents/sweep-lane-web.md",
+        ".claude/agents/sweep-lane.md",
+        ".claude/agents/sweep-recon.md",
+        ".claude/agents/sweep-report.md",
+        ".claude/agents/sweep-triage.md",
+        ".claude/skills/security-sweep/SKILL.md",
+        ".claude/workflows/security-sweep.js",
+    }
+)
+
+
+#: The names the harness reads as its own configuration, as globs relative to the repository
+#: root. Two of them are not under `.claude/` at all -- Claude Code reads the project-scoped
+#: MCP declaration from `.mcp.json` and a plugin manifest from `.claude-plugin/` -- and a glob
+#: written as `.claude/mcp.json` matches nothing whatever, which is a register that claims to
+#: cover "every name the harness honours" failing in exactly the way #78 is about.
+#:
+#: Anchored at the root, because these are matched against the *working tree* and a walk that
+#: descends is a walk into `.venv/`, `node_modules/` and this repository's own
+#: `.claude/worktrees/`. A vendored package's `.mcp.json` is not read by anything -- Claude
+#: Code resolves that name and `.claude-plugin/` at the project root -- and failing a
+#: developer's suite on one is the same defect as failing them for their own
+#: `settings.local.json`, which `_shipped_files()` above says in as many words this module
+#: must not do. The *tracked* reach is the one that goes to any depth, just below, and it
+#: reads `git ls-files` rather than walking.
+HARNESS_CONFIG_GLOBS = (
+    ".claude/settings.json",
+    ".claude/settings.*.json",
+    ".claude/hooks/**/*",
+    ".mcp.json",
+    ".claude-plugin/**/*",
+)
+
+#: What a harness settings file is *permitted* to carry, as an allow-list -- not a list of the
+#: keys that happen to be dangerous.
+#:
+#: This was three bad key names for one round of review and that was the defect this whole
+#: change exists to fix, one level down: `{"statusLine": {"type": "command", "command": ...}}`
+#: runs an attacker-chosen command on every status-line render and was not among the three, and
+#: neither were `apiKeyHelper`, `awsAuthRefresh`, `enableAllProjectMcpServers` or
+#: `permissions.defaultMode`. The next key the harness gains will not be among them either.
+#:
+#: What an operator legitimately has here is the file the harness writes when they approve a
+#: permission in this checkout, which `.gitignore` names as per-user session state. So that
+#: shape is permitted and everything else is reported: `permissions` with the three lists in
+#: it, and the schema pointer an editor adds.
+#: This is narrower than everything the harness *may* write here, on purpose:
+#: `enabledMcpjsonServers` and `enableAllProjectMcpServers` are approvals too, and each starts
+#: a process for every session in the checkout, so they go in the operator's own
+#: `~/.claude/` rather than at a path inside this repository.
+PERMITTED_SETTINGS_KEYS = frozenset({"$schema", "permissions"})
+PERMITTED_PERMISSION_KEYS = frozenset(
+    # `additionalDirectories` is what `/add-dir` records, so it is one of the approvals this
+    # shape is about. It widens what a session may *read and write*, not what it runs.
+    {"allow", "deny", "ask", "additionalDirectories", "defaultMode"}
+)
+#: And the values `defaultMode` may take, as an allow-list for the same reason the keys are
+#: one. It was a single refused string for one round -- and `acceptEdits`, which stops the
+#: harness asking before any write in any session started here, went straight past it, as did
+#: `"BYPASSPERMISSIONS"` and a trailing space. Both modes below leave the asking in place;
+#: `acceptEdits` and `bypassPermissions` each take some of it away, which is a decision for
+#: an operator's own settings and not for a file in this tree.
+PERMITTED_DEFAULT_MODES = frozenset({"default", "plan"})
+
+#: Paths whose *location* is what binds, so there is no shape to check: a hook script is a
+#: script, and a plugin manifest brings its own directory with it. Nothing writes a file here
+#: on an operator's behalf -- one is put there on purpose -- so any is reported.
+BINDING_BY_LOCATION = ("/.claude/hooks/", "/.claude-plugin/")
+
+
+def _harness_config_files() -> set[str]:
+    """Whatever is present at the project's own harness paths, tracked or not."""
+    return {
+        path.relative_to(ROOT).as_posix()
+        for pattern in HARNESS_CONFIG_GLOBS
+        for path in ROOT.glob(pattern)
+        if path.is_file()
+    }
+
+
+def _tracked_harness_config() -> set[str]:
+    """The same names among the *tracked* files, at any depth.
+
+    Any depth here and not above, because this reads `git ls-files`: a `.claude/` directory is
+    honoured wherever it sits, so `app/.claude/settings.json` is the same file by another path
+    -- and asking git rather than walking means an ignored `.venv` full of vendored packages
+    cannot answer for this repository.
+    """
+    found: set[str] = set()
+    for path in _shipped_files():
+        relative = path.relative_to(ROOT)
+        parts = relative.parts
+        if ".claude" in parts:
+            below = parts[parts.index(".claude") + 1 :]
+            settings = (
+                len(below) == 1
+                and below[0].startswith("settings")
+                and below[0].endswith(".json")
+            )
+            if settings or below[:1] == ("hooks",):
+                found.add(relative.as_posix())
+        if relative.name == ".mcp.json" or ".claude-plugin" in parts:
+            found.add(relative.as_posix())
+    return found
+
+
+def _outside_the_permitted_shape(path: Path) -> str | None:
+    """Why this harness-config file is more than an operator's own record, or `None`.
+
+    Read rather than assumed, because `.gitignore` names `.claude/settings.local.json` as
+    per-user session state: the harness writes one the first time an operator approves a
+    permission in this checkout, and failing the suite on its mere *presence* would fail every
+    developer for doing the thing AGENTS.md says is theirs to do.
+
+    So what is checked is the shape, as an allow-list. Not a list of dangerous keys -- that was
+    here for one round and `statusLine`, which runs a command on every render, was not on it,
+    which is #78's own defect one level down. A committed file of any shape is caught by the
+    tracked-set checks instead, which is where "the repository ships no agent configuration"
+    really lives.
+    """
+    relative = "/" + path.relative_to(ROOT).as_posix()
+    for directory in BINDING_BY_LOCATION:
+        # A file the harness executes *because of where it sits* -- a hook script, a plugin
+        # manifest -- has no JSON shape to check, and its content is beside the point.
+        if directory in relative:
+            return f"sits under {directory.strip('/')}, which the harness runs from"
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        # A settings path that is not readable JSON is not something this test can clear, so
+        # it says so rather than passing it over.
+        return "is at a harness-configuration path and could not be read as JSON"
+    if not isinstance(loaded, dict):
+        return "is at a harness-configuration path and is not a JSON object"
+    beyond = sorted(set(loaded) - PERMITTED_SETTINGS_KEYS)
+    if beyond:
+        return f"declares {beyond}, which is more than a record of approved permissions"
+    permissions = loaded.get("permissions") or {}
+    if not isinstance(permissions, dict):
+        return "declares a `permissions` that is not an object"
+    beyond = sorted(set(permissions) - PERMITTED_PERMISSION_KEYS)
+    if beyond:
+        return f"declares permissions.{beyond}"
+    mode = permissions.get("defaultMode")
+    if mode is not None and mode not in PERMITTED_DEFAULT_MODES:
+        return f"sets permissions.defaultMode to {mode!r}"
+    return None
+
+
+def test_the_repository_ships_exactly_these_agent_facing_files() -> None:
+    """What a clone hands the harness, stated here rather than inferred from one file's absence.
+
+    A file added under `.claude/` is a change to what every session in this checkout inherits,
+    on a host that holds two live tokens. Whether it is the benign kind -- another subagent
+    profile -- or the kind that binds the operator is not something a test can tell from the
+    name, so the rule is that it arrives here, in the same change, and a reviewer decides.
+    """
+    tracked = {
+        path.relative_to(ROOT).as_posix()
+        for path in _shipped_files()
+        # Any depth, not just the root: a `.claude/` directory is honoured wherever it sits,
+        # so `app/.claude/settings.json` is the same kind of file by another path.
+        if ".claude" in path.relative_to(ROOT).parts
+    }
+    assert tracked == SHIPPED_AGENT_FILES, (
+        "the set of files this repository ships under .claude/ has changed. Each one is read "
+        "by the harness of every session started in a clone: list it here, in the same "
+        "change, and say what it grants -- see \"What repo-shipped agent text may say\" in "
+        "AGENTS.md."
+    )
+
+
+def test_the_repository_commits_no_harness_configuration_anywhere() -> None:
+    """The other half of the same rule, for the names that do not live under `.claude/`.
+
+    The equality above is anchored on that one directory, so a committed `.mcp.json` at the
+    root -- which declares MCP servers for every session in the checkout, and so is the same
+    kind of file as a settings one -- would be invisible to it. This reads the tracked set
+    against `HARNESS_CONFIG_GLOBS`, wherever those names sit.
+
+    Tracked rather than present, unlike the check below: a committed one is what a *clone*
+    gets, and that is the thing this repository controls.
+    """
+    committed = sorted(_tracked_harness_config())
+    assert not committed, (
+        f"{committed} is committed and configures the harness of every session started in a "
+        "clone. The operator's agent environment is theirs to configure (#21, #34, #35)."
+    )
+
+
 def test_the_repository_does_not_configure_the_operators_agent_environment() -> None:
     """A committed project settings file binds every session in the checkout, the operator's.
 
@@ -190,16 +418,56 @@ def test_the_repository_does_not_configure_the_operators_agent_environment() -> 
     wants to constrain agents belongs in the text they read or in the operator's own
     settings, not here. If a settings file is ever needed, it is a decision to make on
     purpose -- delete this test in the same change, and say why.
+
+    Kept beside the equality above, and not folded into it, because it names the bound: the
+    set check says "this file is not on the list" and this says why that particular file is
+    not, and what happened when it was. It is also the half that catches an untracked one --
+    a `settings.local.json` written into a checkout is not on any list `git ls-files` returns,
+    and it binds the session all the same.
     """
     assert not PROJECT_SETTINGS.exists(), (
         f"{PROJECT_SETTINGS.relative_to(ROOT)} would bind the operator's own sessions"
     )
+    beyond = {
+        name: reason
+        for name in sorted(_harness_config_files())
+        if (reason := _outside_the_permitted_shape(ROOT / name)) is not None
+    }
+    assert not beyond, (
+        f"{beyond}. The operator's agent environment is theirs to configure (#21, #34, #35), "
+        "and a file recording the permissions they approved in this checkout is part of that "
+        "-- but anything past that shape binds every session anyone starts here, and belongs "
+        "in their own `~/.claude/` rather than at this path."
+    )
+
+
+def test_the_shared_directory_rule_covers_every_such_directory_and_not_one() -> None:
+    """The pattern's own reach, stated here, because the pattern *is* the rule.
+
+    A scanner is only as wide as what it matches, and nothing asked what this matched until a
+    document naming `/var/tmp` went through it green. So each directory is asserted to be
+    caught, and the near-misses beside it asserted not to be: a rule this blunt earns its keep
+    only by being blunt in both directions.
+    """
+    # Written out again rather than iterated from `SHARED_DIRS`, which is the constant this
+    # test exists to pin: a loop over it narrows when it narrows, and a scratch copy with
+    # `/dev/shm` deleted from the tuple passed this file green.
+    assert SHARED_DIRS == ("/tmp", "/var/tmp", "/dev/shm", "/private/tmp")
+    for shared in ("/tmp", "/var/tmp", "/dev/shm", "/private/tmp"):
+        assert FIXED_TMP_PATH.search(f"cache wheels under {shared}/codervis-cache first"), shared
+        # The directory itself is not a fixed name *in* it; neither is one that merely ends
+        # with the same characters, nor a path inside a URL.
+        assert not FIXED_TMP_PATH.search(f"clean {shared} out"), shared
+        assert not FIXED_TMP_PATH.search(f"under /home/me{shared}/cache"), shared
+        assert not FIXED_TMP_PATH.search(f"https://example.test{shared}/cache"), shared
+    # Reported whole, rather than as the shorter directory nested inside the longer one.
+    assert FIXED_TMP_PATH.search("under /var/tmp/cache").group(0) == "/var/tmp/cache"
 
 
 def test_no_shipped_document_names_a_fixed_path_in_shared_tmp() -> None:
-    """The instance #21 found.
+    """The instance #21 found, and every directory of its kind (#78).
 
-    A fixed name under world-writable `/tmp` is a directory any other local principal can
+    A fixed name under a world-writable directory is one any other local principal can
     pre-create and fill, and the command that reads it runs as the operator. Nothing in a
     shipped document should name one.
     """
@@ -617,3 +885,68 @@ def test_the_post_run_audit_looks_for_what_a_stage_still_holds() -> None:
         "environ",
     ):
         assert probe in command, f"the audit command does not look for {probe!r}"
+
+
+# ─── Who reviews the text an agent reads ─────────────────────────────────────
+
+CODEOWNERS = ROOT / ".github" / "CODEOWNERS"
+
+#: Every path whose contents reach an agent before it acts. A change to one of these is a
+#: change to what the next unattended session is told to do, on a host holding two live
+#: tokens, so each needs a named reviewer. `.github/` is here because it owns CI and this file
+#: itself; `.claude/` because it is the harness's own; `docs/superpowers/` because everything
+#: in it is text written to be executed.
+AGENT_FACING_PATHS = (
+    "/CLAUDE.md",
+    "/AGENTS.md",
+    "/README.md",
+    "/CONTRIBUTING.md",
+    "/SECURITY.md",
+    "/.claude/",
+    "/.github/",
+    "/docs/superpowers/",
+)
+
+
+def _codeowner_patterns() -> dict[str, str]:
+    """Each rule in the file as `pattern -> owners`, comments and blank lines dropped."""
+    rules: dict[str, str] = {}
+    for line in CODEOWNERS.read_text(encoding="utf-8").splitlines():
+        text = line.split("#", 1)[0].strip()
+        if not text:
+            continue
+        # Split on any run of whitespace: CODEOWNERS separates a pattern from its owners
+        # with spaces or tabs, and reading a tab-separated line as one token would report an
+        # owned path as unowned.
+        pattern, *rest = text.split()
+        rules[pattern] = " ".join(rest)
+    return rules
+
+
+@pytest.mark.parametrize("path", AGENT_FACING_PATHS)
+def test_every_agent_facing_path_has_a_named_reviewer(path: str) -> None:
+    """`CODEOWNERS` named four of these and not the rest (#78).
+
+    An imperative added to `README.md` or to a document under `docs/superpowers/` reaches the
+    next session exactly as one added to `CLAUDE.md` does; what differed was only whether
+    GitHub would put the change in front of someone. Stated as a list here rather than derived
+    from the tree, because "which files an agent reads" is a judgement and not a glob.
+    """
+    rules = _codeowner_patterns()
+    assert path in rules, (
+        f"{path} is read by an agent before it acts and has no owner in .github/CODEOWNERS. "
+        "Add it there, or take it off this list and say why it is no longer agent-facing."
+    )
+    assert rules[path], f"{path} is named in CODEOWNERS with no owner"
+
+
+def test_every_agent_facing_path_is_one_that_exists() -> None:
+    """So the list above cannot quietly become a list of names that match nothing.
+
+    A `CODEOWNERS` pattern for a path that has been moved or deleted is owned by nobody, and
+    the parametrized test above would go on passing on the strength of the stale line.
+    """
+    for path in AGENT_FACING_PATHS:
+        target = ROOT / path.strip("/")
+        assert target.exists(), path
+        assert target.is_dir() == path.endswith("/"), path

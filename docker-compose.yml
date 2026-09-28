@@ -112,10 +112,16 @@ services:
     networks: [inside, outside]
     # The dashboard has no login, so the operator says which clients it serves rather than
     # leaving it to whichever networks the host happens to join (#15). Published on the
-    # loopback address unless DASHBOARD_BIND names another, so by default no LAN peer and no
-    # co-resident container reaches it -- neither of which a host firewall would stop, since
-    # Docker's DNAT runs ahead of its INPUT rules. Long syntax because an IPv6 address in the
-    # short one has to be bracketed to be told from the port.
+    # loopback address unless DASHBOARD_BIND names another. That keeps a co-resident container
+    # off the mapping on any engine -- its packet is addressed to the bridge gateway, which the
+    # rule matching 127.0.0.1 never matches -- and keeps a LAN peer out on Docker Engine
+    # 28.3.3+. Below that release the gap is the engine's rather than this block's (#79):
+    # before 28.0 a segment peer reaches the container's own address directly, and
+    # 28.2.0-28.3.2 lose Docker's rules on every firewalld reload. The host's INPUT chain never
+    # sees such a packet -- it is forwarded to a container rather than delivered here -- so a
+    # ufw or firewalld rule does not close it and a DOCKER-USER rule does; README's "The engine
+    # and your front door" is what an operator there follows. Long syntax because an IPv6
+    # address in the short one has to be bracketed to be told from the port.
     ports:
       - host_ip: "${DASHBOARD_BIND:-127.0.0.1}"
         published: "${DASHBOARD_PORT:-8765}"

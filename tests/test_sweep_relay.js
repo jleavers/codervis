@@ -490,8 +490,10 @@ test("no tracker listing means an empty block, not a missing one", async () => {
       /BEGIN RELAYED DATA: tracker items/,
       `tracker ${JSON.stringify(tracker)}: the block went away instead of arriving empty`,
     );
+    // Matched against the prompt with its line breaks collapsed: where the prose happens to
+    // wrap is not what this pins, and a re-wrap should not read as the sentence going away.
     assert.match(
-      report.prompt,
+      report.prompt.replace(/\s+/g, " "),
       /An empty listing is a valid answer/,
       "the prompt does not tell the stage what an empty listing means",
     );

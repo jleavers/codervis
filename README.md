@@ -15,6 +15,9 @@ coral** as you approach the limit.
 - [Prerequisites](#prerequisites) · [Setup](#setup) · [Run](#run) · [Test](#test)
 - [What you see](#what-you-see) · [Troubleshooting](#troubleshooting)
 - [Security notes](#security-notes) — who can reach it, and where a token can go
+- [The engine and your front door](#the-engine-and-your-front-door) (under
+  [Run](#run)) — what an engine older than 28.3.3 leaves open, and the rule
+  that closes it
 - [Contributing](CONTRIBUTING.md) · [Security policy](SECURITY.md) · [Licence](#licence)
 
 ## How it works
@@ -50,8 +53,10 @@ each half no wider than the truth:
   from: a CLI that refreshes a token by writing a new file and renaming it over
   the old one — and a logout and login, which replaces the file for certain —
   would leave this container reading what was replaced. Everything else in both
-  trees is therefore readable by code in that container too, and
-  [Caveats](#caveats) names what that is.
+  trees is therefore readable by code in that container too — including what a
+  tree's own name does not suggest, such as the copies of `~/.claude.json` that
+  Claude Code keeps under `~/.claude/backups/` although that file itself sits
+  outside the mount. [Caveats](#caveats) names what each CLI writes there.
 - **It can reach the hosts on the egress allow-list, and no host off this
   project's own network.** That bounds the destination host and nothing inside
   the connection: the proxy relays the TLS session without opening it, so which
@@ -77,12 +82,18 @@ cannot publish a port from an internal-only container, so the port you open in
 the browser belongs to `ingress`, a relay that forwards to the dashboard.
 Neither gateway service holds a credential.
 
-**Inbound traffic is yours to name.** There is no login, so who can reach the
-dashboard *is* its access control, and the default is this machine and nothing
-else: the port is published on `127.0.0.1` (`DASHBOARD_BIND`) and the app
-answers only the host names you listed (`DASHBOARD_ALLOWED_HOSTS`). Serving
-anyone else is a change you make on purpose — see
-[Serving other machines](#serving-other-machines).
+**Inbound traffic is yours to name, and from Docker Engine 28.3.3 that is the
+whole of it.** There is no login, so who can reach the dashboard *is* its
+access control, and the default is this machine and nothing else: the port is
+published on `127.0.0.1` (`DASHBOARD_BIND`) and the app answers only the host
+names you listed (`DASHBOARD_ALLOWED_HOSTS`). Serving anyone else is a change
+you make on purpose — see [Serving other machines](#serving-other-machines).
+On an older engine the publish address is not the whole of it: before 28.0 a
+machine on the same network segment reaches the container whatever address the
+port was published on, and 28.2.0 through 28.3.2 reopen that on every firewalld
+reload. [The engine and your front door](#the-engine-and-your-front-door) says
+what is exposed there, what it is worth to whoever takes it, and the one
+firewall rule that closes it.
 
 Each provider header has a browser-local toggle. Switching a widget off keeps
 its card visible but dimmed, labels it `disabled`, and removes it from the
@@ -129,9 +140,29 @@ link out of them.
   -type f -links +1` lists what is being skipped.
 - **Both bind mounts are whole home trees, and read-only.** codervis never
   writes to `~/.claude` or `~/.codex`, but any code in its container can read
-  all of both — settings and config files, and any third-party secret an env
-  block in one of them holds, alongside the transcripts, session files and
-  history the activity readers use. They are not narrowed to the seven paths it
+  all of both. What that is worth is decided by what each CLI writes there and
+  not by what codervis reads, so this is the vendors' side of it — current at
+  the time of writing, and `ls -a ~/.claude ~/.codex` is the version that
+  counts on your machine:
+  - `~/.claude/backups/` — rolling copies of `~/.claude.json`, five of them.
+    That file holds your Claude Code sign-in session and your MCP server
+    configuration, so the static headers and env values you gave a personal MCP
+    server — third-party API tokens, most of the time — are inside the mount
+    even though `~/.claude.json` itself sits outside it.
+  - `~/.claude/debug/` — the CLI's own debug output. Treat it as
+    token-bearing: a debug capture of an upstream call carries the bearer that
+    was used for it.
+  - `~/.claude/file-history/` and `~/.claude/paste-cache/` — what the CLI kept
+    of files it changed and of text you pasted into it, from every project you
+    have used it in, whatever those files held.
+  - `~/.codex/config.toml` — Codex's own configuration, which can carry bearer
+    values in the entries you added to it.
+  - the transcripts, session files, shell history and settings the activity
+    readers use (`~/.claude/projects/`, `~/.codex/sessions/`,
+    `archived_sessions/`, `history.jsonl`), and anything else either CLI has
+    written there since.
+
+  They are not narrowed to the seven paths it
   reads inside them ([How it works](#how-it-works)) because each credential
   file sits at the root of its tree, and a bind mount of a single file follows
   the inode it was made from rather than the name: if a CLI refreshes its token
@@ -148,13 +179,23 @@ link out of them.
 
 ## Prerequisites
 
-- Docker Engine 28.0+ with Compose v2 — a Docker Desktop new enough to bundle
-  it counts. The `inside` network asks the bridge driver for
-  `gateway_mode_ipv4: isolated`, so that the host holds no address on it. Older
-  engines leave that undone in two different ways: 27.x refuses to create the
-  network at all, and 26.x and older start the stack with the host still on that
-  bridge, saying nothing. [Check the egress bound](#check-the-egress-bound) has
-  both, and what to do if you cannot upgrade.
+- Docker Engine 28.3.3+ with Compose v2 — a Docker Desktop new enough to
+  bundle it counts. Two of this stack's bounds are the engine's to keep, and
+  that release is where both hold on their own:
+  - **The egress bound needs Docker Engine 28.0+.** The `inside` network asks
+    the bridge driver for `gateway_mode_ipv4: isolated`, so that the host holds
+    no address on it. Older engines leave that undone in two different ways:
+    27.x refuses to create the network at all, and 26.x and older start the
+    stack with the host still on that bridge, saying nothing.
+    [Check the egress bound](#check-the-egress-bound) has both, and what to do
+    if you cannot upgrade.
+  - **The loopback publish needs 28.0+, and 28.3.3+ wherever firewalld
+    runs.** Before 28.0 a machine on the same network segment reaches the
+    dashboard whatever address its port was published on. 28.0 closed that;
+    28.2.0 through 28.3.2 reopen it on every firewalld reload, and 28.3.3 is
+    where it stays closed. [The engine and your front
+    door](#the-engine-and-your-front-door) says what that exposes, and the rule
+    that closes it where you cannot upgrade.
 - Either or both of, installed and signed in on the host:
   - Claude Code (so `~/.claude/.credentials.json` exists)
   - Codex CLI (so `~/.codex/auth.json` exists)
@@ -242,7 +283,10 @@ docker compose up --build -d
 
 Open <http://localhost:8765> (or whichever port you set) on the machine running
 it. By default that is the only machine it answers: the port is published on
-`127.0.0.1` and the app serves only `localhost`, `127.0.0.1` and `::1`.
+`127.0.0.1` and the app serves only `localhost`, `127.0.0.1` and `::1`. On an
+engine older than 28.3.3, read [The engine and your front
+door](#the-engine-and-your-front-door) first — part of that default is the
+engine's to keep, and below that release it does not.
 
 ### Serving other machines
 
@@ -261,6 +305,101 @@ Then `docker compose up -d`. A request whose `Host` is not on the list gets
 Anyone who can reach the port can read your dashboard: there is no login, and
 the list of names is not one. Widen it on a network you trust, and see
 [Security notes](#security-notes) before you reach for a reverse proxy.
+
+### The engine and your front door
+
+Publishing on `127.0.0.1` is what keeps the dashboard to this machine, and
+part of that is the engine's doing rather than the compose file's. Ask yours
+which it is:
+
+```bash
+docker version --format '{{.Server.Version}}'
+```
+
+| Docker Engine | What a machine on your own network segment can reach |
+|---|---|
+| 28.3.3 and newer | Nothing. This is the release to be on. |
+| 28.2.0 – 28.3.2 | Nothing, until firewalld is reloaded: that takes Docker's own rules with it and the daemon does not put them back, so both paths below are open until it restarts. |
+| 28.0 – 28.1.x | Nothing. 28.0 is where both paths below were closed. |
+| Older than 28.0 | Both paths below. Debian 13's packaged `docker.io` (26.1.5) is such an engine, and so is a 27.x on which you deleted the `driver_opts` block to make the stack start at all. |
+
+Two paths, and on an engine that old the publish address closes neither:
+
+- **The container's own address.** `ingress` listens on port 8000 on this
+  project's `outside` bridge — the one network here the host holds an address
+  on, and so the one it has a route to — and reaching that address involves no
+  published mapping at all: a peer that can route to the subnet, on a segment
+  where nothing stops it adding the route, connects to the port directly. 28.0
+  is where the engine began dropping traffic routed to a container from off the
+  host.
+- **The published mapping.** A published port is a DNAT rule matching packets
+  addressed to `127.0.0.1:8765`, and a peer on the same segment can put that
+  address in a packet and your host's MAC on the frame. What decides whether
+  your kernel entertains one is `net.ipv4.conf.<interface>.route_localnet`,
+  which is off by default and which some Kubernetes, VPN and load-balancer
+  setups turn on. Below 28.0 nothing in Docker stands behind that setting.
+
+Whoever takes either path reads your usage, your plan tier, your reset times
+and — through `last_activity`, at roughly ten-second resolution — whether you
+are at the keyboard, and can hold `ingress`'s connection slots against you. No
+credential goes that way: the tokens stay in the container and never reach the
+payload. `DASHBOARD_ALLOWED_HOSTS` is no second lock either, because whoever
+reaches the port writes the `Host` header and `localhost` is on the list; that
+setting answers a page in *your own* browser pointing a name of its own at
+`127.0.0.1`, which is a different attack.
+
+**If you cannot run 28.3.3 or newer**, close both paths with one rule in
+Docker's own `DOCKER-USER` chain, naming the interface your network is on:
+
+```bash
+sudo iptables  -I DOCKER-USER -i eth0 -m conntrack --ctstate NEW,INVALID -j DROP
+sudo ip6tables -I DOCKER-USER -i eth0 -m conntrack --ctstate NEW,INVALID -j DROP
+```
+
+**Match the state, not just the interface.** `DOCKER-USER` is consulted before
+Docker's own rules for *forwarded* traffic — which is why it works at all here,
+and also why a bare `-i eth0 -j DROP` is the wrong rule: the replies to this
+stack's own outbound TLS arrive on that same interface and are forwarded to a
+container exactly as an inbound connection would be, so a blanket drop takes
+`egress` down with the front door and puts every quota panel into
+`unavailable`. The first packet of an inbound connection — to the published
+mapping or straight to the container — is `NEW`, and that is what these refuse.
+
+Being in the forward path is also the whole of why an ordinary `ufw` or
+`firewalld` rule does not stop this: the packet is on its way to a container,
+so it is never delivered to the host and the `INPUT` chain those rules are in
+never sees it. That, and not "a firewall cannot help you", is what that failure
+amounts to. The rule above covers every container on this host, so where you
+publish something else here deliberately, aim it at this project's `outside`
+bridge instead — `-o br-<id>`, with `<id>` the first 12 characters of that
+network's ID from `docker network ls`.
+
+On a firewalld host, add it permanently rather than with `iptables`, or the
+next reload drops it, and check afterwards that both the chain and the rule are
+there:
+
+```bash
+sudo firewall-cmd --permanent --direct --add-rule ipv4 filter DOCKER-USER 0 \
+  -i eth0 -m conntrack --ctstate NEW,INVALID -j DROP
+sudo firewall-cmd --permanent --direct --add-rule ipv6 filter DOCKER-USER 0 \
+  -i eth0 -m conntrack --ctstate NEW,INVALID -j DROP
+sudo firewall-cmd --reload
+sudo iptables -S DOCKER-USER
+```
+
+**On 28.2.0 – 28.3.2 that last check is the point of the exercise**, because
+the reload those versions mishandle takes Docker's own rules with it — the
+`FORWARD` jump into `DOCKER-USER`, and the chain itself. A rule inside a chain
+nothing jumps to is not consulted, and a `--direct` rule naming a chain that is
+not there does not apply, so on that range this remedy needs the daemon put
+back behind it: `sudo systemctl restart docker` after every reload, and the
+`iptables -S` above to confirm. Upgrading to 28.3.3 is the answer that does not
+need remembering.
+
+This is not the same rule as the one in [Check the egress
+bound](#check-the-egress-bound) below, and neither stands in for the other:
+that one is about the dashboard's container reaching the **host** over the
+bridge, and this one about your network reaching the **container**.
 
 ### Check the egress bound
 
@@ -304,6 +443,37 @@ line: the name resolved and something answered it, which is a route round
 the proxy; or the probe could not be made
 (`example.com:443 was not settled`), which is `unverified` like the two
 `FAIL`s above — nothing was established either way.
+
+**The command is safe to paste.** A proxy variable may carry userinfo —
+`HTTPS_PROXY=http://user:secret@egress:3128` is valid, and an authenticating
+proxy is configured that way — so every line that quotes the variable back
+prints it with the userinfo replaced by `<userinfo redacted>`, keeping the
+scheme, host and port so you can still see which proxy was dialled. The same
+goes for a `CLAUDE_AI_HOST`/`CHATGPT_HOST` that carries one. An ordinary proxy
+URL with no userinfo prints exactly as you configured it, which is what the
+sample above shows — the redaction errs towards taking too much, so a value with
+an `@` somewhere other than in front of the host loses the part before it too.
+This matters because CI's `Egress bound` job runs this command into a public
+Actions log.
+
+An override the command cannot read a host and a port out of — an unclosed
+bracket, a port that is there but is not a number in 1–65535, a control
+character, or nothing at all — is a
+`FAIL` line naming the variable rather than a crash, and the other upstream is
+still probed and still reported.
+
+The value is read the way the live client reads it, which is why the command
+does not tidy it up. Leading whitespace goes, because the client's urllib
+removes it too. A *trailing* space does not, because by the time the client has
+appended the request path that space is in the middle of the URL: the client
+ends up with `claude.ai ` as its host and is refused before it dials, so a check
+that tidied the space away would report `claude.ai:443 admitted` for a client
+that reaches nothing. An empty value is the same — the clients default only
+when the variable is *unset*, so an empty one is a `FAIL` here rather than a
+silent fallback to `claude.ai`. You will not get there through `.env`: the
+compose file's `${CLAUDE_AI_HOST:-https://claude.ai}` substitutes the default
+for an empty entry as well as a missing one. It is reachable by exporting the
+variable empty into the container some other way.
 
 The address on the on-link line is whatever the container's own routing tables
 yield — the first address of each on-link subnet, plus any gateway a route
@@ -390,7 +560,10 @@ of the container's subnet, which is the address a bridge's gateway takes:
 - **Something that is neither answers** — `FAIL`, and on an engine that ignored
   the option that something is the host.
 
-Which engine you have decides which of those you see:
+Which engine you have decides which of those you see — this table is the
+outbound axis, and [The engine and your front
+door](#the-engine-and-your-front-door) is the same question for the inbound
+one:
 
 | Docker Engine | What it does with `gateway_mode_ipv4: isolated` | What you see |
 |---|---|---|
@@ -444,7 +617,10 @@ How to read the on-link line, in the order the cases are worth knowing:
 
 **If you cannot upgrade to 28.0+**, add a host firewall rule that drops new
 inbound connections arriving on that bridge's interface; nothing in the stack
-ever connects to the host over it. On 27.x you must also delete the
+ever connects to the host over it. That is this axis only — the one that keeps
+your own network out of the dashboard is the `DOCKER-USER` rule in [The engine
+and your front door](#the-engine-and-your-front-door), and an engine this old
+needs both. On 27.x you must also delete the
 `driver_opts` block from the `inside` network, or the network is not created
 at all — which then fails `tests/test_compose_topology.py`, since that block is
 what the test pins; on 26.x and older the block is ignored and can stay.
@@ -559,6 +735,7 @@ browser-disabled cards are dimmed.
 | Every chip reads `unavailable` and `docker compose logs egress` shows a refused host | The host is not on the egress allow-list: a `CLAUDE_AI_HOST`/`CHATGPT_HOST` override without a matching `EGRESS_ALLOW` entry, or the vendor redirected to another host. |
 | Browser shows `Host not served by this dashboard` (`403`) | The name in the address bar is not in `DASHBOARD_ALLOWED_HOSTS`. Add it (and widen `DASHBOARD_BIND` if the request comes from another machine), then `docker compose up -d`. |
 | `python -m app.egress check` reports a `FAIL` on the on-link line, naming an address that accepted or refused | Something that is neither this container nor the proxy is on-link. On an engine older than 28.0 that is the host: a 26.x engine ignores `gateway_mode_ipv4` without a word and keeps its address on the bridge. Upgrade, or see [Check the egress bound](#check-the-egress-bound) for the firewall rule that replaces it — and for the case where the address is another container in this project. |
+| `python -m app.egress check` reports a `FAIL` naming `CLAUDE_AI_HOST=` or `CHATGPT_HOST=` and says the bound is `unverified for that upstream` | That override is not a URL with a host and a port the live client could dial — an unclosed `[` in an IPv6 literal, a port that is there but is not a number in 1–65535 (`:0` included — nothing dials it), a stray control character, nothing in front of the host that reads as a scheme, or an empty value exported into the container (an empty `.env` entry takes the default instead). Nothing could be asked about that upstream, so nothing was. Fix the value and run `docker compose up -d`; the live client cannot reach it either. |
 | `docker compose up` fails creating the `inside` network with `unknown gateway mode isolated` | A 27.x engine: it knows the option but not that value. Upgrade to 28.0+, or delete the `driver_opts` block from the `inside` network and use the firewall rule instead. |
 | `docker compose up` reports `dependency failed to start` | The `egress` proxy is unhealthy, and the dashboard waits for it. Check `docker compose logs egress`. |
 
@@ -587,8 +764,19 @@ flags that are useful for quick diagnosis.
     (DNS rebinding) — which the host list refuses even on a loopback-only
     instance.
 
-  A host firewall does not stop the first two: Docker's forwarding runs ahead
-  of ufw's and firewalld's rules, so these settings are what decide it.
+  How much of the first one the publish address really decides is the engine's
+  to say: below 28.3.3 it either never held (before 28.0) or lapses on every
+  firewalld reload (28.2.0 – 28.3.2), and there you need a rule in Docker's own
+  `DOCKER-USER` chain — an ordinary `ufw` or `firewalld` rule does not stop it,
+  because Docker forwards such a packet to a container rather than delivering
+  it here, so the `INPUT` chain those rules are in never sees it. [The engine
+  and your front door](#the-engine-and-your-front-door) has the exposure and
+  the rule. The second one is the publish address's own doing on any engine: a
+  co-resident container's packet is addressed to the bridge gateway, and the
+  mapping's rule matches `127.0.0.1`, so it never matches that packet at all.
+  `DASHBOARD_ALLOWED_HOSTS` is a second lock on none of them: whoever reaches
+  the port writes the `Host` header, and `localhost` is on the list. It answers
+  the third, and only the third.
 - **To reach it from outside this machine, put a reverse proxy with auth in
   front of it — and let the proxy be the only way in.** Keep
   `DASHBOARD_BIND=127.0.0.1` so the dashboard's own port stays off the
