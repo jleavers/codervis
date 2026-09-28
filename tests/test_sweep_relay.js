@@ -410,10 +410,9 @@ test("the dedupe pass is handed the tracker rather than sent to fetch it", async
   //
   // Every lane set, because the briefs differ between them and `baseline` is the one whose
   // briefs happen to name no `gh` command at all: a check that ran only the default would have
-  // read as this whole property while three lane sets went unexamined.
-  // Every lane set the workflow defines, read off `LANE_SETS` rather than listed again here: a
-  // set this table has no key for is a set nobody asks the question of, and the `public` set was
-  // exactly that until #95.
+  // read as this whole property while three lane sets went unexamined. Read off the workflow's
+  // own `LANE_SETS` rather than listed again here, because a set this table has no key for is a
+  // set nobody asks the question of -- which is what happened to `public` until #95.
   assert.deepEqual(
     Object.keys(GITHUB_SIDE_BY_DESIGN).sort(),
     laneSetNames().sort(),
