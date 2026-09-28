@@ -45,6 +45,29 @@ day the repository is public. The filtered listing cannot do that work: the text
 audit is precisely the text a stranger wrote. They hold a shell, and the post-run audit below
 is what stands behind them — do not read the paragraph above as covering them.
 
+**Handing the two `publication` lanes that text instead was considered and refused (#85),
+on their own terms.**
+A relayed body is cut to a few thousand characters, and a cut through a corpus is a cut through
+the middle of the value being looked for; an Actions run log does not survive a relay at any
+workable size; and relaying that corpus would copy every candidate secret into a prompt, into
+this run's journal and into your own session's context — while this is the lane told never to
+write a candidate value down anywhere. Attribution buys little here either, where the lane is
+looking for a value rather than reasoning about what the text asks for. So the shell stays, and
+the reach is bounded in the lane's own brief instead (`PUBLICATION_READ_BOUND` in the
+workflow): reads from a list it names — `gh issue list` and `gh issue view`, `gh pr list`
+and `gh pr view`, `gh run list`, `gh run view --log`, `gh api -X GET`, and the history scan's
+own `git ls-remote origin` and `git clone --mirror` — against the repository the sweep
+resolved and no other, with no write verb, no GraphQL mutation, no `--input` and no other
+host. Two of those are worth reading twice. `gh api` must say `-X GET` every time, because
+its default method is not fixed: `gh api <path> -f body=…` is a `POST` that names no method
+at all. And the `git` reads are on the list because they are reads of the same host: a list
+of `gh` calls alone, called the only calls the lane may make, would cancel the mirror clone
+that finds a credential on a pull-request head nothing points at any more. The lane's
+`coverage` is what says what it read: which of those calls it made, with what filters, how
+many issues, PR threads, comments, review comments and Actions runs, and how many refs and
+commits. Widening that list is a decision, and `tests/test_agent_tooling_context.py` stays
+red until it is made on purpose.
+
 After a run, audit what the agents actually ran before presenting: the per-agent transcripts sit
 beside the workflow's `journal.jsonl`, in the directory the task notification names. Look for:
 
@@ -55,22 +78,45 @@ beside the workflow's `journal.jsonl`, in the directory the task notification na
   `api` with `-X` / `--method` and `POST`, `PATCH`, `PUT` or `DELETE` — and any `git push`.
   Filing is phase 7, which you do yourself after the operator names the clusters; no agent in
   the run has any business writing to the tracker.
+- **what a lane read on the GitHub side**, which is the other half of that same surface: for
+  a lane sent there the read *is* the exposure, and no bullet above looks at one. The question
+  is per lane, because the briefs differ: every GitHub-side call has to be one the calling
+  lane's own brief names, and for the two `publication` lanes that is the bounded list above,
+  on the repository the sweep resolved. A `gh` read from a stage whose brief sends it nowhere
+  near GitHub is one that went outside its brief, whether or not it was a write. A path
+  naming another repository is the same question and not always the same answer — the `public`
+  set's `outsiders` lane is told to read `jleavers/issuebot`, and a `publication` lane is told
+  to read nothing but the swept repository.
 - a `WebFetch`, `curl`, `wget` or `nc` to anything that is not loopback, and any call at all to
   `claude.ai` or `chatgpt.com`
 - a call to an MCP connector. The profiles grant none, so one in a transcript means a stage did
   not launch with its profile — check for that before reading the findings.
 
-One grep for the whole list, so that no bullet is left to memory — a command that covered
-three of the six would read as a clean audit while the connector bullet, the one that says a
-stage did not launch with its profile, went unasked:
+One grep for the six of those a single pass can answer, so that no bullet is left to memory —
+a command that covered three of them would read as a clean audit while the connector bullet,
+the one that says a stage did not launch with its profile, went unasked:
 
 ```bash
 grep -nE 'docker exec|gh [a-z]+ (create|edit|close|comment|merge|delete)|(-X|--method) (POST|PATCH|PUT|DELETE)|git push|WebFetch|curl |wget |\bnc |mcp__|printenv|/proc/[0-9]+/environ|\.credentials\.json|auth\.json|\.config/gh|\.ssh\b|\.docker\b|\.env\b|claude\.ai|chatgpt\.com' <transcript-dir>/*.jsonl | head -80
 ```
 
-It is a starting point and not a verdict, in both directions.
+A second pass for the bullet that one cannot carry, because this one is *expected* to print
+lines: the question about a GitHub-side read is what it says, not whether it happened, and an
+alternation that is allowed to match forty times an audit does not belong in a grep whose every
+hit is a thing to explain.
 
-It matches things that are fine: a lane that read `.env.example`, one that quoted `auth.json`
+```bash
+grep -ohE '(gh (api|issue|pr|run|search|release|workflow|cache|secret|variable)|git (ls-remote|clone|fetch|push))( [-a-zA-Z0-9@:/{}._]+)*' <transcript-dir>/*.jsonl | sort | uniq -c | sort -rn | head -40
+```
+
+Read it against the two lanes' own `coverage` records, which are required to say what they
+read. A call in a transcript that no record accounts for, and a record that claims more than
+the transcripts show, are the two halves of one question: whether what a lane says it examined
+is what it examined.
+
+Both are a starting point and not a verdict, in both directions.
+
+The first matches things that are fine: a lane that read `.env.example`, one that quoted `auth.json`
 while explaining why it never opened it, a path like `/usr/bin/nc` in a tool's own output, this
 repository's own `app/egress.py` discussing `claude.ai`.
 

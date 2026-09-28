@@ -128,6 +128,9 @@ _TRACKER_AUTHORSHIP = f"{CONTEXT_TESTS}::test_no_sweep_stage_goes_and_reads_the_
 _POST_RUN_AUDIT = (
     f"{CONTEXT_TESTS}::test_the_post_run_audit_looks_for_what_a_stage_still_holds"
 )
+_PUBLICATION_BOUND = (
+    f"{CONTEXT_TESTS}::test_the_publication_lanes_bound_and_record_their_github_side_read"
+)
 SWEEP_SKILL = ".claude/skills/security-sweep/SKILL.md"
 SWEEP_WORKFLOW = ".claude/workflows/security-sweep.js"
 
@@ -777,6 +780,75 @@ MUTATIONS: tuple[Mutation, ...] = (
         before="const TRACKER_BODY_CHARS = 4000",
         after="const TRACKER_BODY_CHARS = 4000000",
         caught_by=(_TRACKER_AUTHORSHIP,),
+    ),
+    # The bound #85 put on the one exception to all of the above. Those two lanes keep a shell
+    # pointed at the GitHub side, so what stands in for the tool list is a named list of calls
+    # and a coverage record -- and both of the ways that goes quiet are widenings, not
+    # deletions: one more call on the list, and one more lane carrying it.
+    Mutation(
+        key="sweep-publication-calls-admit-a-write",
+        widening=True,
+        area=SWEEP,
+        rule="the publication lanes may make only the read-only `gh` calls their brief lists",
+        path=SWEEP_WORKFLOW,
+        # A write verb, on a list that reads as seven harmless ones. The lane's shell holds the
+        # operator's own `gh`, so this is a stranger's text reaching the tracker under the
+        # operator's name -- and the lane is the one whose whole input is a stranger's text.
+        before="  'gh run view --log',\n",
+        after="  'gh run view --log',\n  'gh issue comment',\n",
+        caught_by=(_PUBLICATION_BOUND,),
+    ),
+    Mutation(
+        key="sweep-publication-api-call-without-a-method",
+        widening=True,
+        area=SWEEP,
+        rule="`gh api` on that list names its method, because `gh api`'s own default is not one",
+        path=SWEEP_WORKFLOW,
+        # The quietest widening on the list, and the one the first draft of it shipped: `gh api`
+        # is a `GET` until a field is added and a `POST` afterwards, so an entry reading
+        # `gh api` admits `gh api repos/{owner}/{repo}/issues/1/comments -f body=...` while
+        # reading, to anyone checking, like the read-only listing it was meant to be.
+        before="  'gh api -X GET',\n",
+        after="  'gh api',\n",
+        caught_by=(_PUBLICATION_BOUND,),
+    ),
+    Mutation(
+        key="sweep-publication-skill-list-drifts",
+        widening=True,
+        area=SWEEP,
+        rule="the list SKILL.md gives the operator is the list the lane is handed",
+        path=SWEEP_SKILL,
+        # The operator audits the transcripts against this copy. A copy that has drifted wider
+        # than the workflow's is an audit that reads a call as permitted and moves on.
+        before="`gh api -X GET`, and the history scan's",
+        after="`gh api`, and the history scan's",
+        caught_by=(_PUBLICATION_BOUND,),
+    ),
+    Mutation(
+        key="sweep-publication-bound-on-a-third-lane",
+        widening=True,
+        area=SWEEP,
+        rule="only the two `publication` lanes are handed the bounded GitHub-side read",
+        path=SWEEP_WORKFLOW,
+        # The brief is shared text, so a lane acquires the whole of it -- and a shell pointed
+        # at the tracker and the run logs with it -- by interpolating one name. This is the
+        # `operator-tooling` lane, which audits the repository's own agent text and has no
+        # business on the GitHub side at all.
+        before="an agent follows anyway.`,",
+        after="an agent follows anyway.\n\n${PUBLICATION_READ_BOUND}`,",
+        caught_by=(_PUBLICATION_BOUND,),
+    ),
+    Mutation(
+        key="sweep-audit-drops-the-github-side-read",
+        widening=True,
+        area=SWEEP,
+        rule="the post-run audit's second pass reaches every `gh` surface those lanes read",
+        path=SWEEP_SKILL,
+        # Narrowing what the audit prints is widening what goes unseen, and `run` is the
+        # Actions logs: the surface with the pasted `docker compose logs` output in it.
+        before="|run|search",
+        after="|search",
+        caught_by=(_POST_RUN_AUDIT,),
     ),
     Mutation(
         key="sweep-tracker-order-unpinned",
