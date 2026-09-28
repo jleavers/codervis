@@ -315,6 +315,18 @@ out-of-scope, never silence:
 | `supply-chain` | CI and Dependabot, advisories across the pip closure and the base image, variable names shared with issuebot, and history GitHub serves by SHA |
 | `assurance` | the gate-level tests (by mutation, on a copy), the unarchived design specs, container logs as agent input, and the sweep's own tooling |
 
+The `public` lanes (`args.lanes: "public"`) are for the tree about to be made public, which no
+earlier set asked about: every earlier run swept one operator's deployment of a private
+repository. What the change publishes cannot be withdrawn by changing it back, so run this set
+before the change, not after:
+
+| Lane | Threat model |
+| --- | --- |
+| `disclosure` | everything the change publishes — every reachable object and pull-request ref, the tracker, Actions logs and artifacts, images — scanned for credentials and host-identifying detail, and the attack paths closed issues still spell out |
+| `outsiders` | what any GitHub account can write once the repository is public, and what reads it: the settings the change turns on, the agents that read the tracker on the operator's host, this sweep filing in public, the reporter doors, a fork's pull request |
+| `cloner` | what a stranger who follows README gets on their own machine: the defaults, Docker Desktop and older engines, what the whole-tree mounts hand the image, what the browser loads at the dashboard's origin, what the build pulls; may start a throwaway stack |
+| `shipped-text` | what the shipped agent text tells a stranger's agent to do on their host, and the controls a stranger's pull request could remove with the suite still green (by mutation, on a copy) |
+
 Every lane in every set returns `coverage`, a concrete record of what it examined, and the
 completeness critic is given all of them. A lane with no findings and a thin record has not
 cleared its surface.

@@ -27,6 +27,8 @@ const scratch = args.scratch || `${worktree}-scratch`
 // `fixes` is for the tree after those two runs' issues were fixed: it treats each fix as a claim
 // to break, and takes up what the second run's critic said was still unreached. `unowned` takes
 // up the third run's critic: the surfaces no lane has owned, three of them named by every critic.
+// `public` is for the tree about to be made public: what that publishes, who it lets write to
+// the tracker, and what strangers who clone and run it get.
 // Grow further sets the same way rather than editing the baseline: the baseline is still what
 // the next first-sweep-after-a-big-change wants. Keep new lanes threat-shaped -- a brief that
 // is only a reading list produces coverage rather than attack paths, and coverage findings are
@@ -1373,11 +1375,233 @@ environment.`,
   },
 ]
 
+// The lanes for the sweep before the repository is made public. Every earlier set swept one
+// operator's deployment of a private repository; this one asks what changes when anyone can read
+// the history and the tracker, write to the tracker, send a pull request, and run the stack on a
+// machine this repository has never seen. Three of the four reach the web, for GitHub's and
+// Docker's own documentation on exactly those changes.
+const PUBLIC_LANES = [
+  {
+    key: 'disclosure',
+    // GitHub's documentation on what a visibility change publishes and what a change back keeps.
+    web: true,
+    title: 'everything the change to public publishes, and what cannot be taken back afterwards',
+    brief: `Your attacker is anyone on the internet, from the moment \`${repo}\` is made public, and
+everyone who clones, forks or archives it while it is: a change back to private does not recall
+a fork or a clone. So this lane's question is not only whether something is exploitable but
+whether anything about to be published should not be, because after the change there is no fix,
+only rotation. The second and third runs' publication lanes scanned history while the
+repository was private and nobody outside could read it; they did not ask this question.
+
+Enumerate what GitHub will serve, not what a checkout holds:
+
+- **Every reachable object.** A mirror clone into your scratch directory reaches branches, tags
+  and \`refs/pull/*/head\` for every pull request ever opened -- closed ones, and issuebot's
+  merged-and-deleted branches, included, since a pull request's head ref outlives its branch.
+  Count them. Scan every blob reachable from any of them, not only the tips, for
+  credential-shaped strings: Anthropic OAuth tokens, ChatGPT access tokens (JWTs), refresh
+  tokens, GitHub tokens, private-key headers, \`Bearer\` followed by a long value, an account id
+  beside \`ChatGPT-Account-Id\`. Cite commit, path and line, and quote at most six characters.
+  Confirm too that nothing under \`.claude/security-sweeps/\` or \`.claude/worktrees/\` -- both
+  gitignored, both holding this sweep's own output -- was ever committed.
+- **The tracker.** Every issue and pull request, with its body, comments and review comments,
+  issuebot's workpad comments included, since those carry command output from runs on this
+  host. Scan them with the same rules, and also for what identifies the host rather than the
+  project: absolute home paths, host names, LAN and bridge addresses, references to other
+  repositories, e-mail addresses beyond the commit identity, tool versions that date the host's
+  patch level. Report a repository reference as you find it in the text; never list an
+  account's repositories to match against, since whoever runs this sweep would be listing their
+  own. Say which of those the tracked tree carries as well.
+- **The attack paths the tracker already states.** The tracker holds every issue this sweep has
+  filed -- each earlier run directory beside ${runDir} lists its own in \`06-filed.json\` --
+  and others that describe attack paths just as exactly. All of them are closed. For each, say
+  whether its fix closed the path it describes or whether it documents a residue that still
+  stands: an engine older than 28.0, the whole-tree mounts, the tunnel's interior (#45). A
+  residue README's Caveats already disclose is intended disclosure and not a finding. An attack
+  path that a public issue spells out and that neither a fix nor a caveat answers is one.
+- **Actions.** On a public repository anyone can read a workflow run's logs and download its
+  artifacts for as long as they are retained. Enumerate every run and artifact with read-only
+  \`gh\` listings, fetch the logs into your scratch directory, scan them with the same rules, and
+  say what the retention is.
+- **Images and generated files.** \`docs/images/usage-ramp.gif\` is shown in README and
+  \`tools/screenshots/capture.py\` made it. Establish from that source whether what the image
+  shows is synthetic or came from a real account, and read the file's own metadata and comment
+  blocks.
+
+What cannot be undone is established from GitHub's documentation, not assumed: what a change to
+public publishes (refs, the fork network, cached views), and what a change back to private does
+and does not withdraw.
+
+Every \`gh\` call in this lane reads. Never create, edit, comment on, close or delete anything,
+and never pass \`-X\` or \`--method\` to \`gh api\`.`,
+  },
+  {
+    key: 'outsiders',
+    // GitHub's documentation on what an account with no role can do to a public repository.
+    web: true,
+    title: 'what any GitHub account can write once the repository is public, and which agents read it',
+    brief: `Your attacker holds a GitHub account and nothing else. On a public repository they can
+open issues and pull requests, comment on every issue and pull request, review, react and fork;
+they cannot push, label, merge or change a setting. Establish that list from GitHub's
+documentation, then follow each thing they can write to whatever reads it.
+
+The fourth run's supply-chain lane covered CI at the file level: its record is the \`coverage\`
+field of \`02-findings-supply-chain.json\` in the run directory \`20260925T153837Z\`, beside
+${runDir}. \`contents: read\` at the top and widened by no job; no \`pull_request_target\`,
+\`workflow_run\` or interpolated event text; no secrets, variables or environments; a gha cache
+that no fork build can poison. Where that record is there, read it rather than re-deriving it,
+and go past it to what the change to public alters:
+
+- **Repository settings.** Read them with GET calls only: the repository object
+  (\`allow_forking\`, \`security_and_analysis\`), Actions permissions and the default workflow
+  token, the \`main\` ruleset and any branch protection, collaborators and their roles, deploy
+  keys (title and \`read_only\` only), webhooks (events and the URL's host only -- a hook URL can
+  carry a secret), the *names* of secrets and variables and nothing else, and private
+  vulnerability reporting's status. Several of these cannot be set until the repository is
+  public. Say which of them the change turns on by default, and which would be unsafe at that
+  default on the first day.
+- **Agents that read the tracker.** Two of them run on this host with the operator's GitHub
+  credential, and until now only collaborators could write what they read. This sweep's report
+  stage reads every issue and pull request body. issuebot, which works this repository's
+  issues, reads every review comment on its pull requests and every human comment on its
+  issues, and runs the steps of any \`Validation\` or \`Test Plan\` section of an issue it is
+  given. Establish issuebot's rules from its published repository alone (\`jleavers/issuebot\`:
+  \`configs/WORKFLOW.md\` and the files it names, read with \`gh api\` or from a clone in your
+  scratch directory): never a deployment's \`.env\`, untracked overlay or running process, and
+  never a path on this host. For each reader, say
+  what a stranger can put in front of it after the change that they could not before, and what
+  stands between that text and the reader's shell. A fix that lives in issuebot belongs to
+  issuebot's own tracker; say so in the finding rather than shaping it as a change here.
+- **This sweep as a publisher.** Establish from SKILL.md's phase 7 where each approved cluster
+  is filed, in what form, and who can read it the moment it is. On a public repository a public
+  issue is disclosure before any fix exists, which is what \`SECURITY.md\` asks every other
+  reporter not to do (#77). Then take a stranger who clones the repository and runs the shipped
+  sweep: where does its phase 7 file, and as whom?
+- **The doors for reporters.** \`SECURITY.md\`, \`CONTRIBUTING.md\` and
+  \`.github/ISSUE_TEMPLATE/*\`. Does each route a vulnerability to a private channel that will
+  exist on the first day? Does any template ask a reporter to paste something that can carry a
+  credential, a home path or a payload -- \`docker compose logs\`, \`docker inspect\`, a
+  \`.env\`, a credential file's contents?
+- **A pull request from a fork.** The \`main\` ruleset requires a pull request with no
+  approvals. What does a stranger's pull request have to get past, and what runs on its behalf
+  before a human has read it?
+
+Every \`gh\` call in this lane reads. Never create, edit, comment on, close or delete anything,
+never pass \`-X\` or \`--method\` to \`gh api\`, and never fetch a secret's or a variable's value.`,
+  },
+  {
+    key: 'cloner',
+    // Docker's and Docker Desktop's documentation, and each CLI vendor's on what its home tree holds.
+    web: true,
+    title: 'what a stranger who follows the README gets on their own machine',
+    brief: `Your principals are the people this sweep exists for: strangers who clone the
+repository and run it on their own machine, which holds their own two tokens. Their attackers are
+the ones every earlier lane named -- a LAN peer, a web page in their browser, a compromised
+dependency in the image -- but on hosts this repository has never run on: Docker Desktop on
+macOS and Windows, rootless Docker, an engine older than 28.0, a shell with its own proxy
+variables. Every earlier run swept the operator's deployment. Sweep theirs.
+
+Follow README from the top as a stranger would, and at each step say what they get:
+
+- **The defaults.** \`docker compose up --build\` with no \`.env\`: what is published, on what
+  address, serving which \`Host\` values, and what \`.env.example\` invites them to change.
+  README already warns that there is no login before it says how to widen the bind; do not
+  re-derive that, but do say whether anything a stranger is likely to copy widens the dashboard
+  without that warning in view.
+- **Hosts other than this one.** Docker Desktop runs containers in a VM. Do \`internal: true\`,
+  \`gateway_mode_ipv4: isolated\` and the loopback publish mean there what they mean on a Linux
+  engine, and does \`python -m app.egress check\` still verify them? A 26.x engine ignores the
+  gateway option and starts anyway (CLAUDE.md, "Network boundary"): where does a stranger learn
+  that before they run it, rather than after? Establish each from Docker's documentation. You
+  have one Linux engine, so say which answers you demonstrated and which you read.
+- **What the whole-tree mounts hand the image** (the fourth critic's gap 4). #45 (closed, do not
+  re-derive) stated the container's budget on both axes, and README's Caveats name what the
+  mounts leave readable. Hold those Caveats against what a stranger's \`~/.claude\` and
+  \`~/.codex\` can hold, from each vendor's documentation and never from this host's copy:
+  settings with \`env\` blocks and API keys, MCP server configuration carrying its own tokens,
+  transcripts holding whatever a user pasted. Do the Caveats say enough for a stranger to
+  decide whether to run it?
+- **What their browser loads at the dashboard's origin** (the fourth critic's gaps 9 and 10).
+  \`/docs\`, \`/redoc\` and \`/openapi.json\` are still served -- \`app/main.py\` sets none of
+  \`docs_url\`, \`redoc_url\` or \`openapi_url\` -- and FastAPI's pages load \`swagger-ui-dist\`
+  and \`redoc\` from a CDN at a floating major version. What does that let the CDN, or a
+  compromised release, do at the origin that serves the payload, and does anything narrow it: a
+  Content-Security-Policy, the \`Host\` allow-list? Separately, what can a public web page learn
+  about a dashboard on its visitor's loopback under current browsers' local-network-access rules?
+- **What their build pulls.** \`FROM python:3.14-slim\` by tag, and \`requirements.txt\` as it
+  stands: are the pins exact, hashed, or neither, and what does a stranger's build fetch that
+  the operator's image fetched months earlier? The fourth run's supply-chain-1, on the base
+  image going stale, was refuted for want of a reachable consequence; do not re-derive it.
+- **\`tools/screenshots/capture.py\` and its README**, which a contributor is invited to run:
+  what it starts, what it reads, and whether it can reach a real credential or the real stack.
+
+Root and default capabilities in the \`codervis\` container were raised by the fourth run
+(inside-codervis-3) and refuted: a non-root uid cannot read the 0600 credential files unless it
+is the host user's, and the host user reads the same trees. Raise it again only with a mechanism
+that reasoning does not cover.
+
+**This lane may start a throwaway copy of the stack.** Use \`docker compose -p
+sweep-cloner-<anything>\` from a copy of the worktree in your scratch directory, with an
+override file that renames \`container_name: codervis\`, synthetic credential files, loopback
+publish on a free port, and \`down --rmi local\` before you return. The operator's own
+\`codervis\` project stays off limits.`,
+  },
+  {
+    key: 'shipped-text',
+    title: "what the repository tells a stranger's agent to do, and what its green suite promises a reviewer",
+    brief: `Two attackers, both new with the change to public.
+
+The first is this repository's own text, acting on a stranger's machine. Anyone who opens an
+agent in a clone gets \`CLAUDE.md\` and \`AGENTS.md\` as project instructions, and the five
+\`.claude/agents/sweep-*.md\` definitions, the security-sweep skill and its workflow registered
+in their session. Their host holds their own two tokens, and every one of those files was
+written by one operator for one host. Read every shipped file an agent loads or is pointed at --
+\`CLAUDE.md\`, \`AGENTS.md\`, \`CONTRIBUTING.md\`, \`SECURITY.md\`, \`.claude/**\`,
+\`docs/superpowers/**\`, \`tools/screenshots/README.md\` -- and find what would misdirect a
+stranger's agent: a path that exists only on the operator's host (\`~/_dev/...\`), a repository
+it would write to (a sweep run in a clone files where?), a command that assumes this host's
+Docker, stack or credentials, a statement of state that is false for them (an issue called
+open that is closed, a setting described as applied), or an instruction to read or touch a
+secret store. \`AGENTS.md\`'s "What repo-shipped agent text may say" is the standard and
+\`tests/test_agent_tooling_context.py\` enforces it: say which of what you find it would catch.
+
+The second is a stranger's pull request. Once the repository is public, a reviewer judges a
+contributor's change largely by whether CI is green, so a test that pins a control but still
+passes with the control removed is a door: the pull request that deletes the control merges
+green. #46 (closed, do not re-derive) added \`tests/test_negative_controls.py\`, which names one
+deliberate break per rule and requires it to turn the suite red, and whose docstring says which
+rules have no control yet. Read its list first, then mutate what it does not cover, on a copy
+of the worktree in your scratch directory and never the worktree itself:
+
+- each of \`app/server.py\`'s four bounds -- the 16 KiB head cap on every head, the 10 s head
+  deadline, the 320-connection admission check at the accept, the body deadline -- against
+  \`tests/test_server_bounds.py\` (the list's front-door controls are the relay's, not these);
+- the payload schema in \`app/main.py\` (\`_percent\`, \`_iso\`, \`_text\` and its
+  control-character scrubbing) against \`tests/test_payload_contract.py\` and
+  \`tests/test_main_payload.py\`;
+- the loopback defaults (\`DASHBOARD_BIND\`, \`DASHBOARD_ALLOWED_HOSTS\`) and
+  \`gateway_mode_ipv4: isolated\` against \`tests/test_host_allowlist.py\` and
+  \`tests/test_compose_topology.py\` (which needs the Docker CLI; say if it skipped);
+- \`app/egress.py\`'s CONNECT-only rule and its own bounds, and the gateway services' \`user\`,
+  \`read_only\` and \`cap_drop\`, against \`tests/test_egress.py\` and the compose tests;
+- the session audit hook in \`tests/conftest.py\` against \`tests/test_session_audit.py\`.
+
+Remove or weaken one rule at a time and run the matching tests sealed, with
+\`PYTHONDONTWRITEBYTECODE=1\` and \`-p no:cacheprovider\`, recording each mutation and whether
+the suite went red. A mutation that leaves it green is a finding, and its \`attack_path\` is the
+pull request that would merge it.
+
+The scope rule the triage pass applies holds here too: a fix is a change to the shipped text or
+the tests, never a setting that constrains the operator's own environment.`,
+  },
+]
+
 const LANE_SETS = {
   baseline: BASELINE_LANES,
   gaps: GAP_LANES,
   fixes: FIX_LANES,
   unowned: UNOWNED_LANES,
+  public: PUBLIC_LANES,
 }
 const LANES = LANE_SETS[laneSet]
 if (!LANES) {

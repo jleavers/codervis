@@ -222,7 +222,7 @@ function fenceMap(prompt) {
 }
 
 test("every stage launches with its own tool profile", async () => {
-  for (const lanes of ["baseline", "gaps", "fixes", "unowned"]) {
+  for (const lanes of ["baseline", "gaps", "fixes", "unowned", "public"]) {
     const { calls } = await run({ lanes });
     assert.ok(calls.length >= 6, `${lanes}: only ${calls.length} agents ran`);
     for (const { opts } of calls) {
