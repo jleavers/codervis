@@ -53,8 +53,12 @@ pull request across. With write access, push a branch here and open one — `mai
 ruleset that refuses a direct push, a force push and a deletion, so there is nothing to
 remember.
 
-Approvals are not required, because a single maintainer cannot approve their own pull request.
-Review is a person reading the diff, not a button.
+A pull request needs one approving review to merge, and nobody can approve their own, so a
+contributor's pull request waits for the maintainer's. The maintainer's own pull requests have
+no second reviewer to wait for: a repository admin may merge a pull request without the
+approval, and GitHub records that as a bypass of the rule. The bypass covers pull requests only,
+so a direct push is refused to an admin too. Either way, review is a person reading the diff,
+and the approval is where that is recorded.
 
 - Say what changed and why. A reviewer reading the diff alone should not have to guess the
   motivation.
@@ -75,8 +79,11 @@ single client.
 
 **Assert on what a reader touched, not on what it returned.** A reader that opens a credential
 file returns the same timestamp as one that does not. `tests/test_activity_readers.py`
-therefore asserts the gate's own record of admitted and refused paths, and watches the
-process's filesystem calls; new reader I/O goes through `app/activity_gate.py`, never round it.
+therefore asserts the gate's own record of admitted and refused paths, and the audit hook in
+`tests/conftest.py` records every file open and directory listing the process makes. CPython
+raises no audit event for a stat, so stats are pinned structurally instead:
+`tests/test_reader_filesystem_surface.py` fails if either reader names a filesystem API at all.
+New reader I/O goes through `app/activity_gate.py`, never round it.
 
 **Failure text comes from a fixed vocabulary.** `source_error` in the payload is one of the
 strings in `app/degrade.py`, never `str(exc)`: an exception raised while a request is being
@@ -93,8 +100,8 @@ file. If a change moves the layout or the colour ramp, regenerate it:
 
 ## Reporting a security issue
 
-Not here — see [`SECURITY.md`](SECURITY.md). Use GitHub's private vulnerability reporting
-rather than a public issue.
+Not here — see [`SECURITY.md`](SECURITY.md). Use GitHub's private vulnerability reporting,
+and do not describe what you found in a public issue or comment.
 
 ## Licence
 
