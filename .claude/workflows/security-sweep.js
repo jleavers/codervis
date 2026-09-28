@@ -1342,10 +1342,10 @@ and go past it to what the change to public alters:
   what a stranger can put in front of it after the change that they could not before, and what
   stands between that text and the reader's shell. A fix that lives in issuebot belongs to
   issuebot's own tracker; say so in the finding rather than shaping it as a change here.
-- **This sweep as a publisher.** SKILL.md's phase 7 files each approved cluster as an issue on
-  \`jleavers/codervis\`, attack path included. On a public repository that is disclosure at the
-  moment of filing, before any fix exists. Hold it against \`SECURITY.md\`, which asks reporters
-  to report privately. Then take a stranger who clones the repository and runs the shipped
+- **This sweep as a publisher.** Establish from SKILL.md's phase 7 where each approved cluster
+  is filed, in what form, and who can read it the moment it is. On a public repository a public
+  issue is disclosure before any fix exists, which is what \`SECURITY.md\` asks every other
+  reporter not to do (#77). Then take a stranger who clones the repository and runs the shipped
   sweep: where does its phase 7 file, and as whom?
 - **The doors for reporters.** \`SECURITY.md\`, \`CONTRIBUTING.md\` and
   \`.github/ISSUE_TEMPLATE/*\`. Does each route a vulnerability to a private channel that will
