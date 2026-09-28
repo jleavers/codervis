@@ -248,18 +248,97 @@ def configured_proxy(environ: Mapping[str, str]) -> str | None:
 
 
 def upstream_urls(environ: Mapping[str, str]) -> list[tuple[str, str]]:
-    """``(variable, base URL)`` for each live client, as the clients themselves read them."""
-    return [(name, environ.get(name) or default) for name, default in UPSTREAM_ENV]
+    """``(variable, base URL)`` for each live client, as the clients themselves read them.
+
+    Every part of this is "what does the live client do with the value", because a check that
+    reads the variable differently from the client asserts about a host the client never dials.
+    `app/quota.py` and `app/codex_quota.py` do `os.environ.get(name, default)`, append the
+    path, and hand the result to `Request`, whose `unwrap` is `str(url).strip()`.
+
+    * **The default is taken for an unset variable and for nothing else.** `os.environ.get`
+      defaults on absence, not on emptiness, so `CLAUDE_AI_HOST=` leaves the client with `""`
+      and a `Request` that refuses it. Falling back to the default here -- which `or default`
+      did -- reported `claude.ai:443 admitted` for a client that reaches nothing.
+    * **Leading whitespace goes, by `str.lstrip`'s set**, because that is the set `unwrap`
+      removes, and the front of `host + path` is the front of the host. Not `urlsplit`'s
+      narrower C0-or-space set: a non-breaking space pasted out of rendered documentation is
+      stripped by the client and would otherwise be reported here as a URL with no host.
+    * **Trailing whitespace stays.** Once the path is appended it is interior, so `unwrap` does
+      not reach it: `"https://claude.ai "` leaves the client with `claude.ai ` as its host, and
+      `http.client` then refuses to dial a host with a control character in it. Tidying it away
+      here would turn that into a passing line.
+    """
+    return [
+        (name, (default if environ.get(name) is None else environ[name]).lstrip())
+        for name, default in UPSTREAM_ENV
+    ]
 
 
-def upstream_targets(environ: Mapping[str, str]) -> list[tuple[str, int]]:
-    """The ``(host, port)`` each live client connects to."""
-    targets = []
-    for _, url in upstream_urls(environ):
+def split_upstream_url(url: str) -> SplitResult | None:
+    """A live client's base URL as urllib reads one, or ``None`` where it will not read one.
+
+    ``split_proxy_url``'s rule for the other pair of variables an operator sets (#48), plus a
+    stricter one, because the two are read by different things at the far end. A proxy
+    variable is read by `urlsplit` in the live clients too -- that is what urllib's own
+    `ProxyHandler` uses -- so agreeing with `urlsplit` is agreeing with the client. An upstream
+    base URL goes through `Request` and `http.client`, which are stricter than `urlsplit` in
+    ways that matter here, so this function has to be too.
+
+    Shared with `split_proxy_url`: one `urlsplit` refuses outright (`[::1`, an unclosed
+    bracket); one whose port is not a number, since `SplitResult.port` parses lazily and a
+    value that split cleanly still raises the first time anything asks; and one naming port
+    `0`. The first two used to come out of `python -m app.egress check` as a traceback rather
+    than as a `FAIL` line naming the variable, which is the one thing that command must not do.
+
+    A URL with no host is ``None`` too. There is no host for a live client to dial and none for
+    the check to ask the proxy about, so it is the same answer as a value that would not parse.
+
+    So is one carrying a control character, and that case is here because `urlsplit` is the
+    *more* forgiving of the two readers, in two different ways. It drops `\t`, `\r` and `\n`
+    from anywhere in a URL and ignores a C0 control in front of the scheme, while the live
+    client keeps them; and `\x7f`, which it does *not* drop, it hands back inside a host name
+    that `http.client` will not dial -- its disallowed set is `[\x00-\x20\x7f]`. Either way --
+    `Request` reads `"\x01https://claude.ai"` as the scheme `\x01https`, which the opener then
+    refuses outright, and `http.client` refuses to dial a host holding one, which is what
+    `"https://claude.ai\t"` and a trailing space come to. Reading such a value as a host and a
+    port would have this check pass on a configuration the client cannot use, which is the one
+    direction it may not be wrong in.
+    """
+    if any(char < " " or char == "\x7f" for char in url):
+        return None
+    try:
         parts = urlsplit(url)
-        default = 80 if parts.scheme == "http" else DEFAULT_TARGET_PORT
-        targets.append((parts.hostname or "", parts.port or default))
-    return targets
+        port = parts.port
+    except ValueError:
+        return None
+    if port == 0:
+        # Syntactically a number, and `urlsplit` hands it back as one, but not a port anything
+        # dials: `parse_connect_target` refuses it, so the proxy answers 400 and the client
+        # reaches nothing. It has to be `None` here rather than fall to `or default` further
+        # on, which read `:0` as 443 and had the check print `claude.ai:443 admitted` for a
+        # client that gets a 400 -- a pass on a configuration that does not work.
+        return None
+    return parts if parts.hostname else None
+
+
+def upstream_targets(environ: Mapping[str, str]) -> list[tuple[str, int] | None]:
+    """The ``(host, port)`` each live client connects to, or ``None`` where there is no reading it.
+
+    One entry per `upstream_urls` entry, in step with it. `check` needs the names beside the
+    answers, so it builds the same list from `_upstream_target` over one read of the
+    environment rather than calling this and reading the environment twice; this is the same
+    thing for anyone who wants only the targets.
+    """
+    return [_upstream_target(url) for _, url in upstream_urls(environ)]
+
+
+def _upstream_target(url: str) -> tuple[str, int] | None:
+    """One base URL's ``(host, port)``, or ``None`` where urllib will not read one out of it."""
+    parts = split_upstream_url(url)
+    if parts is None:
+        return None
+    default = 80 if parts.scheme == "http" else DEFAULT_TARGET_PORT
+    return parts.hostname or "", parts.port or default
 
 
 def normalise_host(host: str) -> str | None:
@@ -551,6 +630,82 @@ async def serve_until_stopped(
     return 0
 
 
+# What replaces a proxy variable's userinfo wherever a result line prints one. `check` is a
+# command README tells operators to run and CI's `Egress bound` job runs into a public Actions
+# log, and `http://user:secret@egress:3128` is a valid `HTTPS_PROXY` -- so an authenticating
+# proxy's credential must not be what the command echoes back (#48). It cannot be mistaken for
+# a real userinfo, since a space and the angle brackets are not allowed in one unencoded, so a
+# reader can tell a redaction from a username somebody really configured.
+USERINFO_REDACTED = "<userinfo redacted>"
+
+
+def without_userinfo(url: str) -> str:
+    """A URL an operator configured, as a result line may print it: userinfo replaced.
+
+    Host and port are kept, because the operator needs to see which proxy was dialled, and so
+    is the `@` -- an authenticating proxy still reads as one, which is the thing they would go
+    and check. A URL carrying no userinfo comes back exactly as it was written.
+
+    **Textual rather than parsed, so that it holds for a value urllib will not read either.**
+    `[::1` raises out of `urlsplit`, and the lines that report *that* are lines a userinfo can
+    appear in too (`http://user:secret@[::1`). So this finds the authority itself and never
+    calls the parser.
+
+    **Everything up to the last `@` goes, and where the authority ends is not consulted.** An
+    earlier draft stopped the authority at the first `/`, `?` or `#`, which is where one ends
+    in a URL that is well formed -- and a credential is exactly the part that may not be.
+    `http://user:ab/SECRET@egress:3128` put a `/` inside the userinfo, so the frame closed
+    before the `@`, no `@` was found in it, and the value came back whole. A base64 secret
+    carries `/` routinely, so that was the common case rather than the exotic one.
+
+    The cost of the rule that replaces it is over-redaction, which is the direction this
+    function is allowed to be wrong in: an `@` in a *path* takes the authority with it, so
+    `http://egress:3128/a@b` prints as `http://<userinfo redacted>@b`. No proxy or upstream
+    base URL has such a path, and losing a host from a line is not losing a credential.
+    """
+    prefix, rest = _authority_of(url)
+    _, at, tail = rest.rpartition("@")
+    if not at:
+        # No `@` anywhere past the scheme, so there is no userinfo to cut and nothing here can
+        # be a credential. This is the only path that returns the value as configured, which is
+        # what keeps an ordinary `http://egress:3128` printing as itself.
+        return url
+    return f"{prefix}{USERINFO_REDACTED}@{tail}"
+
+
+# A scheme, as RFC 3986 spells one. Matched rather than assumed, because where the authority
+# begins is the whole of what `without_userinfo` depends on being right.
+_SCHEME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+-.")
+
+
+def _authority_of(url: str) -> tuple[str, str]:
+    """``(everything before the authority, the rest)``, for a URL with a scheme or without one.
+
+    Splitting on the *first* `//` is not this, and the difference is a leak: the scheme-less
+    spelling urllib accepts (`user:secret@egress:3128`) may carry a path, and
+    `user:secret@egress:3128/x//y` would then be framed with `y` as its authority, find no `@`
+    in it, and hand the value back whole. So a `//` counts as the start of an authority only
+    where a scheme really precedes it, or where it begins the string.
+
+    A value with neither is taken as an authority from its first character, which is what the
+    scheme-less spelling is. Where that reading is wrong the cost is over-redaction and never
+    under: `mailto:a@b` comes back as `<userinfo redacted>@b`, which loses a scheme nobody may
+    configure here and discloses nothing.
+    """
+    # Leading whitespace is skipped rather than refused, because `urlsplit` skips it too.
+    # Both callers inside this module strip before they get here, so this is for a caller that
+    # does not: without it the scheme match fails and the scheme is lost to over-redaction --
+    # no leak, but no reason to accept one either.
+    lead = len(url) - len(url.lstrip("\t\n\r\f\v "))
+    head, rest = url[:lead], url[lead:]
+    marked = rest.find("://")
+    if marked > 0 and set(rest[:marked]) <= _SCHEME_CHARS:
+        return head + rest[: marked + 3], rest[marked + 3 :]
+    if rest.startswith("//"):
+        return head + "//", rest[2:]
+    return head, rest
+
+
 def split_proxy_url(proxy_url: str) -> SplitResult | None:
     """A proxy variable as urllib reads one, ``egress:3128`` and ``http://egress:3128`` alike.
 
@@ -559,12 +714,18 @@ def split_proxy_url(proxy_url: str) -> SplitResult | None:
     a deployment that was whole.
 
     ``None`` where urllib will not parse it at all (``[::1``, an unclosed bracket), so that it
-    is reported by the caller whose job that is rather than raised out of `check`.
+    is reported by the caller whose job that is rather than raised out of `check`. ``None``
+    for a port of ``0`` too, and for the same reason `split_upstream_url` refuses one: it is
+    falsy, so `parts.port or DEFAULT_PORT` read `http://egress:0` as the proxy on 3128 --
+    probing the one that works and passing the whole check, while the live client's urllib
+    dials port 0 and is refused (#48).
     """
     try:
-        return urlsplit(proxy_url if "//" in proxy_url else f"//{proxy_url}")
+        parts = urlsplit(proxy_url if "//" in proxy_url else f"//{proxy_url}")
+        port = parts.port
     except ValueError:
         return None
+    return None if port == 0 else parts
 
 
 # --- name resolution, under a deadline ------------------------------------------------
@@ -776,15 +937,19 @@ def probe_proxy(
     promises; which of the two strings appears depends on whose budget runs out first, and only
     the resolver's own configuration decides that.
     """
+    # Every one of these three quotes the variable back, so every one goes through
+    # `without_userinfo` first: `check` interpolates whichever comes back straight into a
+    # printed result line, which makes them leak sites as much as `check`'s own wording (#48).
+    shown = without_userinfo(proxy_url)
     parts = split_proxy_url(proxy_url)
     if parts is None:
-        return f"{proxy_url} is not a proxy URL"
+        return f"{shown} is not a proxy URL"
     try:
         proxy_host, proxy_port = parts.hostname, parts.port or DEFAULT_PORT
     except ValueError:
-        return f"{proxy_url} is not a proxy URL"
+        return f"{shown} is not a proxy URL"
     if parts.scheme not in ("", "http") or not proxy_host:
-        return f"{proxy_url} is not an http:// proxy URL"
+        return f"{shown} is not an http:// proxy URL"
     deadline = time.monotonic() + timeout_s
     try:
         candidates = _resolve_within(
@@ -1586,22 +1751,49 @@ def check(
     proxy = configured_proxy(environ)
     if proxy is None:
         return [(False, "no proxy configured: HTTPS_PROXY/https_proxy is unset")]
+    # Never `proxy` itself from here on: every line below is printed, and the variable may
+    # carry userinfo (#48). The host and port survive, so the line still says which proxy was
+    # dialled -- which is the whole of what an operator reads it for.
+    shown = without_userinfo(proxy)
     results: list[tuple[bool, str]] = []
     refused = probe_proxy(proxy, PROBE_DENIED_HOST, timeout_s=timeout_s)
     if isinstance(refused, str):
-        results.append((False, f"{proxy}: {refused}"))
+        results.append((False, f"{shown}: {refused}"))
     elif refused[0] == 200:
         results.append(
-            (False, f"{proxy} tunnelled to {PROBE_DENIED_HOST}: it is not filtering by name")
+            (False, f"{shown} tunnelled to {PROBE_DENIED_HOST}: it is not filtering by name")
         )
     else:
-        results.append((True, f"{proxy} refused {PROBE_DENIED_HOST} ({refused[0]})"))
-    for (name, url), (host, port) in zip(upstream_urls(environ), upstream_targets(environ)):
-        if urlsplit(url).scheme != "https":
+        results.append((True, f"{shown} refused {PROBE_DENIED_HOST} ({refused[0]})"))
+    # One read of the environment, not two: `upstream_targets` recomputes `upstream_urls`
+    # internally, and a mapping that changed between the two calls would pair a variable's name
+    # with a different value's target.
+    urls = upstream_urls(environ)
+    for (name, url), target in zip(urls, [_upstream_target(url) for _, url in urls]):
+        # Both of these quote the variable's value back, and an upstream base URL can carry
+        # userinfo exactly as the proxy variable can, so both go through `without_userinfo`.
+        if target is None:
             results.append(
-                (False, f"{name}={url} is not https://, and egress is HTTPS only")
+                (
+                    False,
+                    f"{name}={without_userinfo(url)} is not a URL with a host and a numeric "
+                    "port -- an unclosed bracket, a port that is there but is not a number in "
+                    "1-65535, a "
+                    "control character, no host in it, or nothing in front of the host that "
+                    "urllib reads as a scheme: the host the live client would dial cannot be "
+                    "read out of it, so nothing was asked about it and the bound is "
+                    "unverified for that upstream",
+                )
             )
             continue
+        # `target` is not None, so `split_upstream_url` read this value and `urlsplit` cannot
+        # raise on it here.
+        if urlsplit(url).scheme != "https":
+            results.append(
+                (False, f"{name}={without_userinfo(url)} is not https://, and egress is HTTPS only")
+            )
+            continue
+        host, port = target
         admitted = probe_proxy(proxy, host, port, timeout_s=timeout_s)
         if isinstance(admitted, str):
             results.append((False, f"{name}: {admitted}"))
@@ -1739,7 +1931,7 @@ def peer_addresses(proxy: str) -> dict[str, str]:
     host = parts.hostname if parts else None
     if host:
         for addr in resolved_addresses(host):
-            peers.setdefault(addr, PEER_PROXY.format(proxy=proxy))
+            peers.setdefault(addr, PEER_PROXY.format(proxy=without_userinfo(proxy)))
     return peers
 
 
