@@ -788,6 +788,26 @@ MUTATIONS: tuple[Mutation, ...] = (
         after="",
         caught_by=(_TRACKER_AUTHORSHIP,),
     ),
+    # The allow-list's own control, and the shape #91 is about: the four lanes that read the
+    # GitHub side are named in the test, so a *fifth* one acquiring it has to be added there on
+    # purpose. Nothing proved that until now -- the controls above widen what reaches the dedupe
+    # pass, which is the other half of the same test -- and a lane set arriving without the
+    # allow-list being widened with it is exactly how #89's two lanes reached `main` red.
+    # `shipped-text` is the lane to send, because it is the `public` set's one lane that holds
+    # neither the web nor any business with the tracker: it mutates a copy of the worktree.
+    Mutation(
+        key="sweep-lane-acquires-the-tracker",
+        widening=True,
+        area=SWEEP,
+        rule="only the four lanes GITHUB_SIDE_BY_DESIGN names send an agent to the GitHub side",
+        path=SWEEP_WORKFLOW,
+        before="Read its list first, then mutate what it does not cover",
+        after=(
+            "Read its list first, then run gh issue list for the rules an earlier run filed, "
+            "then mutate what it does not cover"
+        ),
+        caught_by=(_TRACKER_AUTHORSHIP,),
+    ),
     # ------------------------------------------------- the compose shape, widened
     # Each of these five was applied to a scratch copy and left the suite green (#78): every
     # pin on this file asked whether a *good* key was still there, so a key that grants
