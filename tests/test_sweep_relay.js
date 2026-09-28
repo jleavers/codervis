@@ -420,20 +420,24 @@ test("the dedupe pass is handed the tracker rather than sent to fetch it", async
   }
 });
 
-// Every GitHub-side call the two `publication` lanes may make, spelled as the workflow's
-// `PUBLICATION_GH_CALLS` spells them. Those lanes keep the shell #80 took off the dedupe pass,
-// because what they audit is what a stranger wrote and a maintainer-filtered listing drops it;
-// what #85 bounded instead is which calls they may make, and their `coverage` record is what
-// says what they read. Stated here rather than read out of the workflow, so that widening the
-// list there is a line somebody reads rather than nothing at all.
-const PUBLICATION_GH_CALLS = [
+// Every GitHub-side read the two `publication` lanes may make, spelled as the workflow's
+// `PUBLICATION_READ_CALLS` spells them. Those lanes keep the shell #80 took off the dedupe
+// pass, because what they audit is what a stranger wrote and a maintainer-filtered listing
+// drops it; what #85 bounded instead is which reads they may make, and their `coverage` record
+// is what says what they read. Stated here rather than read out of the workflow, so that
+// widening the list there is a line somebody reads rather than nothing at all. `gh api` names
+// its method because `gh api`'s own default is `GET` until a field is added and `POST`
+// afterwards, and the `git` reads are the history scan the same brief requires.
+const PUBLICATION_READ_CALLS = [
   "gh issue list",
   "gh issue view",
   "gh pr list",
   "gh pr view",
   "gh run list",
   "gh run view --log",
-  "gh api (with no -X/--method, or with -X GET)",
+  "gh api -X GET",
+  "git ls-remote origin",
+  "git clone --mirror",
 ];
 
 // The sentence the bound opens with, which is how a prompt is asked whether it carries it.
@@ -454,7 +458,7 @@ test("the publication lane is told which GitHub-side calls it may make, and to r
     const flat = own.replace(/\s+/g, " ");
 
     assert.ok(flat.includes(BOUND_MARKER), `${lanes}: the lane is handed no bound on its reads`);
-    for (const call of PUBLICATION_GH_CALLS) {
+    for (const call of PUBLICATION_READ_CALLS) {
       assert.ok(
         own.includes(`- ${call}`),
         `${lanes}: the lane is not told it may run \`${call}\``,
@@ -472,7 +476,15 @@ test("the publication lane is told which GitHub-side calls it may make, and to r
       /coverage` is what says what you read/,
       `${lanes}: the lane is not asked to record what it read`,
     );
-    for (const surface of ["issues", "PR threads", "comments", "review comments", "Actions runs"]) {
+    const surfaces = [
+      "issues",
+      "PR threads",
+      "comments",
+      "review comments",
+      "Actions runs",
+      "refs and commits",
+    ];
+    for (const surface of surfaces) {
       assert.ok(
         flat.includes(surface),
         `${lanes}: the coverage record the lane is asked for does not name ${surface}`,

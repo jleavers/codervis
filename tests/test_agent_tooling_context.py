@@ -154,7 +154,7 @@ def _sweep_briefs(source: str) -> dict[str, str]:
     The keys are `<lane set>/<lane key>`, spelled as `LANE_SETS` and `args.lanes` spell them.
     """
     texts = {
-        name: _prompt_body(source, name)
+        name: _expand_constants(source, _prompt_body(source, name))
         for name in re.findall(r"const (\w*[Pp]rompt\w*) = ", source)
     }
     sets = dict(re.findall(r"\n  (\w+): (\w+_LANES),", source))
@@ -170,22 +170,29 @@ def _sweep_briefs(source: str) -> dict[str, str]:
 
 
 def _expand_constants(source: str, text: str) -> str:
-    """Inline the module constants a brief interpolates, because the lane is handed them too.
+    """Inline the module constants a prompt or a lane brief interpolates, as the agent gets them.
 
-    `${PUBLICATION_READ_BOUND}` is a block of prose whose whole subject is which `gh` calls its
-    lane may make, and `${PUBLICATION_GH_CALLS...}` renders the list of them. A check that read
-    the brief as written would see the two interpolations and none of their text, so a lane
-    that acquired the GitHub side by carrying a shared constant would be invisible to the one
-    check in this module that asks which lanes reach it at all.
+    `${PUBLICATION_READ_BOUND}` is a block of prose whose whole subject is which reads its lane
+    may make, and `${PUBLICATION_READ_CALLS...}` renders the list of them. A check that read the
+    text as written would see the two interpolations and none of what they say, so a prompt that
+    acquired the GitHub side by carrying a shared constant would be invisible to the one check
+    in this module that asks which of them reach it at all.
+
+    An escaped `\\${NAME}` is left alone: three briefs quote `${USERPROFILE}` as the literal
+    `.env.example` carries, and an interpolation is what that text is about rather than
+    something it does. A name that resolves to neither a template nor an array constant is left
+    written as it stands, for the same reason -- this returns text to read, not to evaluate.
     """
+    unresolved: set[str] = set()
     for _ in range(4):
-        names = {
+        found = [
             (whole, name)
-            for whole, name in re.findall(r"(\$\{([A-Z][A-Z0-9_]*)[^{}]*\})", text)
-        }
-        if not names:
+            for whole, name in re.findall(r"(?<!\\)(\$\{([A-Z][A-Z0-9_]*)[^{}]*\})", text)
+            if name not in unresolved
+        ]
+        if not found:
             break
-        for whole, name in names:
+        for whole, name in found:
             template = re.search(rf"const {name} = `((?:[^`\\]|\\.)*)`", source, re.S)
             if template is not None:
                 text = text.replace(whole, template.group(1))
@@ -194,8 +201,7 @@ def _expand_constants(source: str, text: str) -> str:
             if array is not None:
                 text = text.replace(whole, "\n".join(re.findall(r"'([^']*)'", array.group(1))))
                 continue
-            # Neither shape: leave it, so the brief still reads as the agent gets it.
-            text = text.replace(whole, name)
+            unresolved.add(name)
     return text
 
 
@@ -980,20 +986,30 @@ def test_no_issue_form_asks_a_stranger_for_an_executable_section() -> None:
 #: can write, and it is the lanes carrying *it* that this module holds to the call list below.
 PUBLICATION_READ_BOUND_LANES = {"gaps/publication", "fixes/publication"}
 
-#: Every GitHub-side call those lanes may make, spelled as the workflow spells them. This is an
+#: Every GitHub-side read those lanes may make, spelled as the workflow spells them. This is an
 #: allow-list stated here rather than read back out of the workflow, for the reason AGENTS.md
 #: gives: a pin that asserts a module equals itself moves with the module. Adding an entry is a
 #: decision, and the question to answer in the same change is what an injected instruction
 #: could do with it -- a lane's shell holds the operator's own `gh`, so `gh issue comment`
 #: added here is a stranger's text reaching the tracker under the operator's name.
-PUBLICATION_GH_CALLS = [
+#:
+#: Two entries carry a reason of their own. `gh api` names its method because `gh api`'s
+#: default is not fixed: it is `GET` until a field is added and `POST` afterwards, so
+#: `gh api <path> -f body=...` is a write that names no method for a checker to see. And the
+#: `git` reads are here because the lane's own brief requires a history scan of the GitHub-side
+#: refs -- a list of `gh` calls alone, declared to be the only calls the lane may make, would
+#: read as cancelling the mirror clone that finds a credential on a pull-request head nothing
+#: points at any more.
+PUBLICATION_READ_CALLS = [
     "gh issue list",
     "gh issue view",
     "gh pr list",
     "gh pr view",
     "gh run list",
     "gh run view --log",
-    "gh api (with no -X/--method, or with -X GET)",
+    "gh api -X GET",
+    "git ls-remote origin",
+    "git clone --mirror",
 ]
 
 
@@ -1035,20 +1051,34 @@ def test_the_publication_lanes_bound_and_record_their_github_side_read() -> None
         f"reading the GitHub side without being one of the lanes that does it on purpose"
     )
 
-    calls = _const_body_list(source, "PUBLICATION_GH_CALLS")
-    assert calls == PUBLICATION_GH_CALLS, (
-        f"the calls the publication lanes may make are {calls}, not {PUBLICATION_GH_CALLS}. "
+    calls = _const_body_list(source, "PUBLICATION_READ_CALLS")
+    assert calls == PUBLICATION_READ_CALLS, (
+        f"the reads the publication lanes may make are {calls}, not {PUBLICATION_READ_CALLS}. "
         f"Widening that list is a decision: say in the same change what an injected "
         f"instruction could reach with the call being added"
     )
     # And each entry is read-only on its face, so that a list somebody edits stays one: the
     # equality above is the allow-list, this is what the allow-list is allowed to contain.
     for call in calls:
-        assert call.startswith("gh "), f"{call!r} is not a `gh` call"
-        verb = re.search(r"\b(create|edit|close|comment|merge|delete|--input)\b", call)
+        assert call.startswith(("gh ", "git ")), f"{call!r} is neither a `gh` nor a `git` read"
+        verb = re.search(r"\b(create|edit|close|comment|merge|delete|push|fetch)\b", call)
         assert verb is None, f"{call!r} names the write verb {verb.group(1)!r}"
+        # `--input` reads a request body from a file, which is a write however it is spelled.
+        # Matched as a substring, because `\b` before a dash never fires -- the anchor needs a
+        # word character on its left and there is always a space there.
+        assert "--input" not in call, f"{call!r} sends a request body"
         methods = set(re.findall(r"-X (\w+)", call)) | set(re.findall(r"--method (\w+)", call))
         assert methods <= {"GET"}, f"{call!r} permits the method {sorted(methods - {'GET'})}"
+        # An explicit method for `gh api`, because its default is not one: `gh api` is a `GET`
+        # until a field is added and a `POST` after that, so an entry reading `gh api` alone
+        # admits `gh api repos/{owner}/{repo}/issues/1/comments -f body=...` -- a comment
+        # posted under the operator's name by the one lane whose whole input is a stranger's
+        # text. This is the check that would have caught the first draft of this very list.
+        if call.startswith("gh api"):
+            assert methods == {"GET"}, (
+                f"{call!r} does not name its method, and `gh api`'s default is whichever of "
+                f"GET and POST the rest of the arguments imply"
+            )
 
     # And the lane is handed the list, not only the constant: the brief interpolates two names,
     # and what the agent reads is what they render to.
@@ -1058,7 +1088,7 @@ def test_the_publication_lanes_bound_and_record_their_github_side_read() -> None
         for call in calls:
             assert call in rendered, f"{name}'s brief does not name {call!r}"
 
-    bound = _prompt_body(source, "PUBLICATION_READ_BOUND")
+    bound = _const_body(source, "PUBLICATION_READ_BOUND")
     # The repository the sweep resolved, never a literal -- `author_association` is relative to
     # the repository in the URL, and a lane sent at a different tracker audits a different
     # project's text while reporting on this one (the same defect SKILL.md's phase 0 carries).
@@ -1074,7 +1104,14 @@ def test_the_publication_lanes_bound_and_record_their_github_side_read() -> None
     # because "say what you read" is what the `gaps` lane's brief already implied and did not
     # ask for -- its record came back as prose about the tree with no count of the GitHub side.
     flat_bound = re.sub(r"\s+", " ", bound)
-    for surface in ("issues", "PR threads", "comments", "review comments", "Actions runs"):
+    for surface in (
+        "issues",
+        "PR threads",
+        "comments",
+        "review comments",
+        "Actions runs",
+        "refs and commits",
+    ):
         assert surface in flat_bound, (
             f"the coverage record the bound asks for does not name {surface!r}"
         )
@@ -1087,7 +1124,7 @@ def test_the_publication_lanes_bound_and_record_their_github_side_read() -> None
     # recorded for whoever runs the sweep; a list that drifts from the workflow's is a bound the
     # operator would audit the transcripts against and find nothing wrong with.
     skill = SKILL.read_text(encoding="utf-8")
-    decision = skill[skill.index("**Handing them the text instead") :]
+    decision = skill[skill.index("**Handing the two `publication` lanes") :]
     decision = decision[: decision.index("\n\nAfter a run")]
     flat = re.sub(r"\s+", " ", decision)
     for call in calls:
@@ -1118,9 +1155,9 @@ def test_the_post_run_audit_looks_for_what_a_stage_still_holds() -> None:
         "WebFetch",
         "connector",
         "docker exec",
-        # For the two lanes sent to the GitHub side on purpose, the *read* is the exposure, and
-        # every bullet above asks what an agent wrote or where it went instead (#85).
-        "`publication` lane read",
+        # For a lane sent to the GitHub side on purpose, the *read* is the exposure, and every
+        # bullet above asks what an agent wrote or where it went instead (#85).
+        "read on the GitHub side",
     ):
         assert bullet in skill, f"the post-run audit's checklist does not name {bullet!r}"
 
@@ -1142,7 +1179,7 @@ def test_the_post_run_audit_looks_for_what_a_stage_still_holds() -> None:
     # The second pass reaches every `gh` surface the bounded lanes read, by subcommand, because
     # a pass that named `api` alone would leave `gh run view --log` -- the Actions logs, the
     # surface the bound exists for -- out of what the operator is shown.
-    for probe in ("gh ", "api", "issue", "pr", "run", "uniq"):
+    for probe in ("gh ", "api", "issue", "pr", "run", "ls-remote", "clone", "uniq"):
         assert probe in read_passes[0], (
             f"the audit's GitHub-side read pass does not look for {probe!r}"
         )

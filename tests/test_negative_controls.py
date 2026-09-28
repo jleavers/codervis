@@ -799,6 +799,32 @@ MUTATIONS: tuple[Mutation, ...] = (
         caught_by=(_PUBLICATION_BOUND,),
     ),
     Mutation(
+        key="sweep-publication-api-call-without-a-method",
+        widening=True,
+        area=SWEEP,
+        rule="`gh api` on that list names its method, because `gh api`'s own default is not one",
+        path=SWEEP_WORKFLOW,
+        # The quietest widening on the list, and the one the first draft of it shipped: `gh api`
+        # is a `GET` until a field is added and a `POST` afterwards, so an entry reading
+        # `gh api` admits `gh api repos/{owner}/{repo}/issues/1/comments -f body=...` while
+        # reading, to anyone checking, like the read-only listing it was meant to be.
+        before="  'gh api -X GET',\n",
+        after="  'gh api',\n",
+        caught_by=(_PUBLICATION_BOUND,),
+    ),
+    Mutation(
+        key="sweep-publication-skill-list-drifts",
+        widening=True,
+        area=SWEEP,
+        rule="the list SKILL.md gives the operator is the list the lane is handed",
+        path=SWEEP_SKILL,
+        # The operator audits the transcripts against this copy. A copy that has drifted wider
+        # than the workflow's is an audit that reads a call as permitted and moves on.
+        before="`gh api -X GET`, and the history scan's",
+        after="`gh api`, and the history scan's",
+        caught_by=(_PUBLICATION_BOUND,),
+    ),
+    Mutation(
         key="sweep-publication-bound-on-a-third-lane",
         widening=True,
         area=SWEEP,
