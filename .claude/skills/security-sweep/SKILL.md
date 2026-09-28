@@ -38,8 +38,8 @@ read as a duplicate. You fetch the listing in phase 0, filtered to maintainer-au
 and the workflow relays it to that stage through the same fence as every other hand-off. That
 stage holds no shell now, so there is no second way for it to look.
 
-**Four lanes still read the GitHub side, unfiltered and unfenced, and that is their job**, for
-two different reasons that are worth keeping apart:
+**Five lanes still read the GitHub side, unfiltered and unfenced, and that is their job**, for
+three different reasons that are worth keeping apart:
 
 - **What a stranger wrote.** The `publication` lanes of the `gaps` and `fixes` sets are sent to
   every issue, comment, review comment and Actions run log, looking for a credential that
@@ -53,18 +53,31 @@ two different reasons that are worth keeping apart:
   once anyone can reach it. That is not stranger-written text and the filtered listing is no
   substitute for it at all, because it carries no settings; a checkout cannot answer the
   question either.
+- **GitHub's copy of the history, which a clone does not hold.** The `unowned` set's
+  `supply-chain` lane is sent to the repository activity endpoint, because GitHub keeps serving
+  a force-pushed-over commit by SHA after no ref names it and a clone has stopped fetching it.
+  The object it is looking for is the one a checkout is missing by definition.
 
-All four hold a shell, and the post-run audit below is what stands behind them — do not read
-the dedupe paragraph above as covering them. The `public` set's other two lanes send an agent
-to no GitHub surface: `shipped-text` holds no web either, while `cloner` does hold it, for
-Docker's own documentation, so what bounds it there is its brief and not its profile.
+All five hold a shell, and the post-run audit below is what stands behind them — do not read
+the dedupe paragraph above as covering them. `public/cloner` and `public/shipped-text` send an
+agent to no GitHub surface, and neither does `unowned/assurance`: `shipped-text` and
+`assurance` mutate a copy of this tree, and `cloner` runs the stack on a stranger's machine. It
+does hold the web, for Docker's and each CLI vendor's documentation, so what bounds it there is
+its brief and not its profile.
 
-The list of four is written down in four places that have to agree:
+The list of five is written down in four places that have to agree:
 `tests/test_agent_tooling_context.py`'s `GITHUB_SIDE_BY_DESIGN`, which reads the workflow's
 source; `tests/test_sweep_relay.js`'s, which reads the prompt a stage is really launched with;
 and this document and `.claude/README.md`, which that first test requires to name every lane in
-the set. A fifth lane that names `gh` in any spelling, or an Actions run log, turns the suite
-red until all four are changed together (#91).
+the set. A lane whose brief names a `gh` command, an Actions run log or the repository activity
+endpoint turns the suite red until all four are changed together (#91).
+
+**That check reads what a brief says, so it is a floor and not the whole control.** A lane that
+reached GitHub while saying "with the GitHub CLI", naming an `api.github.com` URL or asking for
+a mirror clone would pass it — `supply-chain` was exactly that, in the set only from #91 and
+going there all along. What the check catches is a lane acquiring the GitHub side in the
+spelling lanes actually use. The reasons above are written down so that a reviewer weighing a
+new brief, and the audit below, have something to check a lane against.
 
 After a run, audit what the agents actually ran before presenting: the per-agent transcripts sit
 beside the workflow's `journal.jsonl`, in the directory the task notification names. Look for:

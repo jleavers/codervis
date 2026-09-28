@@ -49,19 +49,24 @@ listings returned was issue bodies with no author, from a tracker any GitHub acc
 to. The listing is now the launching session's to fetch and filter to maintainer-authored
 items, and the workflow relays it to the stage through the fence like every other hand-off.
 
-That is the dedupe pass and not the whole sweep. Four lanes read the GitHub side unfiltered:
-the `publication` lanes of the `gaps` and `fixes` sets and the `public` set's `disclosure`
-lane (#89), because what they audit is what a stranger wrote and a listing filtered to
-maintainer-authored items is that evidence removed; and the `public` set's `outsiders` lane,
-for a different reason worth not blurring into the first — it reads repository *state*, the
-settings and ruleset and collaborators that decide what an account with no role can do once
-anyone can reach the repository, and that exists on the GitHub side and in no checkout.
-`.claude/skills/security-sweep/SKILL.md` says so beside the audit that stands behind them. The
-list of four is also written down in `tests/test_agent_tooling_context.py`'s
-`GITHUB_SIDE_BY_DESIGN`, off the workflow's source, and in `tests/test_sweep_relay.js`'s, off
-the prompt a stage is really launched with. That first test also requires both documents to
-name every lane in the set, so a fifth lane is a change to both tests and to both documents
-rather than to the tests alone (#91).
+That is the dedupe pass and not the whole sweep. Five lanes read the GitHub side unfiltered,
+for three reasons worth not blurring together. The `publication` lanes of the `gaps` and
+`fixes` sets and the `public` set's `disclosure` lane (#89) audit what a stranger wrote, and a
+listing filtered to maintainer-authored items is that evidence removed. The `public` set's
+`outsiders` lane reads repository *state* — the settings, ruleset and collaborators that decide
+what an account with no role can do once anyone can reach the repository — which exists on the
+GitHub side and in no checkout. And the `unowned` set's `supply-chain` lane reads GitHub's copy
+of the history, at the repository activity endpoint, because a force-pushed-over commit is
+served by SHA long after a clone has stopped fetching it.
+
+`.claude/skills/security-sweep/SKILL.md` says so beside the audit that stands behind them, and
+is where the limit is written down too: the test reads what a brief *says*, so a lane reaching
+GitHub without naming a command evades it, which is how `supply-chain` went unlisted until #91.
+The list of five is also in `tests/test_agent_tooling_context.py`'s `GITHUB_SIDE_BY_DESIGN`,
+off the workflow's source, and in `tests/test_sweep_relay.js`'s, off the prompt a stage is
+really launched with. That first test also requires both documents to name every lane in the
+set, so a new one is a change to both tests and to both documents rather than to the tests
+alone (#91).
 
 Which profile a lane gets is the `web` flag on the lane in the workflow, and the reason is a
 comment beside it.

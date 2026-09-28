@@ -70,9 +70,19 @@ const GITHUB_SIDE_BY_DESIGN = {
   baseline: [],
   gaps: ["scan:publication"],
   fixes: ["scan:publication"],
-  unowned: [],
+  unowned: ["scan:supply-chain"],
   public: ["scan:disclosure", "scan:outsiders"],
 };
+
+// The marker, which has to be character-for-character the one in
+// `tests/test_agent_tooling_context.py`: that one reads the workflow's source and this one the
+// prompt a stage is really launched with, so a marker true of only one of them pins half the
+// property and says nothing about the other half. Two hand-kept copies drifting apart is #91
+// itself, so the Python side asserts this literal appears here rather than trusting the
+// comment. The lookbehind is why one marker can serve both: `WHERE` heads every prompt and
+// names `~/.config/gh` among the secret stores no stage may read, and without it every stage
+// of every lane set matches here and this assertion says nothing at all.
+const GITHUB_SIDE = /(?<![\w./])gh[ \\`]|Actions run|repository activity endpoint/;
 
 const PROFILE_FOR = {
   recon: "sweep-recon",
@@ -397,12 +407,23 @@ test("the dedupe pass is handed the tracker rather than sent to fetch it", async
   // Before #80 the report stage ran `gh issue list` and `gh pr list` in its own shell, on the
   // host that holds both live tokens, and the bodies it read carried no author and no fence.
   //
-  // Every lane set, because the briefs differ between them and `baseline` is the one whose
-  // briefs happen to name no `gh` command at all: a check that ran only the default would have
-  // read as this whole property while four lane sets went unexamined. `public` was one of
-  // them until #91 -- it was missing from the map above and from this list, so the two lanes
-  // #89 added were never asked the fenced half of this question at all.
-  for (const lanes of ["baseline", "gaps", "fixes", "unowned", "public"]) {
+  // Every lane set the workflow defines, read out of `LANE_SETS` rather than listed here.
+  // The briefs differ between them and `baseline` is the one whose briefs happen to name no
+  // `gh` command at all, so a check that ran only the default would have read as this whole
+  // property while four lane sets went unexamined. `public` was one of them until #91: it was
+  // missing from the map above and from the literal array this replaces, so the two lanes #89
+  // added were never asked the fenced half of this question. A hand-kept list is how that
+  // happens, so the set of keys is asserted against the workflow's own before it is used.
+  const defined = [...fs.readFileSync(WORKFLOW, "utf8").matchAll(/\n  (\w+): \w+_LANES,/g)].map(
+    ([, name]) => name,
+  );
+  assert.ok(defined.length, "no lane sets found; has LANE_SETS moved?");
+  assert.deepEqual(
+    Object.keys(GITHUB_SIDE_BY_DESIGN).sort(),
+    [...defined].sort(),
+    "GITHUB_SIDE_BY_DESIGN does not have an entry per lane set; a set with none goes unchecked",
+  );
+  for (const lanes of defined) {
     const { calls } = await run({ lanes, tracker: [MAINTAINER_ITEM] });
     const reached = new Set();
     for (const { prompt, opts } of calls) {
@@ -418,7 +439,7 @@ test("the dedupe pass is handed the tracker rather than sent to fetch it", async
       // every lane set matches here and this assertion says nothing.
       const { lines, inside } = fenceMap(prompt);
       const own = lines.filter((_, index) => !inside[index]).join("\n");
-      if (/(?<![\w./])gh[ \\`]|Actions run/.test(own)) reached.add(opts.label);
+      if (GITHUB_SIDE.test(own)) reached.add(opts.label);
     }
     assert.deepEqual(
       [...reached].sort(),

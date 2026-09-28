@@ -831,20 +831,35 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     # The documents are the other half of the same allow-list, and the half an operator reads.
     # Both of them claim a widening is a change to them as well; nothing made that true until
-    # #91, so a fifth lane could go green with the two tests agreeing and the operator still
-    # reading that it is the `publication` lanes of `gaps` and `fixes`. This mutation is the
-    # cheapest shape of that: the lane stays in the allow-list and stops being named.
-    # `.claude/README.md` is the file to aim at because it names `outsiders` exactly once --
-    # SKILL.md names it twice, in the exception and again in the `public` table, which is the
-    # limit the assertion's own comment admits to.
+    # #91, so a lane could go green with the two tests agreeing and the operator still reading
+    # that it is the `publication` lanes of `gaps` and `fixes`. This mutation is the cheapest
+    # shape of that: the lane stays in the allow-list and stops being named. `.claude/README.md`
+    # is the file to aim at because it names `outsiders` exactly once and is read whole; the
+    # SKILL.md half is read between two anchors, since that file's per-set lane table names
+    # every lane of every set and would answer a whole-file search for any of them.
     Mutation(
         key="sweep-github-side-lane-undocumented",
         widening=True,
         area=SWEEP,
         rule="both documents name every lane GITHUB_SIDE_BY_DESIGN lets read the GitHub side",
         path=".claude/README.md",
-        before="the `public` set's `outsiders` lane,",
-        after="the `public` set's other GitHub-side lane,",
+        before="`outsiders` lane reads repository",
+        after="second GitHub-side lane reads repository",
+        caught_by=(_TRACKER_AUTHORSHIP,),
+    ),
+    # The third marker alternative, which is the one that is not a command. `unowned/supply-chain`
+    # is sent to the repository activity endpoint and names no `gh` and no Actions run, so until
+    # #91 it read the GitHub side with the marker blind to it and all four documents saying four
+    # lanes did. This mutation spells the same instruction without the phrase: the lane still
+    # goes, and the check stops seeing it.
+    Mutation(
+        key="sweep-github-side-lane-evades-the-marker",
+        widening=True,
+        area=SWEEP,
+        rule="a lane sent to GitHub's own copy of the history is in GITHUB_SIDE_BY_DESIGN",
+        path=SWEEP_WORKFLOW,
+        before="Establish whether the repository activity endpoint reaches further",
+        after="Establish whether GitHub's own record of pushes reaches further",
         caught_by=(_TRACKER_AUTHORSHIP,),
     ),
     # ------------------------------------------------- the compose shape, widened

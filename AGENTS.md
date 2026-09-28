@@ -278,19 +278,20 @@ What the repository does control is the text itself:
   (#80). The sweep's dedupe pass no longer lists the tracker: the launching
   session fetches it, filtered to author associations `OWNER`, `MEMBER` and
   `COLLABORATOR`, and `maintainerAuthored()` in the workflow re-checks every
-  item and carries its author into the fence. Four lanes still read the GitHub
-  side whole — the `publication` lanes of the `gaps` and `fixes` sets and the
-  `public` set's `disclosure`, because what a stranger wrote is exactly what
-  they audit, and `public/outsiders`, because repository settings exist on the
-  GitHub side and in no checkout. That is the shape an exception takes, and it
-  is written down beside the post-run audit rather than left implicit. The
-  membership is `GITHUB_SIDE_BY_DESIGN` in
-  `tests/test_agent_tooling_context.py`, an allow-list widened on purpose; #91
-  is what happened when one statement of it was changed and the rest were not,
-  so change it there first. This repository's issue forms are the rule facing
-  outward: no field a stranger fills in is named, or
-  rendered, as an executable validation section, because an agent working this
-  tracker reads a section of that name as steps to run.
+  item and carries its author into the fence. Some lanes still read the GitHub
+  side whole, and which ones is `GITHUB_SIDE_BY_DESIGN` in
+  `tests/test_agent_tooling_context.py`, where the argument for each is written
+  down beside it — what a stranger wrote, for the `publication` lanes and
+  `public/disclosure`; repository state, for `public/outsiders`; and the
+  history GitHub serves after a clone has stopped fetching it, for
+  `unowned/supply-chain`. That is the shape an exception takes, and it is
+  written down beside the post-run audit rather than left implicit. Read the
+  membership there rather than from a count restated here: #91 is what happened
+  when the workflow gained lanes and none of the four statements of that list
+  did. This repository's issue forms are the rule facing outward: no field a
+  stranger fills in is named, or rendered, as an executable validation section,
+  because an agent working this tracker reads a section of that name as steps
+  to run.
 - **Text one agent hands another is that same text, one step further on.** The
   sweep's findings quote the code, commands and tracker prose they are about,
   because its evidence rule requires them to, so an imperative somebody wrote
