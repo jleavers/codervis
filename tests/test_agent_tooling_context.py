@@ -133,8 +133,9 @@ def _shipped_text_files() -> list[Path]:
 # The sweep text that sends its agent to the GitHub side on purpose, and why. They read
 # unfiltered and unfenced, with a shell, and SKILL.md and `.claude/README.md` say so beside the
 # post-run audit that stands behind them. Anything else that acquires it is a decision, and
-# this set is where the decision is argued for -- so the argument is per lane, because the four
-# do not all have the same one, and a fifth is weighed against whichever of the two it claims.
+# this set is where the decision is argued for -- so the argument is per lane, because the five
+# do not all have the same one, and a new lane is weighed against whichever of the three it
+# claims.
 #
 # - **What a stranger wrote**, which a listing filtered to maintainer-authored items is exactly
 #   the removal of. The `publication` lane of the `gaps` and `fixes` sets is sent to every
@@ -159,8 +160,13 @@ def _shipped_text_files() -> list[Path]:
 #   names no `gh` command and no Actions run, so the marker below never saw it, and being
 #   invisible to a spelling check is not the same as not going.
 #
-# Both `public` briefs bound themselves to reads in their closing line, which is text and not a
-# tool list, so the post-run audit stands behind them exactly as it does for the rest.
+# Four of the five bound themselves to reads in the brief itself, which is text and not a tool
+# list: the two `publication` lanes through `PUBLICATION_READ_BOUND` and its named call list
+# (#85), and both `public` lanes in their closing line. `unowned/supply-chain` is the one that
+# does not, and admitting it here without saying so would be the silence this set exists to
+# prevent. The post-run audit's `gh` write-verb grep is what stands behind it meanwhile, which
+# is detection after the fact rather than a bound; giving that lane the same closing line is a
+# change to a brief and belongs to whoever owns the lane, so it is filed rather than made here.
 #
 # The lanes that are not here and should not be: `public/cloner` runs the stack on a stranger's
 # machine, `public/shipped-text` mutates a copy of the tree, and `unowned/assurance` mutates
@@ -185,21 +191,26 @@ GITHUB_SIDE_BY_DESIGN = {
 # backslash, so `public/disclosure` matched on one occurrence and it was the closing
 # prohibition ("never pass `-X` ... to `` \`gh api\` ``") rather than the bullet that sends it
 # to the Actions logs; its tracker bullet names no command at all, exactly as
-# `fixes/publication`'s does not. A lane writing `` \`gh\` `` throughout would have matched
+# `fixes/publication`'s does not. (That count was taken before #94's `_expand_constants`, which
+# inlines shared constants and raises every lane's hit count; the lanes it picks out are the
+# same.) A lane writing `` \`gh\` `` throughout would have matched
 # nothing and gone green -- the #89 shape one layer down, caught here rather than in a run.
 # (#89's own two lanes did not ship green; they shipped red, which is #91.) The backtick is in
 # the class because
 # `tests/test_sweep_relay.js` runs this same marker over the *rendered* prompt, where the
 # escape is gone.
 #
-# The lookbehind is what keeps that widening from swallowing the whole sweep, and it is the
-# one place the two readers genuinely differ. `\b` already excludes "through" and "high", but
-# not a *path*: `HANDS_OFF` names `` \`~/.config/gh\` `` among the secret stores no stage may
-# read, and `WHERE` puts it at the top of every prompt, outside the fence. This module never
-# sees it -- it reads `${WHERE}` unexpanded -- but the relay test reads the rendered prompt,
-# where every stage of every lane set would have matched and the property would have asserted
-# nothing at all. So the marker excludes a `gh` that follows a word character, a `/` or a `.`,
-# which is a command the moment it does not.
+# The lookbehind is what keeps that widening from swallowing the whole sweep. `\b` already
+# excludes "through" and "high", but not a *path*: `HANDS_OFF` names `` \`~/.config/gh\` ``
+# among the secret stores no stage may read, and `WHERE` puts it at the top of every prompt,
+# outside the fence. So the marker excludes a `gh` that follows a word character, a `/` or a
+# `.`, which is a command the moment it does not.
+#
+# It is load-bearing on **both** sides, which it was not when it was written. It went in for
+# the relay test, which reads the rendered prompt; this module read `${WHERE}` unexpanded and
+# would have stayed green. `_expand_constants` (#94) inlines it, so `.config/gh` is now in all
+# seven prompt bodies here too -- drop the lookbehind and this module gains seven spurious
+# matches and fails. Do not narrow it back on the theory that only the JS reader needs it.
 #
 # The third alternative is a phrase rather than a command, and it is here because a brief can
 # send an agent to the GitHub side without naming the tool it gets there with:
@@ -925,7 +936,7 @@ def test_no_sweep_stage_goes_and_reads_the_tracker() -> None:
         SKILL: _between(
             SKILL.read_text(encoding="utf-8"),
             "lanes still read the GitHub side",
-            "\nAfter a run, audit",
+            "\n**Handing the two",
         ),
         CLAUDE_README: CLAUDE_README.read_text(encoding="utf-8"),
     }
@@ -1268,7 +1279,7 @@ def test_the_post_run_audit_looks_for_what_a_stage_still_holds() -> None:
     """Scoping is not the whole control, so the audit covers what the profiles cannot.
 
     A shell can reach the network whatever the web tools say, and `gh` is on the `PATH` of
-    every stage that holds one -- the four lanes `GITHUB_SIDE_BY_DESIGN` names, which are sent
+    every stage that holds one -- the lanes `GITHUB_SIDE_BY_DESIGN` names, which are sent
     to the GitHub side on purpose, included. SKILL.md's audit is what stands behind those, so
     it names them.
     """

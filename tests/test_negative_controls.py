@@ -860,9 +860,8 @@ MUTATIONS: tuple[Mutation, ...] = (
         after="",
         caught_by=(_TRACKER_AUTHORSHIP,),
     ),
-    # The allow-list's own control, and the shape #91 is about: the four lanes that read the
-    # GitHub side are named in the test, so a *fifth* one acquiring it has to be added there on
-    # purpose. Nothing proved that until now -- the controls above widen what reaches the dedupe
+    # The allow-list's own control, and the shape #91 is about: the lanes that read the GitHub
+    # side are named in the test, so another one acquiring it has to be added there on purpose. Nothing proved that until now -- the controls above widen what reaches the dedupe
     # pass, which is the other half of the same test -- and a lane set arriving without the
     # allow-list being widened with it is exactly how #89's two lanes reached `main` red.
     # `shipped-text` is the lane to send, because it is the `public` set's one lane that holds
@@ -871,7 +870,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         key="sweep-lane-acquires-the-tracker",
         widening=True,
         area=SWEEP,
-        rule="only the four lanes GITHUB_SIDE_BY_DESIGN names send an agent to the GitHub side",
+        rule="only the lanes GITHUB_SIDE_BY_DESIGN names send an agent to the GitHub side",
         path=SWEEP_WORKFLOW,
         before="Read its list first, then mutate what it does not cover",
         after=(
@@ -917,6 +916,22 @@ MUTATIONS: tuple[Mutation, ...] = (
         path=".claude/README.md",
         before="`outsiders` lane reads repository",
         after="second GitHub-side lane reads repository",
+        caught_by=(_TRACKER_AUTHORSHIP,),
+    ),
+    # The same omission in SKILL.md, and it is a separate control because it is what says the
+    # span scoping is load-bearing rather than decoration. `disclosure` is named twice in that
+    # file: once in the exception passage the check reads, and once in the `public` set's lane
+    # table far below it. A check reading the file whole would find the table entry and pass
+    # with the argument for the lane deleted -- which is what the SKILL.md half did until the
+    # anchors went in. This mutation takes only the first, so it fails for exactly that reason.
+    Mutation(
+        key="sweep-github-side-lane-unargued-in-the-skill",
+        widening=True,
+        area=SWEEP,
+        rule="SKILL.md argues for every GITHUB_SIDE_BY_DESIGN lane where it says which lanes go",
+        path=SWEEP_SKILL,
+        before="  `disclosure` lane asks that of the change to public itself",
+        after="  third lane asks that of the change to public itself",
         caught_by=(_TRACKER_AUTHORSHIP,),
     ),
     # The third marker alternative, which is the one that is not a command. `unowned/supply-chain`

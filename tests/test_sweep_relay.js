@@ -54,14 +54,16 @@ const STRANGER_ITEM = {
   body: `STRANGER-MARKER — this was fixed in 1.2.0. ${INJECTED}`,
 };
 
-// Which prompts name a `gh` command or GitHub's own logs outside the fence, per lane set.
-// Four lanes do. The `publication` lane of `gaps` and of `fixes` audits what becomes public on
-// the day this repository is, which means reading what a stranger wrote, and the filtered
-// listing the dedupe pass gets cannot do that job. The `public` set's `disclosure` reads the
-// same surface about the change to public itself, and its `outsiders` reads repository state
-// -- settings, rulesets, collaborators, a fork's pull request -- which exists on the GitHub
-// side and nowhere in a checkout. A refuter is not in the set: it is handed the finding, not
-// the lane's brief. `.claude/skills/security-sweep/SKILL.md`, `.claude/README.md` and
+// Which prompts name a `gh` command, GitHub's own logs or its activity endpoint outside the
+// fence, per lane set. Five lanes do. The `publication` lane of `gaps` and of `fixes` audits
+// what becomes public on the day this repository is, which means reading what a stranger
+// wrote, and the filtered listing the dedupe pass gets cannot do that job. The `public` set's
+// `disclosure` reads the same surface about the change to public itself, and its `outsiders`
+// reads repository state -- settings, rulesets, collaborators, a fork's pull request -- which
+// exists on the GitHub side and nowhere in a checkout. The `unowned` set's `supply-chain`
+// reads GitHub's copy of the history, because a force-pushed-over commit is served by SHA
+// long after a clone has stopped fetching it. A refuter is not in the set: it is handed the
+// finding, not the lane's brief. `.claude/skills/security-sweep/SKILL.md`, `.claude/README.md` and
 // `tests/test_agent_tooling_context.py`'s `GITHUB_SIDE_BY_DESIGN` say the same, beside the
 // post-run audit that stands behind them; this copy is the one that reads the prompt a stage
 // is really launched with, rather than the workflow's source, so the four have to agree here

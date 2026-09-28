@@ -59,7 +59,11 @@ three different reasons that are worth keeping apart:
   The object it is looking for is the one a checkout is missing by definition.
 
 All five hold a shell, and the post-run audit below is what stands behind them — do not read
-the dedupe paragraph above as covering them. `public/cloner` and `public/shipped-text` send an
+the dedupe paragraph above as covering them. Four of the five also bound themselves in the
+brief: the two `publication` lanes through their named read-only call list (#85), and both
+`public` lanes in a closing line that forbids every write verb and `-X`/`--method`.
+`supply-chain` carries no such line, so for that lane the audit is not a second check but the
+only one — read its transcript accordingly until the brief says otherwise. `public/cloner` and `public/shipped-text` send an
 agent to no GitHub surface, and neither does `unowned/assurance`: `shipped-text` and
 `assurance` mutate a copy of this tree, and `cloner` runs the stack on a stranger's machine. It
 does hold the web, for Docker's and each CLI vendor's documentation, so what bounds it there is

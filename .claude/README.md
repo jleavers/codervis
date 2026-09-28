@@ -68,11 +68,13 @@ really launched with. That first test also requires both documents to name every
 set, so a new one is a change to both tests and to both documents rather than to the tests
 alone (#91).
 
-A tool list still cannot say "read-only `gh`" for those two, so their brief says it instead
-(#85): the calls they may make are a named list in the workflow, read-only and on the
-repository the sweep resolved, and what they read goes in their `coverage` record. Prose is
-what that bound is made of, which is why the audit has a second pass that reads the record
-against the transcripts — the profile is not what makes it true.
+A tool list still cannot say "read-only `gh`" for the two `publication` lanes, so their brief
+says it instead (#85): the calls they may make are a named list in the workflow, read-only and
+on the repository the sweep resolved, and what they read goes in their `coverage` record. Prose
+is what that bound is made of, which is why the audit has a second pass that reads the record
+against the transcripts — the profile is not what makes it true. The two `public` lanes bound
+themselves the same way, in their own closing line. `unowned/supply-chain` carries no such
+bound at all, so for that one the audit is not a second pass but the only one.
 
 Which profile a lane gets is the `web` flag on the lane in the workflow, and the reason is a
 comment beside it.
