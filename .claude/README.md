@@ -59,8 +59,9 @@ anyone can reach the repository, and that exists on the GitHub side and in no ch
 `.claude/skills/security-sweep/SKILL.md` says so beside the audit that stands behind them. The
 list of four is also written down in `tests/test_agent_tooling_context.py`'s
 `GITHUB_SIDE_BY_DESIGN`, off the workflow's source, and in `tests/test_sweep_relay.js`'s, off
-the prompt a stage is really launched with, so a fifth lane is a change to both tests and to
-both documents (#91).
+the prompt a stage is really launched with. That first test also requires both documents to
+name every lane in the set, so a fifth lane is a change to both tests and to both documents
+rather than to the tests alone (#91).
 
 Which profile a lane gets is the `web` flag on the lane in the workflow, and the reason is a
 comment beside it.

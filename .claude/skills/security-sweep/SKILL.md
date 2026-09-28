@@ -55,14 +55,16 @@ two different reasons that are worth keeping apart:
   question either.
 
 All four hold a shell, and the post-run audit below is what stands behind them — do not read
-the paragraph above as covering them. The `public` set's other two lanes, `cloner` and
-`shipped-text`, reach no GitHub surface and have no business acquiring one.
+the dedupe paragraph above as covering them. The `public` set's other two lanes send an agent
+to no GitHub surface: `shipped-text` holds no web either, while `cloner` does hold it, for
+Docker's own documentation, so what bounds it there is its brief and not its profile.
 
-The list of four is written down in three places that have to agree:
+The list of four is written down in four places that have to agree:
 `tests/test_agent_tooling_context.py`'s `GITHUB_SIDE_BY_DESIGN`, which reads the workflow's
 source; `tests/test_sweep_relay.js`'s, which reads the prompt a stage is really launched with;
-and `.claude/README.md`. A fifth lane that names `gh` in any spelling, or an Actions run log,
-turns the suite red until all of them and this paragraph are changed together (#91).
+and this document and `.claude/README.md`, which that first test requires to name every lane in
+the set. A fifth lane that names `gh` in any spelling, or an Actions run log, turns the suite
+red until all four are changed together (#91).
 
 After a run, audit what the agents actually ran before presenting: the per-agent transcripts sit
 beside the workflow's `journal.jsonl`, in the directory the task notification names. Look for:

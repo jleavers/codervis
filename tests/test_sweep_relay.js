@@ -409,9 +409,16 @@ test("the dedupe pass is handed the tracker rather than sent to fetch it", async
       // Outside the fence only: a `gh` line inside one is relayed text -- the injected order
       // the stubs write into every free-text field is exactly that -- and quoting it is the
       // point of the fence, not a breach of it.
+      //
+      // The same marker as `tests/test_agent_tooling_context.py`'s `GITHUB_SIDE`, and it has
+      // to be: that one reads the workflow's source and this one the prompt a stage is really
+      // launched with, so a marker true of only one of them pins only half the property. The
+      // lookbehind is why it can be one marker at all. `WHERE` heads every prompt and names
+      // `~/.config/gh` among the secret stores no stage may read; without it every stage of
+      // every lane set matches here and this assertion says nothing.
       const { lines, inside } = fenceMap(prompt);
       const own = lines.filter((_, index) => !inside[index]).join("\n");
-      if (/\bgh[ \\`]|Actions run/.test(own)) reached.add(opts.label);
+      if (/(?<![\w./])gh[ \\`]|Actions run/.test(own)) reached.add(opts.label);
     }
     assert.deepEqual(
       [...reached].sort(),

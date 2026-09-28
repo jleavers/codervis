@@ -45,6 +45,7 @@ PLANS_DIR = DOCS_DIR / "plans"
 WORKFLOW = ROOT / ".claude" / "workflows" / "security-sweep.js"
 SKILL = ROOT / ".claude" / "skills" / "security-sweep" / "SKILL.md"
 AGENTS_DIR = ROOT / ".claude" / "agents"
+CLAUDE_README = ROOT / ".claude" / "README.md"
 
 # What each stage's agent may hold. The value is the exact `tools:` list its definition
 # declares, in order, because "the triage pass has no shell" is the whole point of the file and
@@ -169,15 +170,25 @@ GITHUB_SIDE_BY_DESIGN = {
 # the failure mode this whole test exists to prevent.
 #
 # The character class is the third spelling, and it is load-bearing: `\bgh ` alone requires a
-# space, and a brief writes the command in code span -- `` \`gh\` listings `` -- far more often
-# than bare. This read the workflow's *source*, where that is `gh` followed by a backslash, so
-# the one lane `public/disclosure` matched on was its closing prohibition ("never pass `-X` ...
-# to `` \`gh api\` ``") and not one of the three instructions that send it to the tracker and
-# the Actions logs. A lane added with `` \`gh\` `` throughout matched nothing at all and shipped
-# green, which is the #89 shape over again. The backtick is here too because
+# space, and a brief writes the command in a code span -- `` \`gh\` listings `` -- far more
+# often than bare. This reads the workflow's *source*, where that is `gh` followed by a
+# backslash, so `public/disclosure` matched on one occurrence and it was the closing
+# prohibition ("never pass `-X` ... to `` \`gh api\` ``") rather than the bullet that sends it
+# to the Actions logs; its tracker bullet names no command at all, exactly as
+# `fixes/publication`'s does not. A lane added with `` \`gh\` `` throughout matched nothing and
+# shipped green, which is the #89 shape one layer down. The backtick is in the class because
 # `tests/test_sweep_relay.js` runs this same marker over the *rendered* prompt, where the
-# escape is gone; one class covers both readers, and they are meant to stay the same marker.
-GITHUB_SIDE = re.compile(r"\bgh[ \\`]|Actions run")
+# escape is gone.
+#
+# The lookbehind is what keeps that widening from swallowing the whole sweep, and it is the
+# one place the two readers genuinely differ. `\b` already excludes "through" and "high", but
+# not a *path*: `HANDS_OFF` names `` \`~/.config/gh\` `` among the secret stores no stage may
+# read, and `WHERE` puts it at the top of every prompt, outside the fence. This module never
+# sees it -- it reads `${WHERE}` unexpanded -- but the relay test reads the rendered prompt,
+# where every stage of every lane set would have matched and the property would have asserted
+# nothing at all. So the marker excludes a `gh` that follows a word character, a `/` or a `.`,
+# which is a command the moment it does not.
+GITHUB_SIDE = re.compile(r"(?<![\w./])gh[ \\`]|Actions run")
 
 
 def _sweep_briefs(source: str) -> dict[str, str]:
@@ -821,6 +832,24 @@ def test_no_sweep_stage_goes_and_reads_the_tracker() -> None:
         f"shell is bounded by nothing but the preamble (#80); a stage that needs it says so "
         f"here, and SKILL.md and .claude/README.md say the same to the operator."
     )
+
+    # And they do say it, rather than the set being the only place it is written down. Both
+    # documents claim a widening is a change to them as well, and until #91 nothing made that
+    # true: a fifth lane went green the moment the two allow-lists agreed, with the operator
+    # still reading "the `publication` lanes of the `gaps` and `fixes` sets". What is checked
+    # is the lane's own key, which is what a reader has to see to know which lane is meant --
+    # a document that names four of the five is the omission this catches. It cannot bound
+    # *where* in the document the name appears, so it does not stand in for reading the
+    # paragraph; it fails the change that never went near one.
+    for lane in sorted(GITHUB_SIDE_BY_DESIGN):
+        key = lane.split("/", 1)[1]
+        for doc in (SKILL, CLAUDE_README):
+            assert key in doc.read_text(encoding="utf-8"), (
+                f"{doc.relative_to(ROOT)} does not name the `{key}` lane, which "
+                f"GITHUB_SIDE_BY_DESIGN says reads the GitHub side unfiltered. The operator "
+                f"reads that document to know which stages the post-run audit has to stand "
+                f"behind, so a lane added to the set is added to both documents."
+            )
 
     # The filter is the script's, because the command that produces the listing is one line in
     # a skill document and the association is the whole of what makes an item trustworthy.

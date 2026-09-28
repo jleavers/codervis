@@ -812,9 +812,10 @@ MUTATIONS: tuple[Mutation, ...] = (
     # rather than a rewrite of the one above because the two fail for different reasons. Every
     # lane that names the command writes it in a code span, and against `\bgh ` -- the marker
     # until #91 -- a code span matched nothing: `gh` is followed by a backslash in the source
-    # the check reads. Applied on its own this mutation left the whole suite green. Keeping
-    # both means the marker cannot be narrowed back to either spelling alone without a control
-    # going green and this module saying so.
+    # the check reads. Measured against a tree with the allow-list repaired and the marker
+    # still `\bgh `, this mutation left the whole suite green while the one above turned it
+    # red. Keeping both means the marker cannot be narrowed back to either spelling alone
+    # without a control going green and this module saying so.
     Mutation(
         key="sweep-lane-acquires-the-tracker-in-a-code-span",
         widening=True,
@@ -826,6 +827,24 @@ MUTATIONS: tuple[Mutation, ...] = (
             "Read its list first, then enumerate the tracker with read-only \\`gh\\` listings, "
             "then mutate what it does not cover"
         ),
+        caught_by=(_TRACKER_AUTHORSHIP,),
+    ),
+    # The documents are the other half of the same allow-list, and the half an operator reads.
+    # Both of them claim a widening is a change to them as well; nothing made that true until
+    # #91, so a fifth lane could go green with the two tests agreeing and the operator still
+    # reading that it is the `publication` lanes of `gaps` and `fixes`. This mutation is the
+    # cheapest shape of that: the lane stays in the allow-list and stops being named.
+    # `.claude/README.md` is the file to aim at because it names `outsiders` exactly once --
+    # SKILL.md names it twice, in the exception and again in the `public` table, which is the
+    # limit the assertion's own comment admits to.
+    Mutation(
+        key="sweep-github-side-lane-undocumented",
+        widening=True,
+        area=SWEEP,
+        rule="both documents name every lane GITHUB_SIDE_BY_DESIGN lets read the GitHub side",
+        path=".claude/README.md",
+        before="the `public` set's `outsiders` lane,",
+        after="the `public` set's other GitHub-side lane,",
         caught_by=(_TRACKER_AUTHORSHIP,),
     ),
     # ------------------------------------------------- the compose shape, widened
