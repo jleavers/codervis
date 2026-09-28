@@ -399,6 +399,19 @@ is the set of `Host` values `app/main.py` serves. The check is a pure-ASGI
 403. The two settings are widened together and `tests/test_host_allowlist.py`
 pins the behaviour.
 
+**What that publish address is worth is partly the engine's, on a different
+release from the one above (#79).** Before Engine 28.0 a peer on the host's own
+network segment reaches this stack whatever address the port was published on —
+at `ingress`'s own address on the `outside` bridge, or through the mapping
+itself where the host has `route_localnet` on — and 28.2.0 through 28.3.2 lose
+Docker's rules on every firewalld reload, which reopens it until the daemon is
+restarted. Nothing here changes on that account: README's "The engine and your
+front door" carries the exposure, the engine floor and the `DOCKER-USER` rule
+that closes it, which is advice to an operator about their own host in exactly
+the way the older-engine egress rule is. `DASHBOARD_ALLOWED_HOSTS` is not a
+second lock on it either — whoever reaches the port writes the `Host` header —
+so do not let text here or in README read as though it were.
+
 `egress` and `ingress` join `inside` and `outside`, run as uid 65534 with a
 read-only root filesystem and all capabilities dropped, and hold no credential.
 All three services log to json-file capped at 3 × 10 MB (`x-logging` in the
