@@ -145,8 +145,8 @@ hit is a thing to explain.
 grep -ohE '(gh (api|issue|pr|repo|ruleset|run|search|release|workflow|cache|secret|variable)|git (ls-remote|clone|fetch|push))( [-a-zA-Z0-9@:/{}._]+)*' <transcript-dir>/*.jsonl | sort | uniq -c | sort -rn | head -40
 ```
 
-Read it against the two lanes' own `coverage` records, which are required to say what they
-read. A call in a transcript that no record accounts for, and a record that claims more than
+Read it against the four lanes' own `coverage` records, which are required to say what each
+of them read. A call in a transcript that no record accounts for, and a record that claims more than
 the transcripts show, are the two halves of one question: whether what a lane says it examined
 is what it examined.
 
