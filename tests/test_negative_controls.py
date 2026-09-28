@@ -902,7 +902,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         # and the corpus and goes back to bounding itself in whatever its own closing line says,
         # which is the state #95 found it in.
         before="${DISCLOSURE_READ_BOUND}`,",
-        after="Every `gh` call in this lane reads.`,",
+        after="Every \\`gh\\` call in this lane reads.`,",
         caught_by=(_PUBLIC_LANE_BOUND, _TRACKER_AUTHORSHIP),
     ),
     Mutation(
