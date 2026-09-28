@@ -975,6 +975,98 @@ MUTATIONS: tuple[Mutation, ...] = (
         after="",
         caught_by=(_TRACKER_AUTHORSHIP,),
     ),
+    # The allow-list's own control, and the shape #91 is about: the lanes that read the GitHub
+    # side are named in the test, so another one acquiring it has to be added there on purpose. Nothing proved that until now -- the controls above widen what reaches the dedupe
+    # pass, which is the other half of the same test -- and a lane set arriving without the
+    # allow-list being widened with it is exactly how #89's two lanes reached `main` red.
+    # `shipped-text` is the lane to send, because it is the `public` set's one lane that holds
+    # neither the web nor any business with the tracker: it mutates a copy of the worktree.
+    Mutation(
+        key="sweep-lane-acquires-the-tracker",
+        widening=True,
+        area=SWEEP,
+        rule="only the lanes GITHUB_SIDE_BY_DESIGN names send an agent to the GitHub side",
+        path=SWEEP_WORKFLOW,
+        before="Read its list first, then mutate what it does not cover",
+        after=(
+            "Read its list first, then run gh issue list for the rules an earlier run filed, "
+            "then mutate what it does not cover"
+        ),
+        caught_by=(_TRACKER_AUTHORSHIP,),
+    ),
+    # The same widening in the spelling a brief actually uses, and it is a separate control
+    # rather than a rewrite of the one above because the two fail for different reasons. Every
+    # lane that names the command writes it in a code span, and against `\bgh ` -- the marker
+    # until #91 -- a code span matched nothing: `gh` is followed by a backslash in the source
+    # the check reads. Measured against a tree with the allow-list repaired and the marker
+    # still `\bgh `, this mutation left the whole suite green while the one above turned it
+    # red. Keeping both means the marker cannot be narrowed back to either spelling alone
+    # without a control going green and this module saying so.
+    Mutation(
+        key="sweep-lane-acquires-the-tracker-in-a-code-span",
+        widening=True,
+        area=SWEEP,
+        rule="a lane reaches the GitHub side however its brief spells the command",
+        path=SWEEP_WORKFLOW,
+        before="Read its list first, then mutate what it does not cover",
+        after=(
+            "Read its list first, then enumerate the tracker with read-only \\`gh\\` listings, "
+            "then mutate what it does not cover"
+        ),
+        caught_by=(_TRACKER_AUTHORSHIP,),
+    ),
+    # The documents are the other half of the same allow-list, and the half an operator reads.
+    # Both of them claim a widening is a change to them as well; nothing made that true until
+    # #91, so a lane could go green with the two tests agreeing and the operator still reading
+    # that it is the `publication` lanes of `gaps` and `fixes`. This mutation is the cheapest
+    # shape of that: the lane stays in the allow-list and stops being named. Both halves are
+    # read between anchors rather than whole -- SKILL.md because its per-set lane table names
+    # every lane of every set and would answer a whole-file search for any of them, and
+    # `.claude/README.md` since #95, which gave it a second paragraph about the same lanes'
+    # read lists that names `outsiders` again. This mutation takes the occurrence inside the
+    # argument, which is the one the scoping exists to make answer for itself: with the check
+    # read whole, the read-list paragraph below answers for it and this control survives.
+    Mutation(
+        key="sweep-github-side-lane-undocumented",
+        widening=True,
+        area=SWEEP,
+        rule="both documents name every lane GITHUB_SIDE_BY_DESIGN lets read the GitHub side",
+        path=".claude/README.md",
+        before="`outsiders` lane reads repository",
+        after="second GitHub-side lane reads repository",
+        caught_by=(_TRACKER_AUTHORSHIP,),
+    ),
+    # The same omission in SKILL.md, and it is a separate control because it is what says the
+    # span scoping is load-bearing rather than decoration. `disclosure` is named twice in that
+    # file: once in the exception passage the check reads, and once in the `public` set's lane
+    # table far below it. A check reading the file whole would find the table entry and pass
+    # with the argument for the lane deleted -- which is what the SKILL.md half did until the
+    # anchors went in. This mutation takes only the first, so it fails for exactly that reason.
+    Mutation(
+        key="sweep-github-side-lane-unargued-in-the-skill",
+        widening=True,
+        area=SWEEP,
+        rule="SKILL.md argues for every GITHUB_SIDE_BY_DESIGN lane where it says which lanes go",
+        path=SWEEP_SKILL,
+        before="  `disclosure` lane asks that of the change to public itself",
+        after="  third lane asks that of the change to public itself",
+        caught_by=(_TRACKER_AUTHORSHIP,),
+    ),
+    # The third marker alternative, which is the one that is not a command. `unowned/supply-chain`
+    # is sent to the repository activity endpoint and names no `gh` and no Actions run, so until
+    # #91 it read the GitHub side with the marker blind to it and all four documents saying four
+    # lanes did. This mutation spells the same instruction without the phrase: the lane still
+    # goes, and the check stops seeing it.
+    Mutation(
+        key="sweep-github-side-lane-evades-the-marker",
+        widening=True,
+        area=SWEEP,
+        rule="a lane sent to GitHub's own copy of the history is in GITHUB_SIDE_BY_DESIGN",
+        path=SWEEP_WORKFLOW,
+        before="Establish whether the repository activity endpoint reaches further",
+        after="Establish whether GitHub's own record of pushes reaches further",
+        caught_by=(_TRACKER_AUTHORSHIP,),
+    ),
     # ------------------------------------------------- the compose shape, widened
     # Each of these five was applied to a scratch copy and left the suite green (#78): every
     # pin on this file asked whether a *good* key was still there, so a key that grants

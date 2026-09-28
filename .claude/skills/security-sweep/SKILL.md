@@ -38,17 +38,52 @@ read as a duplicate. You fetch the listing in phase 0, filtered to maintainer-au
 and the workflow relays it to that stage through the same fence as every other hand-off. That
 stage holds no shell now, so there is no second way for it to look.
 
-**Four lanes still read the GitHub side, unfiltered and unfenced, and that is their job.**
-The `publication` lanes of the `gaps` and `fixes` sets are sent to every issue, comment, review
-comment and Actions run log, looking for a credential that becomes readable by anyone on the
-day the repository is public. The filtered listing cannot do that work: the text those lanes
-audit is precisely the text a stranger wrote. `public/disclosure` is sent to the same corpus one
-question further on — what the change to public publishes that cannot be taken back — and
-`public/outsiders` reads repository *state*: the repository object, Actions permissions, the
-`main` ruleset, collaborators, deploy keys, webhook hosts, secret names. None of that state is
-in a checkout, so there is nowhere else it could be read from. All four hold a shell, and the
-post-run audit below is what stands behind them — do not read the paragraph above as covering
-them.
+**Five lanes still read the GitHub side, unfiltered and unfenced, and that is their job**, for
+three different reasons that are worth keeping apart:
+
+- **What a stranger wrote.** The `publication` lanes of the `gaps` and `fixes` sets are sent to
+  every issue, comment, review comment and Actions run log, looking for a credential that
+  becomes readable by anyone on the day the repository is public, and the `public` set's
+  `disclosure` lane asks that of the change to public itself — every reachable object and
+  pull-request ref, the tracker, the Actions logs and artifacts. The filtered listing cannot do
+  that work: filtering it to maintainer-authored items removes precisely the evidence.
+- **Repository state, which lives nowhere else.** The `public` set's `outsiders` lane reads the
+  repository object, the Actions permissions, the `main` ruleset, collaborators, deploy keys
+  and webhook hosts, and the names of secrets, to establish what an account with no role can do
+  once anyone can reach it. That is not stranger-written text and the filtered listing is no
+  substitute for it at all, because it carries no settings; a checkout cannot answer the
+  question either.
+- **GitHub's copy of the history, which a clone does not hold.** The `unowned` set's
+  `supply-chain` lane is sent to the repository activity endpoint, because GitHub keeps serving
+  a force-pushed-over commit by SHA after no ref names it and a clone has stopped fetching it.
+  The object it is looking for is the one a checkout is missing by definition.
+
+All five hold a shell, and the post-run audit below is what stands behind them — do not read
+the dedupe paragraph above as covering them. Four of the five also bound themselves in the
+brief, each through a named read-only call list of its own: the two `publication` lanes
+through `PUBLICATION_READ_CALLS` (#85), and the two `public` lanes through
+`DISCLOSURE_READ_CALLS` and `OUTSIDERS_READ_CALLS` (#95), which replaced a closing line of
+each brief's own prose. `supply-chain` carries no such list, so for that lane the audit is not
+a second check but the only one — read its transcript accordingly until the brief says
+otherwise. `public/cloner` and `public/shipped-text` send an
+agent to no GitHub surface, and neither does `unowned/assurance`: `shipped-text` and
+`assurance` mutate a copy of this tree, and `cloner` runs the stack on a stranger's machine. It
+does hold the web, for Docker's and each CLI vendor's documentation, so what bounds it there is
+its brief and not its profile.
+
+The list of five is written down in four places that have to agree:
+`tests/test_agent_tooling_context.py`'s `GITHUB_SIDE_BY_DESIGN`, which reads the workflow's
+source; `tests/test_sweep_relay.js`'s, which reads the prompt a stage is really launched with;
+and this document and `.claude/README.md`, which that first test requires to name every lane in
+the set. A lane whose brief names a `gh` command, an Actions run log or the repository activity
+endpoint turns the suite red until all four are changed together (#91).
+
+**That check reads what a brief says, so it is a floor and not the whole control.** A lane that
+reached GitHub while saying "with the GitHub CLI", naming an `api.github.com` URL or asking for
+a mirror clone would pass it — `supply-chain` was exactly that, in the set only from #91 and
+going there all along. What the check catches is a lane acquiring the GitHub side in the
+spelling lanes actually use. The reasons above are written down so that a reviewer weighing a
+new brief, and the audit below, have something to check a lane against.
 
 **Handing the two `publication` lanes that text instead was considered and refused (#85),
 on their own terms.**
@@ -126,7 +161,9 @@ beside the workflow's `journal.jsonl`, in the directory the task notification na
 - **what a lane read on the GitHub side**, which is the other half of that same surface: for
   a lane sent there the read *is* the exposure, and no bullet above looks at one. The question
   is per lane, because the lists differ: every GitHub-side call has to be one the calling lane's
-  own brief names, and all four of the lanes sent there name theirs above. A `gh` read from a
+  own brief names, and four of the five lanes sent there name theirs above --
+  `unowned/supply-chain` is the one that names none, so for that lane this bullet is the whole
+  of the answer rather than a cross-check. A `gh` read from a
   stage whose brief sends it nowhere near GitHub is one that went outside its brief, whether or
   not it was a write. A path naming another repository is the same question and not the same
   answer — `jleavers/issuebot` is on `public/outsiders`' own list and on no other lane's, so
@@ -154,8 +191,8 @@ hit is a thing to explain.
 grep -ohE '(gh (api|issue|pr|repo|ruleset|run|search|release|workflow|cache|secret|variable)|git (ls-remote|clone|fetch|push))( [-a-zA-Z0-9@:/{}._]+)*' <transcript-dir>/*.jsonl | sort | uniq -c | sort -rn | head -40
 ```
 
-Read it against the four lanes' own `coverage` records, which are required to say
-what each of them read. A call in a transcript that no record accounts for, and a record that claims more than
+Read it against the `coverage` records of the four lanes that carry a read list, which are
+required to say what each of them read. A call in a transcript that no record accounts for, and a record that claims more than
 the transcripts show, are the two halves of one question: whether what a lane says it examined
 is what it examined.
 
