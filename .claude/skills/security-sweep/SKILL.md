@@ -61,9 +61,10 @@ three different reasons that are worth keeping apart:
 All five hold a shell, and the post-run audit below is what stands behind them — do not read
 the dedupe paragraph above as covering them. Four of the five also bound themselves in the
 brief, each through a named read-only call list of its own: the two `publication` lanes
-through `PUBLICATION_READ_CALLS` (#85), and the two `public` lanes through
-`DISCLOSURE_READ_CALLS` and `OUTSIDERS_READ_CALLS` (#95), which replaced a closing line of
-each brief's own prose. `supply-chain` carries no such list, so for that lane the audit is not
+through `PUBLICATION_READ_BOUND` (#85), and the two `public` lanes through
+`DISCLOSURE_READ_BOUND` and `OUTSIDERS_READ_BOUND` (#95), which replaced a closing line of
+each brief's own prose. The bound is what a brief interpolates; the `*_READ_CALLS` array
+beside each one is the list it renders. `supply-chain` carries no such list, so for that lane the audit is not
 a second check but the only one — read its transcript accordingly until the brief says
 otherwise. `public/cloner` and `public/shipped-text` send an
 agent to no GitHub surface, and neither does `unowned/assurance`: `shipped-text` and

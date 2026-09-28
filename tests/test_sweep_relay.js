@@ -522,9 +522,15 @@ const OUTSIDERS_READ_CALLS = [
 const OUTSIDERS_OTHER_REPOS = ["jleavers/issuebot"];
 
 // Every prompt that is handed a named list of GitHub-side reads, and which list. The keys are
-// `<lane set>/<agent label>`, and the table is exhaustive: a prompt carrying a list that is not
-// here is a lane that acquired another's reach, and a lane sent to the GitHub side with no list
-// is the defect #95 is about.
+// `<lane set>/<agent label>`, and what this table pins is the rendering: a prompt carrying a
+// list that is not here is a lane that acquired another's reach, and a prompt here carrying a
+// different list from the one stated is a bound that changed under it.
+//
+// It does *not* answer which GitHub-side lanes have a list at all -- `unowned/scan:supply-chain`
+// is in `GITHUB_SIDE_BY_DESIGN` above and absent here, on purpose (#96), and this file would
+// not notice either way. That relation is pinned in `tests/test_agent_tooling_context.py`,
+// against the workflow's source, where the one excused lane is named rather than derived. It
+// is not restated here because a third hand-kept copy of a list is what #91 was.
 const READ_LISTS = {
   "gaps/scan:publication": PUBLICATION_READ_CALLS,
   "fixes/scan:publication": PUBLICATION_READ_CALLS,

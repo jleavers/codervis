@@ -169,9 +169,10 @@ def _shipped_text_files() -> list[Path]:
 # replaced a closing line of each brief's own prose, a deny-list that nothing pinned.
 # `unowned/supply-chain` is the one that carries neither, and admitting it here without saying so
 # would be the silence this set exists to prevent. The post-run audit's `gh` write-verb grep is
-# what stands behind it meanwhile, which is detection after the fact rather than a bound; giving
-# that lane the same closing line is a change to a brief and belongs to whoever owns the lane, so
-# it is filed rather than made here.
+# what stands behind it meanwhile, which is detection after the fact rather than a bound. What
+# that lane is missing is a named read list of its own -- not the closing line the two `public`
+# lanes used to carry, which #95 replaced -- and writing one is a change to a brief and belongs
+# to whoever owns the lane, so it is filed as #96 rather than made here.
 #
 # The lanes that are not here and should not be: `public/cloner` runs the stack on a stranger's
 # machine, `public/shipped-text` mutates a copy of the tree, and `unowned/assurance` mutates
@@ -937,7 +938,10 @@ def test_no_sweep_stage_goes_and_reads_the_tracker() -> None:
     # the way SKILL.md's did, so this one is scoped to its own passage too. What is checked is
     # the lane's own key, which is what a reader needs to know which lane is meant; neither
     # half can bound *where* within its span the name falls, so this fails the change that
-    # never went near the paragraph rather than standing in for reading it. The key is also all it checks, so the
+    # never went near the paragraph rather than standing in for reading it. That is why each
+    # span is the paragraph making the argument and not one word more: the README's next
+    # paragraph mentions `supply-chain` in passing, while saying how it went unlisted until
+    # #91, and a span reaching it would let that mention answer for the argument being gone. The key is also all it checks, so the
     # two `publication` lanes stand or fall together here -- a document naming one set's and
     # not the other's passes. Which set a `publication` lane belongs to is the reasons above,
     # and those are prose a reviewer reads.
@@ -950,7 +954,7 @@ def test_no_sweep_stage_goes_and_reads_the_tracker() -> None:
         CLAUDE_README: _between(
             CLAUDE_README.read_text(encoding="utf-8"),
             "That is the dedupe pass and not the whole sweep",
-            "\nA tool list still cannot say",
+            "\n`.claude/skills/security-sweep/SKILL.md` says so beside the audit",
         ),
     }
     for lane in sorted(GITHUB_SIDE_BY_DESIGN):
@@ -1496,9 +1500,13 @@ def test_the_public_sets_github_side_lanes_bound_and_record_their_reads() -> Non
             f"leaves making the call the obvious thing to do"
         )
 
-    # And a bulleted list of `gh`/`git` calls is something only a lane with a bound is handed.
-    # Keyed on the rendering rather than on the words, because a brief may well *mention* a
-    # command in passing; what this is about is a lane being given a list to work from.
+    # And no lane without a bound hand-writes itself a bulleted list of `gh`/`git` calls. Be
+    # exact about what this reaches: a rendered bound cannot produce one, because
+    # `_expand_constants` joins an array constant with newlines and no `- ` prefix, so what is
+    # left to catch is a brief that writes its own list out instead of interpolating a bound --
+    # a lane bounding itself in prose again, which is the shape #95 found. Keyed on the
+    # rendering rather than on the words, because a brief may well *mention* a command in
+    # passing; what this is about is a list to work from.
     for lane, brief in briefs.items():
         if "/" not in lane or lane in carried:
             continue
