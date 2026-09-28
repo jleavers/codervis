@@ -63,12 +63,18 @@ const known = args.known || ''
 // reach the report stage inside the same fence as every other hand-off.
 const MAINTAINER_ASSOCIATIONS = ['OWNER', 'MEMBER', 'COLLABORATOR']
 
-// Mirrors the `--limit 200` and `--limit 100` the two listings carried, so a tracker that has
-// grown past them is cut here rather than filling a prompt without bound. What is cut is said
-// twice, in the journal and in the dedupe pass's own prompt: a listing silently halved would
-// have that pass reporting a search of the whole tracker that never happened, and the half it
-// loses is the far end of whatever order the launching session's listing arrived in.
+// Mirrors the `--limit 200` and `--limit 100` the two listings carried. **It bounds records,
+// not bytes** -- be exact, because the two are not the same bound and one issue body can be
+// 65,536 characters, so 300 capped records is still a prompt of any size. `TRACKER_BODY_CHARS`
+// below is the other half; the phase 0 command cuts bodies too, and this is the enforcement
+// point for the same reason the association filter is. What is cut is said twice, in the
+// journal and in the dedupe pass's own prompt: a listing silently halved would have that pass
+// reporting a search of the whole tracker that never happened. The half it loses is the far
+// end of the listing's order, which is why phase 0 asks for oldest-first -- the dedupe pass is
+// told that what was reported and forgotten matters most, and newest-first would cut exactly
+// that.
 const TRACKER_CAP = 300
+const TRACKER_BODY_CHARS = 4000
 
 // A string, never an object, and built here rather than relayed: these are this script's own
 // counters, like the funnel's, so they belong in the prompt's own voice.
@@ -106,9 +112,13 @@ const maintainerAuthored = (raw) => {
       title: String(item.title || ''),
       state: String(item.state || ''),
       labels: Array.isArray(item.labels) ? item.labels.map((l) => String((l && l.name) || l)) : [],
-      author: String(item.author || ''),
+      // An association-passing item whose author GitHub no longer has -- a deleted account --
+      // is still maintainer-authored, so it is relayed rather than dropped. It says `unknown`
+      // and not `''`, because "carries its author" has to be answerable by looking at the
+      // field: an empty string reads the same as a field nobody filled in.
+      author: String(item.author || 'unknown'),
       authorAssociation: item.authorAssociation,
-      body: String(item.body || ''),
+      body: String(item.body || '').slice(0, TRACKER_BODY_CHARS),
     })
   }
   if (dropped) {

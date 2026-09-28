@@ -603,6 +603,21 @@ MUTATIONS: tuple[Mutation, ...] = (
         after="- [ ] Finish the remaining toggle work.\n\n**Goal:**",
         caught_by=(_PENDING_WORK,),
     ),
+    # The rule facing outward (#80): a field any GitHub account fills in, rendered as a block
+    # an agent working this tracker reads as steps to run. The widening is the point -- the
+    # check that replaced the original `Validation`/`shell` pair allow-lists `text` alone, so a
+    # form acquiring `render: python` is the shape this has to catch, not only a form putting
+    # `shell` back.
+    Mutation(
+        key="issue-form-solicits-an-executable-section",
+        widening=True,
+        area=DOCUMENTS,
+        rule="no issue-form field a stranger fills in is named or rendered as an executable section",
+        path=".github/ISSUE_TEMPLATE/bug_report.yml",
+        before="      render: text",
+        after="      render: python",
+        caught_by=(f"{CONTEXT_TESTS}::test_no_issue_form_asks_a_stranger_for_an_executable_section",),
+    ),
     # --------------------------------------------------------- the sweep's own launch path
     # Both of the first two survived the text-level checks as first written (#44): the fence
     # constants, the `relay(...)` labels and the five profile files were all still in the tree,
@@ -707,6 +722,29 @@ MUTATIONS: tuple[Mutation, ...] = (
         before="maintainerAuthored(args.tracker)",
         after="({ items: Array.isArray(args.tracker) ? args.tracker : [], total: 0 })",
         caught_by=(_TRACKER_AUTHORSHIP,),
+    ),
+    # The command is a skill document's, so its control is too: the literal this very change
+    # shipped in its first draft, which deduped a fork's clusters against this tracker and
+    # filtered them by an association relative to the wrong repository.
+    Mutation(
+        key="sweep-tracker-names-a-repo-literal",
+        widening=True,
+        area=SWEEP,
+        rule="the phase 0 tracker command reads the repository the sweep resolved, never a literal",
+        path=SWEEP_SKILL,
+        before="repos/$REPO/issues",
+        after="repos/jleavers/codervis/issues",
+        caught_by=(_TRACKER_AUTHORSHIP,),
+    ),
+    Mutation(
+        key="sweep-report-gets-a-shell",
+        widening=True,
+        area=SWEEP,
+        rule="the report stage holds no shell, so it cannot go and read the tracker itself",
+        path=".claude/agents/sweep-report.md",
+        before="tools: Read, Glob, Grep, Write",
+        after="tools: Read, Glob, Grep, Write, Bash",
+        caught_by=(_STAGE_PROFILES,),
     ),
     # ------------------------------------------------- the compose shape, widened
     # Each of these five was applied to a scratch copy and left the suite green (#78): every

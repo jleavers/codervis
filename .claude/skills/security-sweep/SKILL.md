@@ -121,7 +121,7 @@ git fetch origin
 git rev-list --count main..origin/main          # informational only
 git worktree add --detach "$WT" origin/main
 git -C "$WT" rev-parse HEAD                     # the swept SHA
-gh repo view --json nameWithOwner --jq .nameWithOwner   # the repo: where origin points
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); echo "$REPO"  # where origin points
 mkdir -p "$RD" "$WT-scratch"
 ```
 
@@ -159,11 +159,12 @@ fetch it. One command, whose output you pass through rather than read for what i
 do:
 
 ```bash
-gh api --paginate --slurp -X GET "repos/jleavers/codervis/issues" \
-  -f state=all -f per_page=100 \
+gh api --paginate --slurp -X GET "repos/$REPO/issues" \
+  -f state=all -f per_page=100 -f sort=created -f direction=asc \
 | python3 -c '
 import json, sys
 MAINTAINER = {"OWNER", "MEMBER", "COLLABORATOR"}
+BODY_CHARS = 4000
 items = [item for page in json.load(sys.stdin) for item in page]
 json.dump([
     {"kind": "pr" if item.get("pull_request") else "issue",
@@ -171,7 +172,7 @@ json.dump([
      "labels": [label["name"] for label in item["labels"]],
      "author": (item.get("user") or {}).get("login"),
      "authorAssociation": item["author_association"],
-     "body": item.get("body") or ""}
+     "body": (item.get("body") or "")[:BODY_CHARS]}
     for item in items if item["author_association"] in MAINTAINER
 ], sys.stdout, indent=2)
 ' > "$RD/tracker.json"
@@ -179,7 +180,7 @@ json.dump([
 
 Read `$RD/tracker.json` and pass it as `args.tracker` in phase 1-5, verbatim.
 
-Three things about this command:
+Five things about this command:
 
 - **The REST `/issues` endpoint, not `gh issue list`.** `gh issue list --json` has no
   `authorAssociation` field, and the association is the check that matters: it survives the
@@ -192,6 +193,21 @@ Three things about this command:
 - **Comments are not in it, and cannot be.** A comment on a maintainer's issue is anyone's
   text, and the stage that would have read one now has no way to. This is the listing; there is
   no second call.
+- **`$REPO`, never a literal, for the reason the bullet above `run.json` gives.** Two things
+  break at once if this names one repository while the sweep audits another. The clusters get
+  deduped against a tracker that is not the swept tree's, so a real finding in a fork matches an
+  upstream issue and is filed as a duplicate — suppressed, by a report that truthfully says it
+  searched "the tracker". And `author_association` is relative to the repository in the URL, so
+  `OWNER`/`MEMBER`/`COLLABORATOR` would mean "maintainer of that other project", which is the
+  wrong trust boundary enforced under the right name. `${repo}` is what the dedupe prompt tells
+  the stage it is matching against, so the command and the prompt have to mean one repository.
+- **An oldest-first order and a per-body cap, because both ends are bounded downstream.**
+  `TRACKER_CAP` in the workflow bounds how many items are relayed, and it keeps the front of
+  the list: `/issues` defaults to newest-first, which would have thrown away the oldest issues
+  — exactly the "reported and fixed, or reported and forgotten" material the dedupe pass is
+  told matters most — so the order is asked for rather than inherited. The cap bounds records
+  and not bytes, and a single issue body can be 65,536 characters, so the body is cut here too.
+  A truncated body still matches on its invariant, which is what the dedupe pass matches on.
 
 Expect the dropped items to be Dependabot's pull requests (`NONE`), which is the intended
 shape: `AGENTS.md` names their release notes as other people's text.

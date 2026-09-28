@@ -807,11 +807,40 @@ def test_no_sweep_stage_goes_and_reads_the_tracker() -> None:
     assert "maintainerAuthored(args.tracker)" in source, (
         "args.tracker is not put through the filter"
     )
-    assert "args.tracker" not in source.replace("maintainerAuthored(args.tracker)", ""), (
-        "args.tracker is read somewhere other than through maintainerAuthored()"
+    # Matched on every spelling of the read, not on the one the script happens to use:
+    # `args['tracker']` and a destructure reach the same property and would have gone past a
+    # fixed-substring check, which is the narrowing this whole module exists to catch.
+    reads = re.findall(r"""args\s*(?:\.\s*tracker\b|\[\s*['"]tracker)""", source)
+    assert len(reads) == 1, (
+        f"args.tracker is read {len(reads)} times; it reaches the relay only through "
+        f"maintainerAuthored(), so a second read is a way round the filter"
+    )
+    assert re.search(r"\{[^}]*\btracker\b[^}]*\}\s*=\s*args\b", source) is None, (
+        "args is destructured for `tracker`, which reads it without going through the filter"
     )
     assert "'tracker items'," in source, (
         "the tracker listing does not reach the dedupe pass as a labelled relayed block"
+    )
+
+    # The command that produces the listing names no repository literal. SKILL.md says twice
+    # that `repo` is what `gh repo view` printed and never a literal, and nothing pinned it:
+    # the first draft of this very change shipped `repos/jleavers/codervis/issues`. In a clone
+    # or a fork -- which the skill supports, and #77 is about -- that deduped the swept tree's
+    # clusters against a different project's tracker, so a real finding matched an upstream
+    # issue and was suppressed as a duplicate. And `author_association` is relative to the
+    # repository in the URL, so the maintainer filter would have been enforcing the wrong
+    # repository's trust boundary under the right name.
+    skill = SKILL.read_text(encoding="utf-8")
+    listing = skill[skill.index("### The tracker listing") :]
+    listing = listing[: listing.index("\n## ")]
+    literals = re.findall(r"repos/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)", listing)
+    assert not literals, (
+        f"the phase 0 tracker command names {literals!r} rather than the repository the sweep "
+        f"resolved. The tracker it reads and the tree it audits have to be one repository, and "
+        f"an author association means nothing without knowing which repository it is relative to"
+    )
+    assert 'repos/$REPO/issues' in listing, (
+        "the phase 0 tracker command does not read the repository the sweep resolved"
     )
 
 
@@ -828,10 +857,17 @@ def test_no_issue_form_asks_a_stranger_for_an_executable_section() -> None:
     for form in ISSUE_FORMS:
         text = form.read_text(encoding="utf-8")
         where = form.relative_to(ROOT)
-        for rendered in ("render: shell", "render: bash", "render: console", "render: sh"):
-            assert rendered not in text, (
-                f"{where} renders a field a stranger fills in as {rendered.split(': ')[1]!r}"
-            )
+        # Allow-listed, not deny-listed: `render: python`, `render: yaml` and `render: console`
+        # read as executable too, and a list of four forbidden spellings says nothing about the
+        # fifth. `text` is the one permitted value -- GitHub writes it as a fenced block with no
+        # language, which is a quoted log and not a section of steps. A form that wants another
+        # argues for it here, in the test, rather than in a pull request nobody reads twice.
+        rendered = {value for value in re.findall(r"^\s*render:\s*(\S+)", text, re.M)}
+        assert rendered <= {"text"}, (
+            f"{where} renders a field a stranger fills in as {sorted(rendered - {'text'})!r}; "
+            f"GitHub writes that into the issue body as a fenced block of that language, and an "
+            f"agent working this tracker reads one as steps to run"
+        )
         # The name matters on its own: the section heading is what an agent reads for intent,
         # whatever the field renders as.
         for heading in ("label: Validation", "label: Test Plan", "label: Testing"):
