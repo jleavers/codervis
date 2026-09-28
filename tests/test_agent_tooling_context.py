@@ -798,8 +798,27 @@ def test_no_sweep_stage_goes_and_reads_the_tracker() -> None:
         "maintainerAuthored() does not check the association, so args.tracker reaches the "
         "dedupe pass however the launching session built it"
     )
-    assert "author: String(item.author" in filterer, (
-        "a relayed tracker item does not carry its author"
+    assert "String(item.author || 'unknown')" in filterer, (
+        "a relayed tracker item does not carry its author. An item whose author GitHub no "
+        "longer has still has one recorded as `unknown`, because an empty string reads the "
+        "same as a field nobody filled in"
+    )
+
+    # The cap bounds records; this bounds bytes. One issue body can be 65,536 characters, so
+    # 300 capped records is still a prompt of any size -- and the same text crosses the
+    # launching session's own context on the way. Both halves are pinned, since either alone
+    # leaves the other free to go.
+    assert re.search(r"const TRACKER_BODY_CHARS = (\d+)\b", source), (
+        "no per-body cap on the relayed listing"
+    )
+    body_chars = int(re.search(r"const TRACKER_BODY_CHARS = (\d+)\b", source).group(1))
+    assert body_chars <= 8000, (
+        f"TRACKER_BODY_CHARS is {body_chars}; a cap that large stops bounding the prompt, "
+        f"which is the whole of what it is for"
+    )
+    assert "String(item.body || '').slice(0, TRACKER_BODY_CHARS)" in filterer, (
+        "a relayed tracker item's body is not cut to TRACKER_BODY_CHARS, so the cap on how "
+        "many items are relayed is the only bound and it does not bound bytes"
     )
 
     # And it is applied: a listing that reached the relay unfiltered would leave every constant
@@ -841,6 +860,25 @@ def test_no_sweep_stage_goes_and_reads_the_tracker() -> None:
     )
     assert 'repos/$REPO/issues' in listing, (
         "the phase 0 tracker command does not read the repository the sweep resolved"
+    )
+
+    # And it asks for an order, because `TRACKER_CAP` keeps the front of the list. `/issues`
+    # defaults to newest-first, which would have cut exactly the oldest issues -- the "reported
+    # and fixed, or reported and forgotten" material the dedupe prompt says matters most. An
+    # order left to a default is a decision nobody made.
+    assert "-f sort=created -f direction=asc" in listing, (
+        "the phase 0 tracker command does not ask for an order, so which items the workflow's "
+        "cap keeps is GitHub's newest-first default -- which drops the oldest issues, the ones "
+        "the dedupe pass is told matter most"
+    )
+    assert re.search(r'\(item\.get\("body"\) or ""\)\[:BODY_CHARS\]', listing), (
+        "the phase 0 command does not cut issue bodies, so the whole of every maintainer issue "
+        "crosses the launching session's context before the workflow's own cap can bound it"
+    )
+    skill_body_chars = re.search(r"^BODY_CHARS = (\d+)$", listing, re.M)
+    assert skill_body_chars and int(skill_body_chars.group(1)) <= 8000, (
+        f"the phase 0 command's body cut is {skill_body_chars and skill_body_chars.group(1)}; "
+        f"a cap that large stops bounding what crosses the launching session's context"
     )
 
 
