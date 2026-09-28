@@ -49,16 +49,21 @@ listings returned was issue bodies with no author, from a tracker any GitHub acc
 to. The listing is now the launching session's to fetch and filter to maintainer-authored
 items, and the workflow relays it to the stage through the fence like every other hand-off.
 
-That is the dedupe pass and not the whole sweep: the `publication` lanes of the `gaps` and
-`fixes` sets read the GitHub side unfiltered, because what they are auditing is what a stranger
-can make public. `.claude/skills/security-sweep/SKILL.md` says so beside the audit that stands
-behind them.
+That is the dedupe pass and not the whole sweep: four lanes read the GitHub side unfiltered.
+The `publication` lanes of the `gaps` and `fixes` sets and `public/disclosure` do it because what
+they are auditing is what a stranger can make public; `public/outsiders` does it because
+repository state — settings, rulesets, collaborators, deploy keys, webhook hosts, secret names —
+is not in a checkout at all. `.claude/skills/security-sweep/SKILL.md` says so beside the audit
+that stands behind them.
 
-A tool list still cannot say "read-only `gh`" for those two, so their brief says it instead
-(#85): the calls they may make are a named list in the workflow, read-only and on the
-repository the sweep resolved, and what they read goes in their `coverage` record. Prose is
-what that bound is made of, which is why the audit has a second pass that reads the record
-against the transcripts — the profile is not what makes it true.
+A tool list still cannot say "read-only `gh`" for any of the four, so each brief says it instead
+(#85, #95): the calls a lane may make are a named list in the workflow, read-only and on the
+repository the sweep resolved, and what it read goes in its `coverage` record. One list per lane,
+because a bound is a block of text and a lane that interpolates another's name acquires the whole
+of that lane's reach — `public/outsiders` is the one lane sent to a second repository, and
+`jleavers/issuebot` is named on its list and on no other's. Prose is what that bound is made of,
+which is why the audit has a second pass that reads the record against the transcripts — the
+profile is not what makes it true.
 
 Which profile a lane gets is the `web` flag on the lane in the workflow, and the reason is a
 comment beside it.

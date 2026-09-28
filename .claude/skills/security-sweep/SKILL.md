@@ -38,12 +38,17 @@ read as a duplicate. You fetch the listing in phase 0, filtered to maintainer-au
 and the workflow relays it to that stage through the same fence as every other hand-off. That
 stage holds no shell now, so there is no second way for it to look.
 
-**One kind of lane still reads the GitHub side, unfiltered and unfenced, and that is its job.**
+**Four lanes still read the GitHub side, unfiltered and unfenced, and that is their job.**
 The `publication` lanes of the `gaps` and `fixes` sets are sent to every issue, comment, review
 comment and Actions run log, looking for a credential that becomes readable by anyone on the
 day the repository is public. The filtered listing cannot do that work: the text those lanes
-audit is precisely the text a stranger wrote. They hold a shell, and the post-run audit below
-is what stands behind them — do not read the paragraph above as covering them.
+audit is precisely the text a stranger wrote. `public/disclosure` is sent to the same corpus one
+question further on — what the change to public publishes that cannot be taken back — and
+`public/outsiders` reads repository *state*: the repository object, Actions permissions, the
+`main` ruleset, collaborators, deploy keys, webhook hosts, secret names. None of that state is
+in a checkout, so there is nowhere else it could be read from. All four hold a shell, and the
+post-run audit below is what stands behind them — do not read the paragraph above as covering
+them.
 
 **Handing the two `publication` lanes that text instead was considered and refused (#85),
 on their own terms.**
@@ -68,6 +73,37 @@ many issues, PR threads, comments, review comments and Actions runs, and how man
 commits. Widening that list is a decision, and `tests/test_agent_tooling_context.py` stays
 red until it is made on purpose.
 
+**The two `public` lanes carry a named list of their own (#95).** Each used to bound itself in a
+closing line of prose — "every `gh` call in this lane reads", a handful of forbidden verbs — and
+that was not enough three ways over. It was a deny-list, so the verb somebody adds is the sixth
+one it does not name. It said "never pass `-X` or `--method` to `gh api`", which forbids `-X GET`
+and so asks for the bare `gh api` that #85 was corrected to forbid. And nothing pinned it, so a
+widening turned no test red and the per-lane question in the audit below had only that prose to
+be measured against. So each of them now names its reads the way the `publication` lanes do,
+with a `coverage` record that says what it read, and one list per lane rather than one shared
+one — a bound is a block of text, and a lane that interpolates another's name acquires the whole
+of that lane's reach.
+
+`public/disclosure` reads the same corpus as the `publication` lanes, so its list is the same
+list: `gh issue list` and `gh issue view`, `gh pr list` and `gh pr view`, `gh run list`,
+`gh run view --log`, `gh api -X GET`, and `git ls-remote origin` and `git clone --mirror` for
+the refs GitHub serves that a checkout does not hold — against the repository the sweep resolved
+and no other. An artifact's *contents* are the one surface it is told to record as unreached
+rather than to fetch.
+
+`public/outsiders` reads settings rather than text, so its list is its own: `gh repo view`,
+`gh api -X GET`, `gh ruleset list` and `gh ruleset view`, `gh secret list` and
+`gh variable list`, and `git clone --depth 1`. **It is the one lane in the sweep that reads a
+second repository, and its list names which**: `jleavers/issuebot`, issuebot's published
+repository, for `configs/WORKFLOW.md` and the files it names and nothing else — because the
+question it asks about the agents that read this tracker cannot be answered from the swept
+repository at all. Nothing of a deployment: no `.env`, no untracked overlay, no running process,
+no path on this host. A third repository is not on the list, and neither is a listing of an
+account's repositories — whoever runs this sweep would be listing their own. And a *name* is
+what that lane records: a secret's value is served to nobody, but a variable's value comes back
+from every call that lists them and a webhook URL's query string can carry one, so what goes in
+a finding is the name, the event list and a URL's host.
+
 After a run, audit what the agents actually ran before presenting: the per-agent transcripts sit
 beside the workflow's `journal.jsonl`, in the directory the task notification names. Look for:
 
@@ -80,13 +116,13 @@ beside the workflow's `journal.jsonl`, in the directory the task notification na
   the run has any business writing to the tracker.
 - **what a lane read on the GitHub side**, which is the other half of that same surface: for
   a lane sent there the read *is* the exposure, and no bullet above looks at one. The question
-  is per lane, because the briefs differ: every GitHub-side call has to be one the calling
-  lane's own brief names, and for the two `publication` lanes that is the bounded list above,
-  on the repository the sweep resolved. A `gh` read from a stage whose brief sends it nowhere
-  near GitHub is one that went outside its brief, whether or not it was a write. A path
-  naming another repository is the same question and not always the same answer — the `public`
-  set's `outsiders` lane is told to read `jleavers/issuebot`, and a `publication` lane is told
-  to read nothing but the swept repository.
+  is per lane, because the lists differ: every GitHub-side call has to be one the calling lane's
+  own brief names, and all four of the lanes sent there name theirs above. A `gh` read from a
+  stage whose brief sends it nowhere near GitHub is one that went outside its brief, whether or
+  not it was a write. A path naming another repository is the same question and not the same
+  answer — `jleavers/issuebot` is on `public/outsiders`' own list and on no other lane's, so
+  that path from that lane is the read it was sent to make and from any other lane is a lane
+  that wandered.
 - a `WebFetch`, `curl`, `wget` or `nc` to anything that is not loopback, and any call at all to
   `claude.ai` or `chatgpt.com`
 - a call to an MCP connector. The profiles grant none, so one in a transcript means a stage did
@@ -106,7 +142,7 @@ alternation that is allowed to match forty times an audit does not belong in a g
 hit is a thing to explain.
 
 ```bash
-grep -ohE '(gh (api|issue|pr|run|search|release|workflow|cache|secret|variable)|git (ls-remote|clone|fetch|push))( [-a-zA-Z0-9@:/{}._]+)*' <transcript-dir>/*.jsonl | sort | uniq -c | sort -rn | head -40
+grep -ohE '(gh (api|issue|pr|repo|ruleset|run|search|release|workflow|cache|secret|variable)|git (ls-remote|clone|fetch|push))( [-a-zA-Z0-9@:/{}._]+)*' <transcript-dir>/*.jsonl | sort | uniq -c | sort -rn | head -40
 ```
 
 Read it against the two lanes' own `coverage` records, which are required to say what they
