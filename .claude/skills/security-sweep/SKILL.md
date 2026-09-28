@@ -38,12 +38,23 @@ read as a duplicate. You fetch the listing in phase 0, filtered to maintainer-au
 and the workflow relays it to that stage through the same fence as every other hand-off. That
 stage holds no shell now, so there is no second way for it to look.
 
-**One kind of lane still reads the GitHub side, unfiltered and unfenced, and that is its job.**
+**Four lanes still read the GitHub side, unfiltered and unfenced, and that is their job.**
 The `publication` lanes of the `gaps` and `fixes` sets are sent to every issue, comment, review
 comment and Actions run log, looking for a credential that becomes readable by anyone on the
-day the repository is public. The filtered listing cannot do that work: the text those lanes
-audit is precisely the text a stranger wrote. They hold a shell, and the post-run audit below
-is what stands behind them — do not read the paragraph above as covering them.
+day the repository is public. The `public` set's `disclosure` and `outsiders` lanes ask that
+same question of the change to public itself: what GitHub will serve once it is made — every
+reachable object and pull-request ref, the tracker, the Actions logs and artifacts — and what
+an account with no role can write to it afterwards, which is read out of the repository
+settings, the reporter doors and a fork's pull request. The filtered listing cannot do any of
+that work: the text those four lanes audit is precisely the text a stranger wrote, so filtering
+it to maintainer-authored items removes the evidence. All four hold a shell, and the post-run
+audit below is what stands behind them — do not read the paragraph above as covering them. The
+`public` set's other two lanes, `cloner` and `shipped-text`, do not reach the tracker and have
+no business acquiring it.
+
+`tests/test_agent_tooling_context.py::test_no_sweep_stage_goes_and_reads_the_tracker` is where
+that list of four is written down, so a fifth lane that asks for `gh` or an Actions run log
+turns the suite red until this paragraph and that one are changed together.
 
 After a run, audit what the agents actually ran before presenting: the per-agent transcripts sit
 beside the workflow's `journal.jsonl`, in the directory the task notification names. Look for:
