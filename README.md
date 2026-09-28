@@ -456,6 +456,17 @@ an `@` somewhere other than in front of the host loses the part before it too.
 This matters because CI's `Egress bound` job runs this command into a public
 Actions log.
 
+**Every line it prints is a line it wrote.** A control character in one of those
+variables is written out visibly rather than printed as itself — a newline as
+`\n`, a tab as `\t`, anything else without a name by its code point, as
+`\x1b` or `\u2028`. Nothing is dropped, so the host you configured is still
+there to recognise. This matters because the parser that reads the value removes
+`\t`, `\r` and `\n` from anywhere in a URL *before* reading it: a
+`HTTPS_PROXY` carrying a newline names exactly the proxy it looks like it names,
+and printed as it was written it would also break its own result line in two —
+the second half reading like a verdict the command reached. The count of lines
+you read is the count of assertions it made.
+
 An override the command cannot read a host and a port out of — an unclosed
 bracket, a port that is there but is not a number in 1–65535, a control
 character, or nothing at all — is a

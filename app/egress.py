@@ -638,9 +638,69 @@ async def serve_until_stopped(
 # reader can tell a redaction from a username somebody really configured.
 USERINFO_REDACTED = "<userinfo redacted>"
 
+# The three control characters worth a name in a result line, because they are the ones an
+# operator meets: a `.env` continued onto a second line, a file written on Windows, a value
+# pasted with a tab in it. Everything else escaped by `escape_controls` gets its code point.
+_NAMED_ESCAPES = {"\t": "\\t", "\n": "\\n", "\r": "\\r"}
+
+
+def escape_controls(text: str) -> str:
+    r"""Text as a result line may carry it: every non-printing character written out visibly.
+
+    **A line of `check`'s output has to be a line `check` wrote (#88).** The values it quotes
+    back are the operator's own -- the proxy variable, a `CLAUDE_AI_HOST`/`CHATGPT_HOST`
+    override -- and `urlsplit` removes `\t`, `\r` and `\n` from anywhere in a URL *before*
+    reading it. So `HTTPS_PROXY=$'http://egress:3128\n[ OK ] all good'` names the proxy on
+    3128 to everything that dials it, and printed verbatim it also breaks the line it appears
+    in across two, the second of which reads exactly like an assertion this command made. The
+    value discloses nothing an operator does not already have, so what this defends is the
+    output's own integrity: a human reading it, and anything that scrapes it.
+
+    **What survives is what Python calls printable, which is an allow-list and not a list of
+    the characters that bite.** `\n` is the one in the report, but a bare `\r` overwrites a
+    line on a terminal, `\x1b` opens an escape sequence, and `\u2028` is a line break to a
+    good deal of software that is not a terminal. Naming those four would leave the fifth. So
+    the rule is stated the other way round: a character is printed as itself where
+    `str.isprintable` says so, and written out as `\t`, `\n`, `\r`, `\xNN` or `\uNNNN`
+    where it does not. The space is printable and stays a space; every other separator --
+    a non-breaking space pasted out of rendered documentation among them -- becomes visible,
+    which is a diagnosis rather than a cost, since it is a character the live client chokes on
+    too.
+
+    **The host still has to be recognisable**, which is why this escapes rather than drops:
+    `http://egress\x1b:3128` prints as `http://egress\x1b:3128` and names the proxy the
+    operator configured. Nothing is removed from a value, ever.
+
+    **A backslash is left alone deliberately, and that is what makes this idempotent.** The
+    result holds no non-printing character, so escaping it again changes nothing -- which
+    `format_result` relies on, since the line it escapes whole may already hold a URL
+    `without_userinfo` escaped. Doubling the backslash instead would double it twice, and a
+    reader cannot tell a value mangled by the printer from one an operator configured. The
+    cost is a distinction lost in the other direction: a proxy variable holding the two
+    characters `\` and `n` prints as one holding a newline does. Neither is a line break in
+    the output, which is the whole of what this function is for.
+    """
+    return "".join(
+        char if char.isprintable() or char == " " else _escape(char) for char in text
+    )
+
+
+def _escape(char: str) -> str:
+    r"""One non-printing character, written out: named where it has a name, numbered otherwise."""
+    code = ord(char)
+    if char in _NAMED_ESCAPES:
+        return _NAMED_ESCAPES[char]
+    return f"\\x{code:02x}" if code < 0x100 else f"\\u{code:04x}"
+
 
 def without_userinfo(url: str) -> str:
     """A URL an operator configured, as a result line may print it: userinfo replaced.
+
+    **This is the one place a printed URL is normalised, so both normalisations live here.**
+    The userinfo is replaced, and every non-printing character is written out by
+    `escape_controls` -- a newline in the proxy variable parses as nothing at all to `urlsplit`
+    and prints as a second line that reads like a verdict (#88). A caller that quotes a
+    configured value back calls this and gets both.
 
     Host and port are kept, because the operator needs to see which proxy was dialled, and so
     is the `@` -- an authenticating proxy still reads as one, which is the thing they would go
@@ -669,8 +729,8 @@ def without_userinfo(url: str) -> str:
         # No `@` anywhere past the scheme, so there is no userinfo to cut and nothing here can
         # be a credential. This is the only path that returns the value as configured, which is
         # what keeps an ordinary `http://egress:3128` printing as itself.
-        return url
-    return f"{prefix}{USERINFO_REDACTED}@{tail}"
+        return escape_controls(url)
+    return escape_controls(f"{prefix}{USERINFO_REDACTED}@{tail}")
 
 
 # A scheme, as RFC 3986 spells one. Matched rather than assumed, because where the authority
@@ -1710,12 +1770,23 @@ def _target(addr: str, port: int) -> str:
 
 
 def format_result(ok: bool, line: str) -> str:
-    """One line of `check`'s output, as an operator reads it.
+    r"""One line of `check`'s output, as an operator reads it.
 
     Shared with the test that compares README's sample output against what `check` produces, so
     the documented output and the real one cannot drift through the prefix either.
+
+    **One line, structurally: the whole of it goes through `escape_controls` (#88).** Every
+    value `check` quotes back is one an operator configured, and the printed output is the
+    artefact this command exists to produce -- so the count of lines it prints has to be the
+    count of assertions it made, whatever a future line interpolates. `without_userinfo` covers
+    the values that are URLs, but not every one is: `probe_proxy` names the proxy's host as
+    `urlsplit` handed it back, and `urlsplit` drops `\t`, `\r` and `\n` while keeping
+    `\x0b` and `\x1b` inside a host name. Escaping here rather than at each interpolation is
+    what makes the property hold for the line somebody adds next. It is safe to apply twice
+    over an already-escaped URL, because `escape_controls` leaves no non-printing character
+    behind and does not touch a backslash.
     """
-    return f"[{' OK ' if ok else 'FAIL'}] {line}"
+    return f"[{' OK ' if ok else 'FAIL'}] {escape_controls(line)}"
 
 
 def check(

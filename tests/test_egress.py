@@ -30,6 +30,7 @@ import socket
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 from urllib.parse import urlsplit
@@ -71,6 +72,8 @@ from app.egress import (
     check,
     check_on_link,
     configured_proxy,
+    escape_controls,
+    format_result,
     has_default_route,
     normalise_host,
     on_link_addresses,
@@ -2887,7 +2890,19 @@ PROXY_SECRET = "s3cr3t-egress-password"
         # Leading whitespace: `urlsplit` strips it, so this is a value urllib reads and a live
         # credential. The scheme survives, rather than being lost to over-redaction.
         (f" http://user:{PROXY_SECRET}@egress:3128", " http://<userinfo redacted>@egress:3128"),
-        (f"\thttp://user:{PROXY_SECRET}@egress:3128", "\thttp://<userinfo redacted>@egress:3128"),
+        # The tab survives as `\t`, not as a tab: it still reaches the line, and the line is
+        # still one line (#88). The leading-space row above is the control for it -- a space is
+        # printable, so it is printed.
+        (f"\thttp://user:{PROXY_SECRET}@egress:3128", "\\thttp://<userinfo redacted>@egress:3128"),
+        # Both normalisations at once, on a value that carries a credential *and* a forged
+        # verdict: neither the secret nor the line break comes out.
+        (
+            f"http://user:{PROXY_SECRET}@egress:3128\n[ OK ] all good",
+            "http://<userinfo redacted>@egress:3128\\n[ OK ] all good",
+        ),
+        # A value with no userinfo takes the escaping path that returns it otherwise as
+        # configured, so that path escapes too.
+        ("http://egress:3128\n[ OK ] all good", "http://egress:3128\\n[ OK ] all good"),
         # Where the authority begins, which is the whole of what this depends on being right.
         # Splitting on the first `//` would frame `y` as the authority here, find no `@` in it
         # and hand the value back whole -- the scheme-less spelling is the one that can have a
@@ -3063,6 +3078,164 @@ async def test_no_result_line_carries_an_upstream_variables_userinfo(
     # The variable is still named, and still redacted rather than dropped.
     assert [line for line in printed if line.startswith(f"[FAIL] {variable}=")], printed
     assert [line for line in printed if egress.USERINFO_REDACTED in line], printed
+
+
+# A proxy variable that parses as the proxy an operator really configured *and* carries a
+# forged result line. `urlsplit` removes `\t`, `\r` and `\n` from anywhere in a URL before
+# reading it, so this is not a value the parser rejects on its way past -- which is the whole
+# of why printing it verbatim was a forgery rather than a mess (#88).
+FORGED_LINE = "[ OK ] the proxy refused everything"
+# The three the issue names, in one value, in the three places a value has: in front of the
+# authority, inside it, and trailing.
+CONTROL_CHARACTERS = "\t\r\n"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # What a result line is allowed to carry, stated as itself: printable characters and
+        # the space, unchanged. Not a list of the characters that bite -- that list is always
+        # one short, and the one somebody adds next is the one that is missing from it.
+        ("http://egress:3128", "http://egress:3128"),
+        (
+            "[ OK ] CLAUDE_AI_HOST: claude.ai:443 admitted",
+            "[ OK ] CLAUDE_AI_HOST: claude.ai:443 admitted",
+        ),
+        ("a b  c", "a b  c"),
+        # Non-ASCII that prints is printed: an operator who configured an IDN host has to be
+        # able to recognise it in the line.
+        ("http://egressó.example:3128", "http://egressó.example:3128"),
+        # The three with names, which are the three an operator meets.
+        ("a\tb", r"a\tb"),
+        ("a\nb", r"a\nb"),
+        ("a\rb", r"a\rb"),
+        # And the ones without: a terminal escape, the C0 line tabulation `urlsplit` does not
+        # drop, DEL, a C1 control, a non-breaking space pasted out of rendered documentation,
+        # and a line separator that is a line break to plenty of software that is not a
+        # terminal.
+        ("a\x1b[2Kb", r"a\x1b[2Kb"),
+        ("a\x0bb", r"a\x0bb"),
+        ("a\x7fb", r"a\x7fb"),
+        ("a\x85b", r"a\x85b"),
+        ("a\xa0b", r"a\xa0b"),
+        ("a\u2028b", r"a\u2028b"),
+        ("", ""),
+    ],
+)
+def test_escape_controls_prints_what_is_printable_and_writes_out_what_is_not(
+    text: str, expected: str
+) -> None:
+    """The permitted shape, written here rather than read back out of the module."""
+    assert escape_controls(text) == expected
+
+
+def test_escape_controls_leaves_no_character_a_line_could_break_on() -> None:
+    """The table above is the readable statement; this is the one that cannot be gamed.
+
+    Every code point up to the end of the C1 block, plus the separators above it, put through
+    the function one at a time: what comes back is printable throughout, so a printed line ends
+    where `print` puts its newline and nowhere else. It is the same shape as the userinfo sweep
+    -- a rule stated as a property over everything, beside a table stating it readably.
+    """
+    escaped = [
+        (char, escape_controls(f"http://egress{char}:3128"))
+        for char in [chr(code) for code in range(0x00, 0xA1)]
+        + ["\u2028", "\u2029", "\u3000"]
+    ]
+    assert not [
+        (char, line)
+        for char, line in escaped
+        if not all(c.isprintable() or c == " " for c in line)
+    ]
+    # Escaped, never dropped: the host an operator configured is still in every line.
+    assert not [(char, line) for char, line in escaped if "http://egress" not in line]
+
+
+def test_escape_controls_is_idempotent_so_format_result_may_apply_it_to_an_escaped_url() -> None:
+    """`format_result` escapes a whole line that already holds a `without_userinfo` URL.
+
+    That is only safe because a second pass changes nothing -- which is why a backslash is not
+    itself escaped. A rule that doubled it would double it twice here, and the line would no
+    longer be the value the operator configured.
+    """
+    for text in ("a\nb", r"a\nb", "http://egress:3128", "a\\b\tc", "a\x1b\u2028b"):
+        assert escape_controls(escape_controls(text)) == escape_controls(text)
+
+
+def test_format_result_is_one_line_whatever_the_line_it_is_given_holds() -> None:
+    """The structural half: the count of printed lines is the count of assertions `check` made.
+
+    `without_userinfo` covers the values that are URLs. This covers the line, so a future line
+    interpolating something else -- `probe_proxy` names the proxy host as `urlsplit` handed it
+    back, controls and all -- cannot put a second line into the output either.
+    """
+    printed = format_result(True, f"http://egress:3128\n{FORGED_LINE}")
+    assert "\n" not in printed
+    assert printed == r"[ OK ] http://egress:3128\n[ OK ] the proxy refused everything"
+
+
+@pytest.mark.parametrize(
+    "spoil",
+    [
+        # The proxy the rig really runs, with the control characters put where a value has
+        # room for them. All three spellings still name that proxy -- `urlsplit` removes
+        # `\t`, `\r` and `\n` before reading it -- so each of these is a *passing* run of the
+        # check with a forged line in it, rather than a value the parser turns away.
+        pytest.param(lambda url: f"{url}{CONTROL_CHARACTERS}{FORGED_LINE}", id="trailing"),
+        pytest.param(
+            lambda url: url.replace("://", f"://{CONTROL_CHARACTERS}"), id="inside-the-authority"
+        ),
+        pytest.param(
+            lambda url: "http://user:{}@{}\n{}".format(
+                PROXY_SECRET, url.removeprefix("http://"), FORGED_LINE
+            ),
+            id="with-userinfo",
+        ),
+    ],
+)
+@asynctest
+async def test_no_control_character_in_the_proxy_variable_can_forge_a_result_line(
+    spoil: Callable[[str], str],
+) -> None:
+    """The acceptance criterion, driven through a real `check` against a proxy that answers.
+
+    One printed line per result, and every one of them beginning with a verdict this command
+    wrote. The forged text is still in the output -- it is escaped, not dropped, so an operator
+    can still see what their variable holds -- but it is no longer a line.
+    """
+    async with _CheckRig() as rig:
+        host = rig.url.removeprefix("http://").rsplit(":", 1)[0]
+        results = await rig.run({**rig.environ, "HTTPS_PROXY": spoil(rig.url)})
+    printed = [format_result(ok, line) for ok, line in results]
+    assert len("\n".join(printed).splitlines()) == len(results), printed
+    assert all(line.startswith(("[ OK ] ", "[FAIL] ")) for line in printed), printed
+    # Escaped rather than dropped: the lines still name the proxy that was dialled.
+    assert [line for line in printed if host in line], printed
+    assert not [line for line in printed if PROXY_SECRET in line], printed
+
+
+@UPSTREAM_VARIABLES
+@pytest.mark.parametrize(
+    "url",
+    [
+        pytest.param(f"https://usage.example.test\n{FORGED_LINE}", id="newline"),
+        pytest.param(f"https://usage.example.test{CONTROL_CHARACTERS}", id="all-three"),
+        # `urlsplit` drops all three before reading, so this one names a host and a port the
+        # live client could dial and still carries the forgery.
+        pytest.param("https://usage\r\n.example.test:443", id="inside-the-host"),
+    ],
+)
+@asynctest
+async def test_no_control_character_in_an_upstream_variable_can_forge_a_result_line(
+    variable: str, url: str
+) -> None:
+    """The same criterion for the other pair of variables an operator sets."""
+    async with _CheckRig() as rig:
+        results = await rig.run({**rig.environ, variable: url})
+    printed = [format_result(ok, line) for ok, line in results]
+    assert len(("\n".join(printed)).splitlines()) == len(results), printed
+    assert all(line.startswith(("[ OK ] ", "[FAIL] ")) for line in printed), printed
+    assert [line for line in printed if line.startswith(f"[FAIL] {variable}")], printed
 
 
 def test_upstream_urls_are_read_the_way_the_live_clients_urllib_reads_them() -> None:
