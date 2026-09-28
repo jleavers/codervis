@@ -445,3 +445,70 @@ def test_under_the_harness_it_sends_nothing_and_still_passes(ambient_rig) -> Non
     ]
     assert leaked == [], f"a synthetic bearer reached the stub: {leaked}"
     assert received == [], f"the stub was dialled at all: {received}"
+
+
+# ─── The denied set itself ───────────────────────────────────────────────────
+#
+# The sealed run above proves the harness bites, and it proves it on *one* root: the tree
+# `CLAUDE_DATA_DIR` named before the redirect. So every fixed root beside it -- `~/.claude`,
+# `~/.codex`, the two per-user state files that sit next to them, and the container's
+# `/data/claude` and `/data/codex` -- could be deleted from `tests/conftest.py` with the whole
+# suite green (#78), and from then on a test reading an operator's real `~/.codex` would pass.
+#
+# What follows states the set here, in the test, rather than reading it back from the module
+# that builds it. A pin written as `assert DENIED_ROOTS == conftest._denied_roots()` is the
+# shape #78 is about: it moves with whatever it is checking.
+
+#: Under the home directory of whoever runs pytest. The two `.json` files are siblings of the
+#: roots rather than children, and prefix matching on a root never reaches a sibling, so each
+#: has to be denied in its own right.
+FIXED_DENIED_UNDER_HOME = (".claude", ".codex", ".claude.json", ".codex.json")
+
+#: Where docker-compose.yml mounts the two trees, which is what the app reads in the container
+#: and what a test running there would otherwise be able to open.
+FIXED_DENIED_ABSOLUTE = ("/data/claude", "/data/codex")
+
+
+def _conftest():
+    """The harness module itself. Imported by name: pytest puts `tests/` on `sys.path`."""
+    import conftest
+
+    return conftest
+
+
+@pytest.mark.parametrize("name", FIXED_DENIED_UNDER_HOME)
+def test_each_agent_root_under_home_is_denied(name: str) -> None:
+    root = os.path.abspath(Path.home() / name)
+    denied = _conftest().DENIED_ROOTS
+    assert root in denied, (
+        f"{root} is no longer in the harness's denied set, so a test in this suite may read "
+        f"it. Every root is named in this file; if one was dropped on purpose, drop it here "
+        f"too and say why.\nDenied: {sorted(denied)}"
+    )
+
+
+@pytest.mark.parametrize("root", FIXED_DENIED_ABSOLUTE)
+def test_each_container_data_root_is_denied(root: str) -> None:
+    denied = _conftest().DENIED_ROOTS
+    assert os.path.abspath(root) in denied, (
+        f"{root} is no longer in the harness's denied set.\nDenied: {sorted(denied)}"
+    )
+
+
+def test_the_harness_refuses_a_read_under_every_one_of_those_roots() -> None:
+    """The set above, driven through the observer that acts on it.
+
+    Membership alone would stay true if the matching stopped working -- an `==` where a prefix
+    test belongs, say -- so each root is also put to the object, by name and with a child path
+    under it. Nothing is opened: `saw_path` is the decision the audit hook makes, called
+    directly, so this reaches no real file of anyone's.
+    """
+    audit = _conftest().SessionAudit(_conftest().DENIED_ROOTS)
+    roots = [os.path.abspath(Path.home() / name) for name in FIXED_DENIED_UNDER_HOME]
+    roots += [os.path.abspath(root) for root in FIXED_DENIED_ABSOLUTE]
+    for root in roots:
+        assert audit.saw_path("open", root), root
+        assert audit.saw_path("open", os.path.join(root, "anything")), root
+    # And a sibling that merely starts with the same characters is not under it: a prefix test
+    # that forgot the separator would deny half the home directory and read as a stronger bound.
+    assert audit.saw_path("open", os.path.abspath(Path.home() / ".claude-notes")) is None

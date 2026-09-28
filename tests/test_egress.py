@@ -61,6 +61,9 @@ from app.egress import (
     IPV6_ROUTE_TABLE_PATH,
     ROUTE_TABLE_PATH,
     PROXY_ENV_NAMES,
+    REQUEST_TIMEOUT_S,
+    SHUTDOWN_DRAIN_S,
+    UPSTREAM_TIMEOUT_S,
     Proxy,
     Rule,
     allow_rules,
@@ -151,6 +154,42 @@ def test_split_allow_takes_commas_or_whitespace() -> None:
 
 def test_a_bare_name_is_that_host_on_443() -> None:
     assert parse_rule("example.com") == Rule("example.com", 443, False)
+
+
+def test_a_bare_name_refuses_every_name_under_it() -> None:
+    """The other half of the leading dot, and the half nothing asked for (#78).
+
+    `Rule.subdomains` is what tells `example.com` from `.example.com`, and deleting the
+    `self.subdomains and` guard in `Rule.matches` left the whole suite green -- which makes
+    `DEFAULT_ALLOW`'s two bare entries admit every name under `claude.ai` and `chatgpt.com`,
+    and an operator's `EGRESS_ALLOW` entry admit a whole zone they named one host in. A test
+    that only ever asked what a rule *admits* cannot see that; this asks what it refuses.
+    """
+    rule = parse_rule("example.com")
+    assert rule == Rule("example.com", 443, False)
+    assert rule is not None
+    assert rule.matches("example.com", 443)
+    for under in ("cdn.example.com", "a.b.example.com", "www.example.com"):
+        assert not rule.matches(under, 443), under
+
+
+def test_the_default_entries_admit_the_two_hosts_and_no_name_under_them() -> None:
+    """`DEFAULT_ALLOW` is two bare entries, so the rule above is what bounds it in practice.
+
+    Named separately from the `Rule` case because this is the consequence: an attacker-chosen
+    name under an allowed zone is a destination the proxy exists to refuse, and the two
+    entries are bare precisely so that it is.
+    """
+    rules, complaints = allow_rules({})
+    assert complaints == ()
+    # Restated rather than looped from `DEFAULT_ALLOW` alone: emptying that tuple would make
+    # a loop over it vacuously green, which is the shape #78 is about even where a second
+    # test pins the value.
+    assert DEFAULT_ALLOW == ("claude.ai", "chatgpt.com")
+    for host in ("claude.ai", "chatgpt.com"):
+        assert allowed(host, 443, rules), host
+        for under in (f"evil.{host}", f"a.b.{host}"):
+            assert not allowed(under, 443, rules), under
 
 
 def test_a_name_may_carry_its_own_port() -> None:
@@ -498,6 +537,40 @@ def _exhausted(caplog) -> int:
 def test_the_connection_bound_sits_above_the_tunnel_bound() -> None:
     """Otherwise the tunnel bound is dead code: no connection could survive to establish one."""
     assert MAX_CONNECTIONS >= MAX_TUNNELS
+
+
+def test_the_proxys_own_bounds_are_the_ones_it_documents() -> None:
+    """Every number the proxy bounds a peer with, restated here rather than read from there.
+
+    `tests/test_server_bounds.py` does this for the dashboard's own four; the proxy's went
+    unstated, so widening the request-line deadline, the upstream connect deadline or the
+    connection ceiling to ten minutes and a million left the suite green (#78). The behaviour
+    tests around this one each pass their own value in, which is exactly why they cannot
+    witness the module's: a test that constructs `Proxy(max_connections=2)` proves the
+    mechanism works and says nothing about what is armed in the container.
+
+    A deliberate change here is a line in this test in the same commit, and the reviewer sees
+    the number move.
+    """
+    assert MAX_REQUEST_BYTES == 8 * 1024
+    assert REQUEST_TIMEOUT_S == 10.0
+    assert UPSTREAM_TIMEOUT_S == 10.0
+    assert MAX_TUNNELS == 64
+    assert MAX_CONNECTIONS == 256
+    assert SHUTDOWN_DRAIN_S == 5.0
+
+
+def test_the_proxy_is_built_on_those_bounds_and_not_on_something_wider() -> None:
+    """The values above reach the object `serve()` builds, rather than stopping at the module.
+
+    A default argument that drifted from the constant beside it would leave the pin above true
+    and the running proxy on something else entirely.
+    """
+    proxy = Proxy(rules=[])
+    assert proxy._max_connections == MAX_CONNECTIONS
+    assert proxy._max_tunnels == MAX_TUNNELS
+    assert proxy._request_timeout_s == REQUEST_TIMEOUT_S
+    assert proxy._upstream_timeout_s == UPSTREAM_TIMEOUT_S
 
 
 @asynctest

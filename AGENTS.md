@@ -183,6 +183,48 @@ directories; it must not call upstream quota endpoints or read host tokens.
   that SSE frames cause no upstream calls. Add cases there when you change what
   a read is allowed to cost.
 
+## How a security pin is written here
+
+Every bound this project documents is pinned twice: by a test that states the
+permitted shape, and by a negative control in
+`tests/test_negative_controls.py` that breaks the bound and must turn that test
+red. Both halves have a rule, and the second one is the one that was missing.
+
+- **The pin states the permitted shape, as an allow-list written in the test
+  itself.** Not "the control is still there", not "this one bad value is
+  refused", and never a value read back out of the module being pinned. Each of
+  those three readings was in this suite and each let a widening through with a
+  green run (#78): `user` was checked against a list of five spellings of root
+  and admitted `0:65534`; the pin keeping `codervis` on `app/server.py` was a
+  substring, so a bare uvicorn `command:` mentioning `app.server` in an argument
+  passed with all four front-door bounds disarmed; the payload's text schema was
+  asserted against `main.MAX_TEXT_CHARS`, so raising that constant raised the
+  assertion with it. Where a value has to agree in two places, state it in the
+  test and assert the module still equals it — that way a deliberate change is
+  one line a reviewer reads, rather than nothing at all.
+  This applies at every level of the thing being pinned, not just the top one:
+  a check that permits a file and then refuses three dangerous keys inside it
+  has the same defect one level down, and the key somebody actually adds will
+  be a fourth. Name what a file may carry, not what it may not.
+- **The control widens the bound, not only deletes it.** A mutation that removes
+  a check answers "is this check still here". It does not answer "does this
+  check still bite", and those are not the same question: the change somebody
+  actually makes is a wider value, a second spelling, an extra key, one more
+  host. So a new bound arrives with a mutation that makes it admit something it
+  did not, and `Mutation.widening` marks it.
+  `test_every_area_has_a_control_that_widens_a_bound_rather_than_deleting_one`
+  fails if a whole area has only deleting controls again.
+- **A control names the tests that must fail, and the module proves they do.**
+  It copies the tracked tree, applies the mutation to the copy, and requires a
+  *failure* — not an error, not a skip, not a timeout. A rule that is genuinely
+  being dropped is a deleted entry in that list, in the same change, with the
+  reason.
+- **Prefer a pin that runs wherever pytest does.** The compose rules are the
+  example: the shape half of `tests/test_compose_topology.py` reads
+  `docker-compose.yml` directly, so a control for it is witnessed in a checkout
+  with no Docker installed, while the rendered half still covers what
+  interpolation produces.
+
 ## What repo-shipped agent text may say
 
 This repository ships text that agents execute: the archived plans under
