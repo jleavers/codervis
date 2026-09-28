@@ -513,15 +513,59 @@ test("what the cap cut is in the prompt, not only in the journal", async () => {
   const report = calls.find(({ opts }) => opts.label === "dedupe-report");
   const { lines, inside } = fenceMap(report.prompt);
   const own = lines.filter((_, index) => !inside[index]).join("\n");
-  assert.match(own, /300 of the 305 maintainer-authored items/, "the prompt does not say what it holds");
-  assert.match(own, /the remaining 5 were not relayed/, "the prompt does not say what was cut");
+  assert.match(
+    own,
+    /the oldest 150 and the newest 150 of the 305 maintainer-authored items/,
+    "the prompt does not say what it holds",
+  );
+  assert.match(own, /the 5 in the middle were not relayed/, "the prompt does not say what was cut");
   assert.match(own, /the report must say so/, "the stage is not told to pass the gap on");
-  assert.ok(report.prompt.includes("ITEM-299"), "the 300th item was not relayed");
-  assert.ok(!report.prompt.includes("ITEM-300"), "the cap did not bite");
+  // Both ends, because phase 0 asks for oldest-first and keeping the front alone would have
+  // dropped every recent issue -- which for dedupe are the likeliest matches of all.
+  assert.ok(report.prompt.includes("ITEM-0"), "the oldest item was not relayed");
+  assert.ok(report.prompt.includes("ITEM-149"), "the oldest half was cut short");
+  assert.ok(report.prompt.includes("ITEM-304"), "the newest item was not relayed");
+  assert.ok(report.prompt.includes("ITEM-155"), "the newest half was cut short");
+  assert.ok(!report.prompt.includes("ITEM-151\""), "the middle was not the part dropped");
 
   // And an uncut listing says its size without the apology.
   const { calls: whole } = await run({ tracker: many.slice(0, 4) });
   const short = whole.find(({ opts }) => opts.label === "dedupe-report");
   assert.match(short.prompt, /It holds 4 maintainer-authored item\(s\)\./);
   assert.ok(!short.prompt.includes("were not relayed"), "an uncut listing reports a cut");
+});
+
+test("a body past the cap is cut, marked, and the cut is in the prompt", async () => {
+  // The same rule as the record cap, for the other axis: a stage told to report how much of the
+  // tracker it searched cannot see a body that stops early, so a cut it cannot see is a search
+  // it reports as whole. One issue body can be 65,536 characters, so capping records alone
+  // bounds nothing about the size of this prompt.
+  const long = "L".repeat(10_000);
+  const { calls } = await run({
+    tracker: [
+      { ...MAINTAINER_ITEM, number: 1, body: long },
+      { ...MAINTAINER_ITEM, number: 2, body: "short" },
+    ],
+  });
+  const report = calls.find(({ opts }) => opts.label === "dedupe-report");
+
+  assert.ok(!report.prompt.includes("L".repeat(4001)), "the body was relayed past the cap");
+  assert.ok(report.prompt.includes("L".repeat(4000)), "the body was cut shorter than the cap");
+  assert.ok(
+    report.prompt.includes("[body truncated]"),
+    "a cut body is not marked, so the stage cannot tell one that stops early from one that ends",
+  );
+
+  const { lines, inside } = fenceMap(report.prompt);
+  const own = lines.filter((_, index) => !inside[index]).join("\n");
+  assert.match(own, /1 of the relayed item\(s\) had a body longer than 4000 characters/,
+    "the prompt does not say that a body was cut");
+  assert.match(own, /the report must say that bodies were cut/,
+    "the stage is not told to pass the cut on");
+
+  // A listing whose bodies all fit says nothing about cutting.
+  const { calls: fits } = await run({ tracker: [{ ...MAINTAINER_ITEM, body: "short" }] });
+  const clean = fits.find(({ opts }) => opts.label === "dedupe-report");
+  assert.ok(!clean.prompt.includes("[body truncated]"), "an uncut body is marked as cut");
+  assert.ok(!clean.prompt.includes("had a body longer than"), "an uncut listing reports a cut");
 });

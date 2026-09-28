@@ -121,7 +121,7 @@ git fetch origin
 git rev-list --count main..origin/main          # informational only
 git worktree add --detach "$WT" origin/main
 git -C "$WT" rev-parse HEAD                     # the swept SHA
-REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); echo "$REPO"  # where origin points
+gh repo view --json nameWithOwner --jq .nameWithOwner   # the repo: where origin points
 mkdir -p "$RD" "$WT-scratch"
 ```
 
@@ -159,7 +159,7 @@ fetch it. One command, whose output you pass through rather than read for what i
 do:
 
 ```bash
-gh api --paginate --slurp -X GET "repos/$REPO/issues" \
+gh api --paginate --slurp -X GET "repos/{owner}/{repo}/issues" \
   -f state=all -f per_page=100 -f sort=created -f direction=asc \
 | python3 -c '
 import json, sys
@@ -193,14 +193,24 @@ Five things about this command:
 - **Comments are not in it, and cannot be.** A comment on a maintainer's issue is anyone's
   text, and the stage that would have read one now has no way to. This is the listing; there is
   no second call.
-- **`$REPO`, never a literal, for the reason the bullet above `run.json` gives.** Two things
-  break at once if this names one repository while the sweep audits another. The clusters get
-  deduped against a tracker that is not the swept tree's, so a real finding in a fork matches an
-  upstream issue and is filed as a duplicate — suppressed, by a report that truthfully says it
-  searched "the tracker". And `author_association` is relative to the repository in the URL, so
-  `OWNER`/`MEMBER`/`COLLABORATOR` would mean "maintainer of that other project", which is the
-  wrong trust boundary enforced under the right name. `${repo}` is what the dedupe prompt tells
-  the stage it is matching against, so the command and the prompt have to mean one repository.
+- **`{owner}/{repo}`, never a literal, for the reason the bullet above `run.json` gives.**
+  Two things break at once if this names one repository while the sweep audits another. The
+  clusters get deduped against a tracker that is not the swept tree's, so a real finding in a
+  fork matches an upstream issue and is filed as a duplicate — suppressed, by a report that
+  truthfully says it searched "the tracker". And `author_association` is relative to the
+  repository in the URL, so `OWNER`/`MEMBER`/`COLLABORATOR` would mean "maintainer of that
+  other project": the wrong trust boundary enforced under the right name, which is what this
+  whole change is about. `${repo}` is what the dedupe prompt tells the stage it is matching
+  against, so the command and the prompt have to mean one repository.
+
+  **These are `gh`'s own placeholders, not shell variables, and that is the point.** `gh api`
+  substitutes them from the repository of the current directory — the same resolution
+  `gh repo view` above does. A `$REPO` captured in the phase 0 block would have been the
+  obvious spelling and is the wrong one: each of these fences may be a separate tool call, and
+  shell state does not survive between them, so it would expand to `repos//issues` and fetch
+  nothing. That fails loudly rather than quietly — a 404, then a parse error on the 404 body,
+  then an empty `tracker.json` — but it fails on every run, and a step that needs a shell to
+  persist is a step that needs an explanation. This one needs none.
 - **An oldest-first order and a per-body cap, because both ends are bounded downstream.**
   `TRACKER_CAP` in the workflow bounds how many items are relayed, and it keeps the front of
   the list: `/issues` defaults to newest-first, which would have thrown away the oldest issues

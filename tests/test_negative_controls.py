@@ -732,7 +732,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         area=SWEEP,
         rule="the phase 0 tracker command reads the repository the sweep resolved, never a literal",
         path=SWEEP_SKILL,
-        before="repos/$REPO/issues",
+        before="repos/{owner}/{repo}/issues",
         after="repos/jleavers/codervis/issues",
         caught_by=(_TRACKER_AUTHORSHIP,),
     ),
@@ -745,6 +745,29 @@ MUTATIONS: tuple[Mutation, ...] = (
         before="tools: Read, Glob, Grep, Write",
         after="tools: Read, Glob, Grep, Write, Bash",
         caught_by=(_STAGE_PROFILES,),
+    ),
+    # The other axis of the same cap. `TRACKER_CAP` bounds records and this bounds bytes, and
+    # a widening of either leaves the other's pin green -- one issue body can be 65,536
+    # characters, so 300 capped records is an unbounded prompt on its own.
+    Mutation(
+        key="sweep-tracker-body-cap-widened",
+        widening=True,
+        area=SWEEP,
+        rule="a relayed tracker item's body is cut to TRACKER_BODY_CHARS",
+        path=SWEEP_WORKFLOW,
+        before="const TRACKER_BODY_CHARS = 4000",
+        after="const TRACKER_BODY_CHARS = 4000000",
+        caught_by=(_TRACKER_AUTHORSHIP,),
+    ),
+    Mutation(
+        key="sweep-tracker-order-unpinned",
+        widening=True,
+        area=SWEEP,
+        rule="phase 0 asks for oldest-first, which is what makes the record cap's choice a decision",
+        path=SWEEP_SKILL,
+        before=" -f sort=created -f direction=asc",
+        after="",
+        caught_by=(_TRACKER_AUTHORSHIP,),
     ),
     # ------------------------------------------------- the compose shape, widened
     # Each of these five was applied to a scratch copy and left the suite green (#78): every

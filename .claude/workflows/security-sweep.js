@@ -75,12 +75,25 @@ const MAINTAINER_ASSOCIATIONS = ['OWNER', 'MEMBER', 'COLLABORATOR']
 // that.
 const TRACKER_CAP = 300
 const TRACKER_BODY_CHARS = 4000
+// Marked in the value, not only counted: the stage matches on a body, so it has to be able
+// to see that the one in front of it stops early rather than ends.
+const BODY_TRUNCATED = '… [body truncated]'
+// A space and parentheses, so it cannot be a login: `unknown` is one an account can hold,
+// and a deleted author must not read as an account that exists.
+const AUTHOR_UNKNOWN = '(author unknown)'
 
 // A string, never an object, and built here rather than relayed: these are this script's own
-// counters, like the funnel's, so they belong in the prompt's own voice.
-const trackerNote = (total, relayed) => (total === relayed
-  ? `${relayed} maintainer-authored item(s)`
-  : `${relayed} of the ${total} maintainer-authored items; the remaining ${total - relayed} were not relayed, so the search is partial and the report must say so`)
+// counters, like the funnel's, so they belong in the prompt's own voice. Both cuts are in it,
+// for the one reason: a stage told to report how much of the tracker it searched cannot see
+// either of them, and a cut it cannot see is a search it reports as whole.
+const trackerNote = (total, relayed, truncated) => {
+  const cut = total === relayed
+    ? `${relayed} maintainer-authored item(s)`
+    : `the oldest ${Math.floor(TRACKER_CAP / 2)} and the newest ${TRACKER_CAP - Math.floor(TRACKER_CAP / 2)} of the ${total} maintainer-authored items; the ${total - relayed} in the middle were not relayed, so the search is partial and the report must say so`
+  return truncated
+    ? `${cut}. ${truncated} of the relayed item(s) had a body longer than ${TRACKER_BODY_CHARS} characters, cut to that length and marked \`${BODY_TRUNCATED}\` where it was cut; a cut body is matched on the invariant it states, and the report must say that bodies were cut`
+    : cut
+}
 
 // Written to be true of a listing nobody filtered, because this is the enforcement point and
 // the command that produced it is one line in a skill document. An item whose association is
@@ -96,7 +109,13 @@ const maintainerAuthored = (raw) => {
   }
   const items = Array.isArray(raw) ? raw : []
   let dropped = 0
+  let truncated = 0
   const kept = []
+  const cut = (body) => {
+    if (body.length <= TRACKER_BODY_CHARS) return body
+    truncated += 1
+    return body.slice(0, TRACKER_BODY_CHARS) + BODY_TRUNCATED
+  }
   for (const item of items) {
     if (!item || typeof item !== 'object') {
       dropped += 1
@@ -116,9 +135,9 @@ const maintainerAuthored = (raw) => {
       // is still maintainer-authored, so it is relayed rather than dropped. It says `unknown`
       // and not `''`, because "carries its author" has to be answerable by looking at the
       // field: an empty string reads the same as a field nobody filled in.
-      author: String(item.author || 'unknown'),
+      author: String(item.author || AUTHOR_UNKNOWN),
       authorAssociation: item.authorAssociation,
-      body: String(item.body || '').slice(0, TRACKER_BODY_CHARS),
+      body: cut(String(item.body || '')),
     })
   }
   if (dropped) {
@@ -130,12 +149,23 @@ const maintainerAuthored = (raw) => {
   if (dropped && !kept.length) {
     log('tracker listing: every item was dropped -- does each one carry an `authorAssociation`?')
   }
+  if (truncated) {
+    log(`tracker listing: cut ${truncated} item body(ies) to ${TRACKER_BODY_CHARS} characters`)
+  }
   if (kept.length > TRACKER_CAP) {
-    log(`tracker listing: ${kept.length} maintainer-authored items, relaying the first ${TRACKER_CAP}`)
-    return { items: kept.slice(0, TRACKER_CAP), total: kept.length }
+    // Both ends, not the front: phase 0 asks for oldest-first, so keeping the front alone threw
+    // away every recent issue -- which for dedupe are the likeliest matches, the ones a previous
+    // sweep filed included. What is dropped is the middle, and `trackerNote` says how much.
+    const half = Math.floor(TRACKER_CAP / 2)
+    log(`tracker listing: ${kept.length} maintainer-authored items, relaying the oldest ${half} and the newest ${TRACKER_CAP - half}`)
+    return {
+      items: kept.slice(0, half).concat(kept.slice(kept.length - (TRACKER_CAP - half))),
+      total: kept.length,
+      truncated,
+    }
   }
   log(`tracker listing: relaying ${kept.length} maintainer-authored item(s) to the dedupe pass`)
-  return { items: kept, total: kept.length }
+  return { items: kept, total: kept.length, truncated }
 }
 
 // Resolved here rather than in the Report phase, so a misshapen listing is a line in the
@@ -1778,7 +1808,7 @@ const counts = {
 phase('Report')
 const dedupe = (clusters.length || singletons.length)
   ? await launch({
-    instructions: reportPrompt(counts, trackerNote(tracker.total, tracker.items.length)),
+    instructions: reportPrompt(counts, trackerNote(tracker.total, tracker.items.length, tracker.truncated)),
     relayed: [
       relay('clusters', 'written by the triage pass from the findings that survived refutation', clusters),
       relay('singletons', 'written by the triage pass from the findings it could not cluster', singletons),

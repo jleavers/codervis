@@ -36,7 +36,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_SETTINGS = ROOT / ".claude" / "settings.json"
 
-ISSUE_FORMS = sorted((ROOT / ".github" / "ISSUE_TEMPLATE").glob("*.yml"))
+# `*.y*ml`, not `*.yml`: GitHub reads a form named `.yaml` exactly the same, so the narrower
+# glob left `bug.yaml` with a `render: shell` field invisible to every check in this module.
+ISSUE_FORMS = sorted((ROOT / ".github" / "ISSUE_TEMPLATE").glob("*.y*ml"))
 
 DOCS_DIR = ROOT / "docs" / "superpowers"
 PLANS_DIR = DOCS_DIR / "plans"
@@ -798,10 +800,14 @@ def test_no_sweep_stage_goes_and_reads_the_tracker() -> None:
         "maintainerAuthored() does not check the association, so args.tracker reaches the "
         "dedupe pass however the launching session built it"
     )
-    assert "String(item.author || 'unknown')" in filterer, (
+    assert "String(item.author || AUTHOR_UNKNOWN)" in filterer, (
         "a relayed tracker item does not carry its author. An item whose author GitHub no "
-        "longer has still has one recorded as `unknown`, because an empty string reads the "
-        "same as a field nobody filled in"
+        "longer has still has one recorded, because an empty string reads the same as a field "
+        "nobody filled in"
+    )
+    assert "const AUTHOR_UNKNOWN = '(author unknown)'" in source, (
+        "the sentinel for a deleted author is missing or is one an account could hold; "
+        "`unknown` is a valid GitHub login, so a deleted author would read as a real account"
     )
 
     # The cap bounds records; this bounds bytes. One issue body can be 65,536 characters, so
@@ -816,9 +822,20 @@ def test_no_sweep_stage_goes_and_reads_the_tracker() -> None:
         f"TRACKER_BODY_CHARS is {body_chars}; a cap that large stops bounding the prompt, "
         f"which is the whole of what it is for"
     )
-    assert "String(item.body || '').slice(0, TRACKER_BODY_CHARS)" in filterer, (
-        "a relayed tracker item's body is not cut to TRACKER_BODY_CHARS, so the cap on how "
-        "many items are relayed is the only bound and it does not bound bytes"
+    assert "body: cut(String(item.body || ''))" in filterer, (
+        "a relayed tracker item's body does not go through the cut, so the cap on how many "
+        "items are relayed is the only bound and it does not bound bytes"
+    )
+    assert "body.slice(0, TRACKER_BODY_CHARS) + BODY_TRUNCATED" in filterer, (
+        "the cut does not bound the body to TRACKER_BODY_CHARS, or does not mark where it cut"
+    )
+    # Counted and said, not only done. This module's own rule for the record cap is that a cut
+    # the stage cannot see is a search it reports as whole, and a body that stops early is the
+    # same cut on the other axis.
+    assert "truncated += 1" in filterer, "a cut body is not counted"
+    assert "the report must say that bodies were cut" in source, (
+        "the dedupe pass is not told that bodies were cut, so it reports having read issues it "
+        "only read the first part of"
     )
 
     # And it is applied: a listing that reached the relay unfiltered would leave every constant
@@ -829,12 +846,16 @@ def test_no_sweep_stage_goes_and_reads_the_tracker() -> None:
     # Matched on every spelling of the read, not on the one the script happens to use:
     # `args['tracker']` and a destructure reach the same property and would have gone past a
     # fixed-substring check, which is the narrowing this whole module exists to catch.
-    reads = re.findall(r"""args\s*(?:\.\s*tracker\b|\[\s*['"]tracker)""", source)
+    # Comments stripped first: this file is unusually comment-dense, and a comment that names
+    # the property is not a read of it -- counting one would turn this red for prose.
+    code = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+    code = re.sub(r"^\s*//.*$", "", code, flags=re.M)
+    reads = re.findall(r"""args\s*(?:\.\s*tracker\b|\[\s*['"]tracker)""", code)
     assert len(reads) == 1, (
         f"args.tracker is read {len(reads)} times; it reaches the relay only through "
         f"maintainerAuthored(), so a second read is a way round the filter"
     )
-    assert re.search(r"\{[^}]*\btracker\b[^}]*\}\s*=\s*args\b", source) is None, (
+    assert re.search(r"\{[^}]*\btracker\b[^}]*\}\s*=\s*args\b", code) is None, (
         "args is destructured for `tracker`, which reads it without going through the filter"
     )
     assert "'tracker items'," in source, (
@@ -858,8 +879,11 @@ def test_no_sweep_stage_goes_and_reads_the_tracker() -> None:
         f"resolved. The tracker it reads and the tree it audits have to be one repository, and "
         f"an author association means nothing without knowing which repository it is relative to"
     )
-    assert 'repos/$REPO/issues' in listing, (
-        "the phase 0 tracker command does not read the repository the sweep resolved"
+    assert "repos/{owner}/{repo}/issues" in listing or "repos/$REPO/issues" in listing, (
+        "the phase 0 tracker command does not read the repository the sweep resolved. `gh`'s "
+        "own `{owner}`/`{repo}` placeholders are the spelling to prefer -- they resolve from "
+        "the current directory, so unlike a shell variable they do not need the fences of this "
+        "document to run in one shell"
     )
 
     # And it asks for an order, because `TRACKER_CAP` keeps the front of the list. `/issues`
@@ -876,9 +900,12 @@ def test_no_sweep_stage_goes_and_reads_the_tracker() -> None:
         "crosses the launching session's context before the workflow's own cap can bound it"
     )
     skill_body_chars = re.search(r"^BODY_CHARS = (\d+)$", listing, re.M)
-    assert skill_body_chars and int(skill_body_chars.group(1)) <= 8000, (
-        f"the phase 0 command's body cut is {skill_body_chars and skill_body_chars.group(1)}; "
-        f"a cap that large stops bounding what crosses the launching session's context"
+    assert skill_body_chars, "the phase 0 command declares no body cut"
+    assert int(skill_body_chars.group(1)) == body_chars, (
+        f"the phase 0 command cuts bodies at {skill_body_chars.group(1)} and the workflow at "
+        f"{body_chars}. They are one bound written twice -- the command so the text never "
+        f"reaches the launching session's context, the script because it is the enforcement "
+        f"point -- and two numbers that may drift are not one bound"
     )
 
 
