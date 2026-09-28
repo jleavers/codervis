@@ -285,10 +285,14 @@ What the repository does control is the text itself:
   `public/disclosure`; repository state, for `public/outsiders`; and the
   history GitHub serves after a clone has stopped fetching it, for
   `unowned/supply-chain`. That is the shape an exception takes, and it is
-  written down beside the post-run audit rather than left implicit. Read the
-  membership there rather than from a count restated here: #91 is what happened
-  when the workflow gained lanes and none of the four statements of that list
-  did. This repository's issue forms are the rule facing outward: no field a
+  written down beside the post-run audit rather than left implicit. What bounds
+  an exception like that is what the brief says and what the audit checks: the
+  `publication` lanes may make only the read-only calls their brief lists,
+  against the repository the sweep resolved, and their `coverage` record is
+  what says what they read (#85). Read the membership from the allow-list
+  rather than from a count restated here: #91 is what happened when the
+  workflow gained lanes and none of the four statements of that list did.
+  This repository's issue forms are the rule facing outward: no field a
   stranger fills in is named, or rendered, as an executable validation section,
   because an agent working this tracker reads a section of that name as steps
   to run.

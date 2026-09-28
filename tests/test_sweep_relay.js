@@ -456,6 +456,97 @@ test("the dedupe pass is handed the tracker rather than sent to fetch it", async
   }
 });
 
+// Every GitHub-side read the two `publication` lanes may make, spelled as the workflow's
+// `PUBLICATION_READ_CALLS` spells them. Those lanes keep the shell #80 took off the dedupe
+// pass, because what they audit is what a stranger wrote and a maintainer-filtered listing
+// drops it; what #85 bounded instead is which reads they may make, and their `coverage` record
+// is what says what they read. Stated here rather than read out of the workflow, so that
+// widening the list there is a line somebody reads rather than nothing at all. `gh api` names
+// its method because `gh api`'s own default is `GET` until a field is added and `POST`
+// afterwards, and the `git` reads are the history scan the same brief requires.
+const PUBLICATION_READ_CALLS = [
+  "gh issue list",
+  "gh issue view",
+  "gh pr list",
+  "gh pr view",
+  "gh run list",
+  "gh run view --log",
+  "gh api -X GET",
+  "git ls-remote origin",
+  "git clone --mirror",
+];
+
+// The sentence the bound opens with, which is how a prompt is asked whether it carries it.
+const BOUND_MARKER = "these are the only calls you may make";
+
+test("the publication lane is told which GitHub-side calls it may make, and to record them", async () => {
+  for (const lanes of ["gaps", "fixes"]) {
+    const { calls } = await run({ lanes, tracker: [MAINTAINER_ITEM] });
+    const scan = calls.find(({ opts }) => opts.label === "scan:publication");
+    assert.ok(scan, `${lanes}: the publication lane did not run`);
+
+    // Outside the fence: this is the prompt's own voice, and a bound that arrived as relayed
+    // data would be something the lane is told to treat as data rather than to obey.
+    const { lines, inside } = fenceMap(scan.prompt);
+    const own = lines.filter((_, index) => !inside[index]).join("\n");
+    // Whitespace-flattened for the prose assertions, because where the workflow's own text
+    // wraps is not what any of them are about.
+    const flat = own.replace(/\s+/g, " ");
+
+    assert.ok(flat.includes(BOUND_MARKER), `${lanes}: the lane is handed no bound on its reads`);
+    for (const call of PUBLICATION_READ_CALLS) {
+      assert.ok(
+        own.includes(`- ${call}`),
+        `${lanes}: the lane is not told it may run \`${call}\``,
+      );
+    }
+    // The repository the launching session resolved, rendered -- not `gh`'s idea of the
+    // current directory, and not a literal. `run()` passes `jleavers/codervis` as `args.repo`.
+    assert.ok(
+      flat.includes("against jleavers/codervis and no other repository"),
+      `${lanes}: the bound does not name the repository the sweep resolved`,
+    );
+    // And the record that makes the bound auditable after the run.
+    assert.match(
+      flat,
+      /coverage` is what says what you read/,
+      `${lanes}: the lane is not asked to record what it read`,
+    );
+    const surfaces = [
+      "issues",
+      "PR threads",
+      "comments",
+      "review comments",
+      "Actions runs",
+      "refs and commits",
+    ];
+    for (const surface of surfaces) {
+      assert.ok(
+        flat.includes(surface),
+        `${lanes}: the coverage record the lane is asked for does not name ${surface}`,
+      );
+    }
+  }
+});
+
+test("no other lane is handed the publication lanes' GitHub-side reach", async () => {
+  // Every lane set, `public` included: the bound is a block of shared text in the workflow, so
+  // a lane acquires the whole of it -- a shell pointed at the tracker and the run logs -- by
+  // interpolating one name. Which prompts carry it is the question that answers for that.
+  const carried = [];
+  for (const lanes of ["baseline", "gaps", "fixes", "unowned", "public"]) {
+    const { calls } = await run({ lanes, tracker: [MAINTAINER_ITEM] });
+    for (const { prompt, opts } of calls) {
+      if (prompt.includes(BOUND_MARKER)) carried.push(`${lanes}/${opts.label}`);
+    }
+  }
+  assert.deepEqual(
+    carried.sort(),
+    ["fixes/scan:publication", "gaps/scan:publication"],
+    "the prompts carrying the bounded-read brief are not the two publication lanes",
+  );
+});
+
 test("only maintainer-authored tracker items reach the dedupe pass", async () => {
   // Any GitHub account can open an issue on a public repository, edit its own and close it.
   // A self-closed "fixed" issue from a stranger is what makes a genuine cluster read as a
