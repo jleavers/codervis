@@ -449,12 +449,12 @@ MUTATIONS: tuple[Mutation, ...] = (
         area=EGRESS,
         rule="no value `check` quotes back can put a second line into its output",
         path="app/egress.py",
-        before='char if char.isprintable() or char == " " else _escape(char)',
+        before="char if char.isprintable() else _escape(char)",
         # A widening rather than a deletion: the escaping is still there and still covers the
         # tab, the terminal escape and the rest. It admits one more character -- the newline,
         # which is the one that forges a line (#88). A control that deleted the call would
         # leave exactly this change green.
-        after='char if char.isprintable() or char in " \\n" else _escape(char)',
+        after='char if char.isprintable() or char == "\\n" else _escape(char)',
         caught_by=(
             f"{EGRESS_TESTS}::test_escape_controls_prints_what_is_printable_and_writes_out_what_is_not",
             f"{EGRESS_TESTS}::test_escape_controls_leaves_no_character_a_line_could_break_on",

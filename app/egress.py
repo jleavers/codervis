@@ -661,8 +661,9 @@ def escape_controls(text: str) -> str:
     line on a terminal, `\x1b` opens an escape sequence, and `\u2028` is a line break to a
     good deal of software that is not a terminal. Naming those four would leave the fifth. So
     the rule is stated the other way round: a character is printed as itself where
-    `str.isprintable` says so, and written out as `\t`, `\n`, `\r`, `\xNN` or `\uNNNN`
-    where it does not. The space is printable and stays a space; every other separator --
+    `str.isprintable` says so, and written out as `\t`, `\n`, `\r`, `\xNN`, `\uNNNN` or
+    `\UNNNNNNNN` where it does not. The space is one `str.isprintable` admits, so a space
+    stays a space and needs no case of its own; every other separator --
     a non-breaking space pasted out of rendered documentation among them -- becomes visible,
     which is a diagnosis rather than a cost, since it is a character the live client chokes on
     too.
@@ -680,17 +681,25 @@ def escape_controls(text: str) -> str:
     characters `\` and `n` prints as one holding a newline does. Neither is a line break in
     the output, which is the whole of what this function is for.
     """
-    return "".join(
-        char if char.isprintable() or char == " " else _escape(char) for char in text
-    )
+    return "".join(char if char.isprintable() else _escape(char) for char in text)
 
 
 def _escape(char: str) -> str:
-    r"""One non-printing character, written out: named where it has a name, numbered otherwise."""
+    r"""One non-printing character, written out: named where it has a name, numbered otherwise.
+
+    Three widths, because one code point has to have one spelling. `\xNN` up to `\xff`,
+    `\uNNNN` through the end of the BMP and `\UNNNNNNNN` above it: `\u` takes exactly four
+    hex digits, so writing an astral code point with it collides -- `\ue0041` is both
+    `chr(0xE0041)`, a tag character, and `chr(0xE004)` followed by a `1`. Two values an
+    operator could have configured would then print the same, which is the one thing a
+    representation of a value may not do.
+    """
     code = ord(char)
     if char in _NAMED_ESCAPES:
         return _NAMED_ESCAPES[char]
-    return f"\\x{code:02x}" if code < 0x100 else f"\\u{code:04x}"
+    if code < 0x100:
+        return f"\\x{code:02x}"
+    return f"\\u{code:04x}" if code <= 0xFFFF else f"\\U{code:08x}"
 
 
 def without_userinfo(url: str) -> str:
