@@ -55,17 +55,23 @@ const STRANGER_ITEM = {
 };
 
 // Which prompts name a `gh` command or GitHub's own logs outside the fence, per lane set.
-// Only the `publication` lane of `gaps` and of `fixes` does, and only because auditing what
-// becomes public on the day this repository is means reading what a stranger wrote -- the
-// filtered listing the dedupe pass gets cannot do that job. A refuter is not in the set: it
-// is handed the finding, not the lane's brief. `.claude/skills/security-sweep/SKILL.md` and
-// `.claude/README.md` say the same to the operator, beside the post-run audit that stands
-// behind it.
+// Four lanes do. The `publication` lane of `gaps` and of `fixes` audits what becomes public on
+// the day this repository is, which means reading what a stranger wrote, and the filtered
+// listing the dedupe pass gets cannot do that job. The `public` set's `disclosure` reads the
+// same surface about the change to public itself, and its `outsiders` reads repository state
+// -- settings, rulesets, collaborators, a fork's pull request -- which exists on the GitHub
+// side and nowhere in a checkout. A refuter is not in the set: it is handed the finding, not
+// the lane's brief. `.claude/skills/security-sweep/SKILL.md`, `.claude/README.md` and
+// `tests/test_agent_tooling_context.py`'s `GITHUB_SIDE_BY_DESIGN` say the same, beside the
+// post-run audit that stands behind them; this copy is the one that reads the prompt a stage
+// is really launched with, rather than the workflow's source, so the four have to agree here
+// too (#91).
 const GITHUB_SIDE_BY_DESIGN = {
   baseline: [],
   gaps: ["scan:publication"],
   fixes: ["scan:publication"],
   unowned: [],
+  public: ["scan:disclosure", "scan:outsiders"],
 };
 
 const PROFILE_FOR = {
@@ -393,8 +399,10 @@ test("the dedupe pass is handed the tracker rather than sent to fetch it", async
   //
   // Every lane set, because the briefs differ between them and `baseline` is the one whose
   // briefs happen to name no `gh` command at all: a check that ran only the default would have
-  // read as this whole property while three lane sets went unexamined.
-  for (const lanes of ["baseline", "gaps", "fixes", "unowned"]) {
+  // read as this whole property while four lane sets went unexamined. `public` was one of
+  // them until #91 -- it was missing from the map above and from this list, so the two lanes
+  // #89 added were never asked the fenced half of this question at all.
+  for (const lanes of ["baseline", "gaps", "fixes", "unowned", "public"]) {
     const { calls } = await run({ lanes, tracker: [MAINTAINER_ITEM] });
     const reached = new Set();
     for (const { prompt, opts } of calls) {
@@ -403,7 +411,7 @@ test("the dedupe pass is handed the tracker rather than sent to fetch it", async
       // point of the fence, not a breach of it.
       const { lines, inside } = fenceMap(prompt);
       const own = lines.filter((_, index) => !inside[index]).join("\n");
-      if (/\bgh |Actions run/.test(own)) reached.add(opts.label);
+      if (/\bgh[ \\`]|Actions run/.test(own)) reached.add(opts.label);
     }
     assert.deepEqual(
       [...reached].sort(),

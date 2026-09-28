@@ -128,29 +128,33 @@ def _shipped_text_files() -> list[Path]:
     return [path for path in _shipped_files() if path.suffix in TEXT_SUFFIXES]
 
 
-# The sweep text that sends its agent to the GitHub side on purpose, and why. Every one of them
-# audits text a stranger wrote, which is the one thing the filtered listing the dedupe pass is
-# handed cannot be used for: filtering it to maintainer-authored items removes the evidence.
-# They read unfiltered and unfenced, with a shell, and SKILL.md and `.claude/README.md` say so
-# beside the post-run audit that stands behind them. Anything else that acquires it is a
-# decision, and this set is where the decision is argued for.
+# The sweep text that sends its agent to the GitHub side on purpose, and why. They read
+# unfiltered and unfenced, with a shell, and SKILL.md and `.claude/README.md` say so beside the
+# post-run audit that stands behind them. Anything else that acquires it is a decision, and
+# this set is where the decision is argued for -- so the argument is per lane, because the four
+# do not all have the same one, and a fifth is weighed against whichever of the two it claims.
 #
-# - The `publication` lane of the `gaps` and `fixes` sets is sent to every issue, comment,
-#   review comment and Actions run log, to find a credential that becomes readable by anyone
-#   on the day this repository is public.
-# - The `public` set's two lanes (#89) are the same question asked of the change to public
-#   itself, and their subject *is* the GitHub side rather than the tree: `disclosure`
-#   enumerates what GitHub will serve -- every reachable object and pull-request ref, the
-#   tracker, Actions run logs and artifacts -- and `outsiders` reads the repository settings,
-#   the reporter doors and a fork's pull request to establish what an account with no role can
-#   write once anyone can. Neither can be answered from a checkout, and neither can be answered
-#   from maintainer-authored items alone. Both briefs bound themselves to reads in their last
-#   line, which is text and not a tool list, so the post-run audit is what stands behind them
-#   exactly as it does for the other two.
+# - **What a stranger wrote**, which a listing filtered to maintainer-authored items is exactly
+#   the removal of. The `publication` lane of the `gaps` and `fixes` sets is sent to every
+#   issue, comment, review comment and Actions run log, to find a credential that becomes
+#   readable by anyone on the day this repository is public; `public/disclosure` (#89) asks
+#   that of the change to public itself, over every reachable object and pull-request ref, the
+#   tracker, and the Actions logs and artifacts. The dedupe pass's filtered listing cannot
+#   stand in for any of it.
+# - **Repository state, which exists only on the GitHub side.** `public/outsiders` (#89) is the
+#   one lane here for this second reason rather than the first: its reads are GETs on the
+#   repository object, the Actions permissions, the `main` ruleset, collaborators, deploy keys
+#   and webhook hosts, and the *names* of secrets. None of that is stranger-written text, and
+#   the filtered listing is not a poor substitute for it but no substitute at all -- it carries
+#   no settings. A checkout cannot answer what an account with no role may do to the repository
+#   once anyone can reach it.
+#
+# Both `public` briefs bound themselves to reads in their closing line, which is text and not a
+# tool list, so the post-run audit stands behind them exactly as it does for the other two.
 #
 # The `public` set's other two lanes are not here and should not be: `cloner` runs the stack on
 # a stranger's machine and `shipped-text` mutates a copy of the tree, and neither needs the
-# tracker to do it.
+# GitHub side to do it.
 GITHUB_SIDE_BY_DESIGN = {
     "gaps/publication",
     "fixes/publication",
@@ -163,7 +167,17 @@ GITHUB_SIDE_BY_DESIGN = {
 # and PR threads, #1 onwards" and leaves the agent to pick the call -- and a check keyed on
 # `gh` alone would have pinned one of the two exceptions and left the other invisible, which is
 # the failure mode this whole test exists to prevent.
-GITHUB_SIDE = re.compile(r"\bgh |Actions run")
+#
+# The character class is the third spelling, and it is load-bearing: `\bgh ` alone requires a
+# space, and a brief writes the command in code span -- `` \`gh\` listings `` -- far more often
+# than bare. This read the workflow's *source*, where that is `gh` followed by a backslash, so
+# the one lane `public/disclosure` matched on was its closing prohibition ("never pass `-X` ...
+# to `` \`gh api\` ``") and not one of the three instructions that send it to the tracker and
+# the Actions logs. A lane added with `` \`gh\` `` throughout matched nothing at all and shipped
+# green, which is the #89 shape over again. The backtick is here too because
+# `tests/test_sweep_relay.js` runs this same marker over the *rendered* prompt, where the
+# escape is gone; one class covers both readers, and they are meant to stay the same marker.
+GITHUB_SIDE = re.compile(r"\bgh[ \\`]|Actions run")
 
 
 def _sweep_briefs(source: str) -> dict[str, str]:
@@ -967,8 +981,9 @@ def test_the_post_run_audit_looks_for_what_a_stage_still_holds() -> None:
     """Scoping is not the whole control, so the audit covers what the profiles cannot.
 
     A shell can reach the network whatever the web tools say, and `gh` is on the `PATH` of
-    every stage that holds one -- the `publication` lanes, which are sent to the GitHub side
-    on purpose, included. SKILL.md's audit is what stands behind those, so it names them.
+    every stage that holds one -- the four lanes `GITHUB_SIDE_BY_DESIGN` names, which are sent
+    to the GitHub side on purpose, included. SKILL.md's audit is what stands behind those, so
+    it names them.
     """
     skill = SKILL.read_text(encoding="utf-8")
 

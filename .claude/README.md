@@ -49,15 +49,18 @@ listings returned was issue bodies with no author, from a tracker any GitHub acc
 to. The listing is now the launching session's to fetch and filter to maintainer-authored
 items, and the workflow relays it to the stage through the fence like every other hand-off.
 
-That is the dedupe pass and not the whole sweep. Four lanes read the GitHub side unfiltered,
-because what they are auditing is what a stranger wrote or can make public, and a listing
-filtered to maintainer-authored items is that evidence removed: the `publication` lanes of the
-`gaps` and `fixes` sets, and the `public` set's `disclosure` and `outsiders` lanes (#89), whose
-subject is the change to public itself — what GitHub serves once it is made, and what an
-account with no role can write to it afterwards. `.claude/skills/security-sweep/SKILL.md` says
-so beside the audit that stands behind them, and
-`tests/test_agent_tooling_context.py::test_no_sweep_stage_goes_and_reads_the_tracker` names the
-four, so a fifth is a change to that test and to both of these documents.
+That is the dedupe pass and not the whole sweep. Four lanes read the GitHub side unfiltered:
+the `publication` lanes of the `gaps` and `fixes` sets and the `public` set's `disclosure`
+lane (#89), because what they audit is what a stranger wrote and a listing filtered to
+maintainer-authored items is that evidence removed; and the `public` set's `outsiders` lane,
+for a different reason worth not blurring into the first — it reads repository *state*, the
+settings and ruleset and collaborators that decide what an account with no role can do once
+anyone can reach the repository, and that exists on the GitHub side and in no checkout.
+`.claude/skills/security-sweep/SKILL.md` says so beside the audit that stands behind them. The
+list of four is also written down in `tests/test_agent_tooling_context.py`'s
+`GITHUB_SIDE_BY_DESIGN`, off the workflow's source, and in `tests/test_sweep_relay.js`'s, off
+the prompt a stage is really launched with, so a fifth lane is a change to both tests and to
+both documents (#91).
 
 Which profile a lane gets is the `web` flag on the lane in the workflow, and the reason is a
 comment beside it.

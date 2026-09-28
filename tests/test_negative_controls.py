@@ -808,6 +808,26 @@ MUTATIONS: tuple[Mutation, ...] = (
         ),
         caught_by=(_TRACKER_AUTHORSHIP,),
     ),
+    # The same widening in the spelling a brief actually uses, and it is a separate control
+    # rather than a rewrite of the one above because the two fail for different reasons. Every
+    # lane that names the command writes it in a code span, and against `\bgh ` -- the marker
+    # until #91 -- a code span matched nothing: `gh` is followed by a backslash in the source
+    # the check reads. Applied on its own this mutation left the whole suite green. Keeping
+    # both means the marker cannot be narrowed back to either spelling alone without a control
+    # going green and this module saying so.
+    Mutation(
+        key="sweep-lane-acquires-the-tracker-in-a-code-span",
+        widening=True,
+        area=SWEEP,
+        rule="a lane reaches the GitHub side however its brief spells the command",
+        path=SWEEP_WORKFLOW,
+        before="Read its list first, then mutate what it does not cover",
+        after=(
+            "Read its list first, then enumerate the tracker with read-only \\`gh\\` listings, "
+            "then mutate what it does not cover"
+        ),
+        caught_by=(_TRACKER_AUTHORSHIP,),
+    ),
     # ------------------------------------------------- the compose shape, widened
     # Each of these five was applied to a scratch copy and left the suite green (#78): every
     # pin on this file asked whether a *good* key was still there, so a key that grants
