@@ -1006,7 +1006,9 @@ def _assert_read_only_on_their_face(calls: list[str], which: str) -> None:
     as an instruction (#85, #95).
     """
     for call in calls:
-        assert call.startswith(("gh ", "git ")), f"{which}: {call!r} is neither a `gh` nor a `git` read"
+        assert call.startswith(("gh ", "git ")), (
+            f"{which}: {call!r} is neither a `gh` nor a `git` read"
+        )
         verb = re.search(r"\b(create|edit|close|comment|merge|delete|push|fetch)\b", call)
         assert verb is None, f"{which}: {call!r} names the write verb {verb.group(1)!r}"
         # `--input` reads a request body from a file, which is a write however it is spelled.
@@ -1014,7 +1016,9 @@ def _assert_read_only_on_their_face(calls: list[str], which: str) -> None:
         # word character on its left and there is always a space there.
         assert "--input" not in call, f"{which}: {call!r} sends a request body"
         methods = set(re.findall(r"-X (\w+)", call)) | set(re.findall(r"--method (\w+)", call))
-        assert methods <= {"GET"}, f"{which}: {call!r} permits the method {sorted(methods - {'GET'})}"
+        assert methods <= {"GET"}, (
+            f"{which}: {call!r} permits the method {sorted(methods - {'GET'})}"
+        )
         # An explicit method for `gh api`, because its default is not one: `gh api` is a `GET`
         # until a field is added and a `POST` after that, so an entry reading `gh api` alone
         # admits `gh api repos/{owner}/{repo}/issues/1/comments -f body=...` -- a comment
@@ -1048,10 +1052,10 @@ def _lanes_interpolating(source: str, constant: str) -> set[str]:
 
 #: The lanes whose brief carries `PUBLICATION_READ_BOUND`, which is the decision #85 asked for
 #: written where the lane reads it. It is a subset of `GITHUB_SIDE_BY_DESIGN` and not the same
-#: set: a lane may reach the GitHub side for a reason of its own -- the `public` set asks what
-#: GitHub will serve once this repository is public, not what is written in a comment -- while
-#: this bound is the one written for a lane that goes looking for live values in text anyone
-#: can write, and it is the lanes carrying *it* that this module holds to the call list below.
+#: set, because each of the four lanes sent to the GitHub side has a list of its own: this bound
+#: is the one written for a lane that goes looking for live values in text anyone can write, and
+#: it is the lanes carrying *it* that this module holds to the call list below. `READ_BOUND_LANES`
+#: is where the four are held together, and where "exactly one bound each" is pinned (#95).
 PUBLICATION_READ_BOUND_LANES = {"gaps/publication", "fixes/publication"}
 
 #: Every GitHub-side read those lanes may make, spelled as the workflow spells them. This is an
