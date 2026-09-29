@@ -302,9 +302,10 @@ What the repository does control is the text itself:
   anyone who can read a public repository, and so long as the list carried a
   bare `gh api -X GET` the closure had to be a sentence naming
   `actions/variables` — with `environments/{name}/variables` as the endpoint it
-  did not name. Its nine paths are the settings surfaces its own bullets ask
-  for, a variable is enumerated by `gh variable list --json name` and by nothing
-  else, and an entry is a path and not a prefix of paths. The remaining three —
+  did not name. Its nine paths are the eight settings surfaces its own bullets
+  ask for and the second repository's file contents, a variable is enumerated by
+  `gh variable list --json name` and by nothing else, and an entry is a path and
+  not a prefix of paths. The remaining three —
   the `publication` lanes and `public/disclosure` — are written the older way,
   and there their own entries bound what the bare call adds. `SUPPLY_CHAIN_READ_BOUND`
   is still the one bound

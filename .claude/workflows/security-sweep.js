@@ -767,8 +767,8 @@ const OUTSIDERS_OTHER_REPOS = ['jleavers/issuebot']
 // #96 wrote `unowned/supply-chain`'s `gh api` entries as paths for that reason and said plainly
 // that this lane was where the rule was not yet applied. It is applied here now, so the entries
 // name their paths and the closure is what the list does not contain. This lane's surfaces are
-// enumerable, which is why it is the one of the older four worth rewriting: it reads repository
-// *settings*, and there are nine of them.
+// enumerable, which is why it is the one of the older four worth rewriting: eight of the nine
+// paths are a repository setting, and the ninth is the second repository's file contents.
 //
 // **An entry is a path, not a prefix**, and the bound says so, because `repos/{owner}/{repo}`
 // is on the list and reading it as a prefix would put every endpoint beneath it back on.
@@ -809,8 +809,8 @@ the list and \`actions/variables\` is not, and nothing below forbids it by name,
 of forbidden endpoints is a list of the ones whoever wrote it thought of. \`repos/{owner}/{repo}\`
 is the repository object and not everything underneath it. Flags that do not change the path --
 \`--jq\`, \`--paginate\`, \`--cache\` -- leave a call the same read, and so does a
-\`?page=\`/\`?per_page=\` query string on one of these paths; never \`-f\`, which is what turns
-\`gh api\` into a \`POST\`. A path you need that is not one of these is a surface you record in
+\`?page=\`/\`?per_page=\` query string on one of these paths; never a field flag, which is what
+turns \`gh api\` into a \`POST\`. A path you need that is not one of these is a surface you record in
 \`coverage\` as unreached, naming the path you would have asked for and the lane whose surface it
 is if it is any lane's; it is not a path to ask for.
 
@@ -899,7 +899,8 @@ and did not record is what it is there to catch.`
 // (#95) -- the deny-list shape one level down, in the lane where it mattered most. This lane is
 // where the rule was applied first and `public/outsiders` is where it was applied second
 // (#102), so that lane's `gh api` entries name their paths too and its list is now the longer
-// of the two: it reads nine settings surfaces where this one reads three history endpoints.
+// of the two: nine paths -- eight settings surfaces and a second repository's file contents --
+// where this one has three history endpoints.
 //
 // What is on it:
 //
