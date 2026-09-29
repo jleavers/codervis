@@ -34,9 +34,15 @@ body:
       label: Evidence
       description: >
         Whatever you have: `docker compose logs codervis` and `docker compose logs egress`,
-        the `/healthz` JSON, the `/api/usage` JSON, a screenshot. **Check it for credentials
-        first.** The dashboard never logs or serves a token, but a debug capture of an upstream
-        call does carry one, and nothing here can scrub what you paste.
+        the `/healthz` JSON, the `/api/usage` JSON, a screenshot. **This issue is public, and so
+        is every earlier version of it**: editing something out afterwards does not remove it.
+        **Check what you paste for credentials first.** The dashboard never logs or serves a
+        token, but a debug capture of an upstream call does carry one, and nothing here can
+        scrub what you paste. Then trim what you would not publish under your GitHub name. The
+        `/api/usage` JSON carries your plan tier, usage, reset times and last activity. The
+        `egress` log lists its allow-list, your `EGRESS_ALLOW` entries included, and each host
+        it refused. The `codervis` log records the address each request came from. A
+        placeholder in place of a value is fine, and usually all a maintainer needs.
       render: text
 
   - type: input
