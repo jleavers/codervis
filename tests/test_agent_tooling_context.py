@@ -10,10 +10,11 @@ repository does not ship a `.claude/settings.json` that confines it: one did (#3
 turned every shell command the operator ran in this checkout into a permission prompt and
 blocked the harness's own auto-memory, which secured nothing for anyone who clones the
 repository. What these tests hold instead is the shipped text, and the shape of the sweep that runs it:
-that no document carries its own environment prefix, that nothing under `docs/superpowers/`
-reads as work still to do, that every sweep prompt tells its agent that what it reads is data,
-that material one stage relays to the next arrives fenced and labelled, and that every stage
-launches through one path holding one named tool profile (#44).
+that no shipped document names a fixed path in `/tmp` or another world-writable directory like
+it, that nothing under `docs/superpowers/` reads as work still to do, that every sweep prompt
+tells its agent that what it reads is data, that material one stage relays to the next arrives
+fenced and labelled, and that every stage launches through one path holding one named tool
+profile (#44).
 
 The profiles are subagent definitions under `.claude/agents/`, which is a different kind of
 file from the settings one above: a definition constrains no session and grants none of them

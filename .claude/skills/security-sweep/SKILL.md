@@ -430,7 +430,8 @@ checked at `main`** — a closed issue naming the commit or pull request that cl
 you confirmed against the tree. Not "the closed issues": a stranger can close their own, and an
 issue can be closed as won't-fix, as a duplicate, or in error. The sweep that found this
 listed #48 as fixed with no attacker involved at all: it was closed by a stray keyword in a
-commit message ("filed rather than fixed: #48") and stayed open in the code. #48 is open.
+commit message ("filed rather than fixed: #48") and stayed open in the code. It was reopened on
+2026-09-27 and closed the next day by PR #83, which is the change that fixed it.
 
 `toolProfiles: false` launches every stage on the default workflow subagent instead of its
 named profile. The agent registry is read once when a session starts, like the workflow
