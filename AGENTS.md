@@ -248,7 +248,8 @@ What the repository does control is the text itself:
 - **No document carries its own environment prefix or names a fixed path in
   shared `/tmp`.** A fixed name under world-writable `/tmp` is one another
   local principal can create and fill before the command that reads it runs as
-  the operator. The test above fails on one.
+  the operator. The test above fails on a fixed `/tmp` path; an environment
+  prefix has no check, and is a reviewer's to catch.
 - **No document under `docs/superpowers/` reads as pending work.** The reach is
   the whole subtree, not the plans alone: every tracked document there — the
   archived plans and the design specs beside them — says up front, within its

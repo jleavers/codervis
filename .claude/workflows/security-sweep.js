@@ -1247,8 +1247,8 @@ author forgot, which an agent follows anyway.`,
   {
     key: 'publication',
     title: 'what becomes public the day the repository does',
-    brief: `The repository is private today. Your attacker is anyone, on the day it is not. Every
-reachable commit becomes readable, along with GitHub-side pull-request heads, issue and PR
+    brief: `Your attacker is anyone, from the day the repository is public, if it is not already.
+Every reachable commit becomes readable, along with GitHub-side pull-request heads, issue and PR
 bodies and comments, review comments, and Actions run logs.
 
 **Stricter rules than the other lanes, because this lane goes looking for live values:**
@@ -1321,7 +1321,7 @@ Cover:
   argv override? What do proxy headers do once a reader puts the app behind the reverse proxy
   the README recommends? Extra workers would multiply the per-process caches and upstream
   calls that #16 assumes are single.
-- **The \`\${USERPROFILE}\` defaults** at \`.env.example:3\` and \`:11\`, on Linux or macOS
+- **The \`\${USERPROFILE}\` defaults** at \`.env.example:5\` and \`:14\`, on Linux or macOS
   where the variable is unset. What do the mount sources interpolate to? What does Docker
   create or mount there, owned by whom? What does the dashboard then report? Establish this
   with \`docker compose config\` against a copy of \`.env.example\` in a temporary directory.
@@ -1431,7 +1431,7 @@ line where the fix fails to see it.`,
     key: 'egress-topology',
     title: 'what the dashboard container can still reach, and what the proxy lets through',
     brief: `The egress proxy (\`app/egress.py\`) and the ingress relay (\`app/ingress.py\`) are on
-\`main\`, and no lane has ever owned them. There are two attackers:
+\`main\`, and no lane before this set owned them. There are two attackers:
 
 - Code running inside the \`codervis\` container. A compromised dependency is the realistic one.
   It holds both bearer tokens in memory and wants one of them off the host.
@@ -1558,7 +1558,7 @@ Cover:
     credential reads and upstream calls, which the whole design assumes are single.
   - With \`ingress\` in front, what do \`--proxy-headers\` and \`FORWARDED_ALLOW_IPS\` do to the
     client address and scheme the app sees? Does anything in the app trust them?
-- **The mount sources.** \`.env.example:3\` and \`:11\` still default \`CLAUDE_HOME\` and
+- **The mount sources.** \`.env.example:5\` and \`:14\` still default \`CLAUDE_HOME\` and
   \`CODEX_HOME\` to \`\${USERPROFILE}\`. On Linux or macOS, where that variable is unset, what
   does a verbatim copy interpolate to? What does Docker create or mount there, owned by whom,
   and what does the dashboard then report? Establish it with \`docker compose config\` against
