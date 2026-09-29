@@ -882,8 +882,9 @@ and did not record is what it is there to catch.`
 // This lane gets what the other four have: a named list of the reads it may make, the
 // repository they may go to, and a `coverage` record that says what it read.
 //
-// **The `gh api` entries name their path, which no other lane's do, and that is this list's one
-// novelty.** `gh api` reaches every endpoint GitHub serves, so `gh api -X GET` with no path is
+// **The `gh api` entries name their path, which was true of no other lane's list when this one
+// was written, and that was this list's one novelty (#102 gave `public/outsiders` the same
+// shape).** `gh api` reaches every endpoint GitHub serves, so `gh api -X GET` with no path is
 // an allow-list of one call and a way to every surface in the sweep -- an Actions run log, an
 // issue thread, `repos/{owner}/{repo}/actions/variables`, a webhook's URL, an artifact. Naming
 // two or three of those as forbidden was the first draft of this bound, and it is the defect
@@ -1881,9 +1882,10 @@ and go past it to what the change to public alters:
   issues, reads every review comment on its pull requests and every human comment on its
   issues, and runs the steps of any \`Validation\` or \`Test Plan\` section of an issue it is
   given. Establish issuebot's rules from its published repository alone (\`jleavers/issuebot\`:
-  \`configs/WORKFLOW.md\` and the files it names, read with \`gh api -X GET\` or a
-  \`git clone --depth 1\` into your scratch directory): never a deployment's \`.env\`, untracked overlay or running process, and
-  never a path on this host. For each reader, say
+  \`configs/WORKFLOW.md\` and the files it names, read with that repository's
+  \`contents\` path on the list below or a \`git clone --depth 1\` into your scratch
+  directory): never a deployment's \`.env\`, untracked overlay or running process, and never a
+  path on this host. For each reader, say
   what a stranger can put in front of it after the change that they could not before, and what
   stands between that text and the reader's shell. A fix that lives in issuebot belongs to
   issuebot's own tracker; say so in the finding rather than shaping it as a change here.

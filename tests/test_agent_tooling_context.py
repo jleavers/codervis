@@ -1325,12 +1325,13 @@ VARIABLE_VALUE_PATHS = (
 )
 
 #: Every GitHub-side read `unowned/supply-chain` may make (#96). **The `gh api` entries name
-#: their path, which no other lane's do**, and that is the same rule as `gh api`'s method one
+#: their path, as `public/outsiders`' do since #102**, and that is the same rule as `gh api`'s
+#: method one
 #: level down: `gh api` reaches every endpoint GitHub serves, so `gh api -X GET` with nothing
 #: after it is an allow-list of one call and a way to every surface in the sweep -- an Actions
-#: run log, an issue thread, `actions/variables`, a webhook's URL, an artifact. For the other
-#: four lanes what else is on their lists bounds that; here `gh api` is the only `gh` entry, so
-#: the bare spelling would be the whole of the bound. Naming two or three of those surfaces as
+#: run log, an issue thread, `actions/variables`, a webhook's URL, an artifact. For the three
+#: lanes still written the older way what else is on their lists bounds that; here `gh api` is
+#: the only `gh` entry, so the bare spelling would be the whole of the bound. Naming two or three of those surfaces as
 #: forbidden was the first draft, and it is the defect AGENTS.md's rule for how a pin is written
 #: describes one level down -- the key somebody adds is the fourth one the deny-list does not
 #: name. `activity` is the endpoint the history bullet names, `events` the window it is to be

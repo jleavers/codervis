@@ -169,8 +169,8 @@ four documents said four lanes went; it left the lane without a bound, because w
 call is a decision about text an agent executes rather than part of a change to an allow-list.
 Until #96 the audit below was not a second check on this lane but the only one.
 
-**Its `gh api` entries name their path, which no other lane's do, and that is the part to read
-twice.** `gh api` reaches every endpoint GitHub serves, so `gh api -X GET` with nothing after
+**Its `gh api` entries name their path, which was true of no other lane's until #102, and
+that is the part to read twice.** `gh api` reaches every endpoint GitHub serves, so `gh api -X GET` with nothing after
 it is an allow-list of one call and a way to every surface in the sweep — an Actions run log,
 an issue thread, `actions/variables` (whose values GitHub serves to anyone who can read a
 public repository), a webhook's URL, an artifact. Naming two or three of those as forbidden
