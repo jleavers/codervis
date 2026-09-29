@@ -158,10 +158,16 @@ Until #96 the audit below was not a second check on this lane but the only one.
 twice.** `gh api` reaches every endpoint GitHub serves, so `gh api -X GET` with nothing after
 it is an allow-list of one call and a way to every surface in the sweep — an Actions run log,
 an issue thread, `actions/variables` (whose values GitHub serves to anyone who can read a
-public repository), a webhook's URL, an artifact. For the other four lanes what else is on
-their lists bounds that; here `gh api` is the only `gh` entry, so the bare spelling would have
-been the whole of the bound, and naming two or three of those surfaces as forbidden instead is
-the deny-list AGENTS.md's rule for how a pin is written rules out one level down. So the list
+public repository), a webhook's URL, an artifact. Naming two or three of those as forbidden
+instead is the deny-list AGENTS.md's rule for how a pin is written rules out one level down —
+the key somebody adds is the fourth one. **Why the other four lists are not written this way is
+worth reading twice, because the flattering answer is not true**: it holds for `publication` ×2
+and `disclosure`, whose lists already grant `gh issue view` and `gh run view --log`, so their
+bare `gh api -X GET` adds little to a reach they already have. It does not hold for
+`public/outsiders`, whose list grants no variable's value and whose bound therefore closes
+`actions/variables` by name two paragraphs above — the same deny-list shape, in the lane where
+it matters most. This is where the rule is applied first, and closing that one is its own
+change. So the list
 is `gh api -X GET repos/{owner}/{repo}/activity`, `gh api -X GET repos/{owner}/{repo}/events`,
 `gh api -X GET repos/{owner}/{repo}/commits/{sha}` and `git ls-remote origin`: the endpoint the
 history bullet names, the window it is compared against, how a commit either names is read once
@@ -171,7 +177,12 @@ per-lane question below takes here.
 
 There is no `git clone --mirror` either, which two of the other lanes may make: a mirror clone
 fetches what a ref names, and this lane is looking for what none does, so the wider call would
-not even answer its question. And the bound says in as many words what it is *not* about,
+not even answer its question. **And the path scoping bounds `gh` and nothing else**, so the
+bound closes the same surfaces by the other route this lane holds: it launches with the web
+profile, whose `WebFetch` has no allow-list, and the bound's closing line refuses a web fetch
+of the swept repository's own GitHub pages — with `github.com/advisories`, where a GHSA id
+resolves, as the one exception and that page rather than the host. And the bound says in as
+many words what it is *not* about,
 which none of the other four has to: most of this lane is a scratch venv, `pip-audit`, advisory
 lookups on the web and reads of issuebot's tracked source in a checkout on this host, and "the
 only calls you may make" would otherwise read as cancelling them. Its `coverage` says how far

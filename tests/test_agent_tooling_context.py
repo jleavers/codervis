@@ -1773,6 +1773,20 @@ def test_the_supply_chain_lane_bounds_and_records_its_github_side_read() -> None
         "`unowned/supply-chain`'s bound does not say what to do about a path the list does not "
         "name, which leaves asking for it the obvious thing to do"
     )
+    # And the same surfaces by the *other* route this lane holds. It launches as
+    # `sweep-lane-web`, whose profile grants `WebFetch` with no allow-list, so a path scoping on
+    # `gh api` closes a run log and an issue thread to `gh` and to nothing else. The bound's own
+    # sentence is what covers that, and it has to name the repository the sweep resolved rather
+    # than the host, because the advisory bullet legitimately reads `github.com/advisories`.
+    assert "no web fetch of ${repo}'s own pages on GitHub" in bound, (
+        "`unowned/supply-chain`'s bound closes the `gh` route to the surfaces it is kept off "
+        "and leaves the web tool, which this lane holds with no allow-list: a run log and an "
+        "issue thread are a `WebFetch` away and the prose is the only thing in the way"
+    )
+    assert "github.com/advisories" in flat_bound and "not the rest of the host" in flat_bound, (
+        "`unowned/supply-chain`'s bound exempts the advisory lookup from that sentence without "
+        "scoping the exemption to the advisory page, so it reads as admitting the host"
+    )
 
     # The coverage record is the half an operator can check: a bound nobody can audit after the
     # fact is a sentence in a prompt.

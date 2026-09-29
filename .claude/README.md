@@ -80,11 +80,15 @@ that reads the record against the transcripts: the profile is not what makes it 
 `unowned/supply-chain` was the last one without a list — admitted to the allow-list by #91 with
 the audit as the only thing behind it, and given one of its own by #96. Its entries are the one
 place in the sweep where a `gh api` call names the **path** it may ask for and not only its
-method: `gh api` reaches every endpoint GitHub serves, and that is the lane's only `gh` entry,
-so a bare `gh api -X GET` would have been the whole of the bound rather than part of it. The
-three paths are the repository activity endpoint, the events window it is compared against, and
-a commit by SHA; `git ls-remote origin` is the fourth entry, and the `git clone --mirror` two of
-the other lanes may make is deliberately not among them.
+method: `gh api` reaches every endpoint GitHub serves, so a bare `gh api -X GET` beside it is a
+deny-list of whatever the author thought of. The three paths are the repository activity
+endpoint, the events window it is compared against, and a commit by SHA; `git ls-remote origin`
+is the fourth entry, and the `git clone --mirror` two of the other lanes may make is
+deliberately not among them. It is also the one bound that closes the *web* route to the same
+surfaces, because this lane holds `WebFetch` with no allow-list. The other four lists are
+written the older way, and for three of them their own entries bound what a bare `gh api -X GET`
+adds; `public/outsiders` is the one where that is not so, and closing it is its own change (see
+#102).
 
 Which profile a lane gets is the `web` flag on the lane in the workflow, and the reason is a
 comment beside it.

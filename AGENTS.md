@@ -294,11 +294,15 @@ What the repository does control is the text itself:
   prose that forbade five write verbs and so left the sixth, and
   `unowned/supply-chain` through `SUPPLY_CHAIN_READ_BOUND` (#96), whose list is
   the shortest of the five and the only one whose `gh api` entries name the
-  **path** they may ask for: that call reaches every endpoint GitHub serves and
-  it is the lane's only `gh` entry, so the bare spelling would have been the
-  whole of the bound. It is also the one bound that says what it is *not*
-  about, since most of that lane is a scratch venv and an advisory lookup
-  rather than a call to GitHub. A list per lane, because a bound is a block of text and a lane
+  **path** they may ask for: that call reaches every endpoint GitHub serves, so
+  a bare `gh api -X GET` beside it is a deny-list of whatever the author thought
+  of, which is what the rule below forbids. The other four are written the older
+  way; for three of them their own entries bound what the bare call adds, and
+  `public/outsiders` is the one where that is not so. It is also the one bound
+  that says what it is *not* about, since most of that lane is a scratch venv
+  and an advisory lookup rather than a call to GitHub, and the one that closes
+  the *web* route to the surfaces it keeps off its list, since that lane holds
+  `WebFetch` with no allow-list of its own. A list per lane, because a bound is a block of text and a lane
   that interpolates another's name acquires the whole of that lane's reach.
   "Against the repository the sweep resolved" is the rule for four of them and
   not a fifth: `public/outsiders` reads `jleavers/issuebot` too, so its own

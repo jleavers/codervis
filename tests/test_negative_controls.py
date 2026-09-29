@@ -1030,6 +1030,38 @@ MUTATIONS: tuple[Mutation, ...] = (
         caught_by=(_SUPPLY_CHAIN_BOUND,),
     ),
     Mutation(
+        key="sweep-supply-chain-api-entry-loses-its-path-with-the-pin",
+        widening=True,
+        area=SWEEP,
+        rule="the shape check bites when the list and the test's copy of it move together",
+        path=CONTEXT_TESTS,
+        # The control above widens the workflow alone, and the pre-existing equality against
+        # this module's own copy of the list is what turns it red -- so the shape check never
+        # runs and nothing proves it bites. The change somebody actually makes moves both, which
+        # is what this mutates: with the module's copy widened too, equality passes and the
+        # regex is the only thing left between this lane and every endpoint GitHub serves.
+        before='    "gh api -X GET repos/{owner}/{repo}/activity",\n',
+        after='    "gh api -X GET",\n',
+        caught_by=(_SUPPLY_CHAIN_BOUND,),
+    ),
+    Mutation(
+        key="sweep-supply-chain-web-route-left-open",
+        widening=True,
+        area=SWEEP,
+        rule="the surfaces off this lane's list are closed to its web tool as well as to `gh`",
+        path=SWEEP_WORKFLOW,
+        # Path-scoping `gh api` bounds `gh`. This lane launches as `sweep-lane-web`, whose
+        # profile grants `WebFetch` with no allow-list, so an issue thread and a run log are a
+        # fetch away by their HTML pages and this sentence is the whole of what refuses it. The
+        # mutation is the shape the sentence had before the second self-review: the advisory
+        # exemption widened from a page to the host, with nothing left naming the repository.
+        before=(
+            "a \\`gh\\` extension, **and no web fetch of ${repo}'s own pages on GitHub**"
+        ),
+        after="a \\`gh\\` extension",
+        caught_by=(_SUPPLY_CHAIN_BOUND,),
+    ),
+    Mutation(
         key="sweep-supply-chain-loses-its-read-list",
         widening=True,
         area=SWEEP,
