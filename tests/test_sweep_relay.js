@@ -523,11 +523,16 @@ const OUTSIDERS_READ_CALLS = [
 // the post-run audit can tell the read `outsiders` was sent to make from a lane that wandered.
 const OUTSIDERS_OTHER_REPOS = ["jleavers/issuebot"];
 
-// `unowned/supply-chain`'s own list (#96), which is two entries and no more: the activity
-// endpoint and the commits it lists are served by the API, and `git ls-remote origin` is what
-// tells a SHA no ref names from one that is current. No `git clone --mirror`, because a mirror
-// clone fetches what a ref names and this lane is after what none does.
-const SUPPLY_CHAIN_READ_CALLS = ["gh api -X GET", "git ls-remote origin"];
+// `unowned/supply-chain`'s own list (#96). Its `gh api` entries name their path, which no other
+// lane's do: `gh api` reaches every endpoint GitHub serves, and this lane has no other `gh`
+// entry for what else is on the list to bound it with. No `git clone --mirror`, because a
+// mirror clone fetches what a ref names and this lane is after what none does.
+const SUPPLY_CHAIN_READ_CALLS = [
+  "gh api -X GET repos/{owner}/{repo}/activity",
+  "gh api -X GET repos/{owner}/{repo}/events",
+  "gh api -X GET repos/{owner}/{repo}/commits/{sha}",
+  "git ls-remote origin",
+];
 
 // Every prompt that is handed a named list of GitHub-side reads, and which list. The keys are
 // `<lane set>/<agent label>`, and what this table pins is the rendering: a prompt carrying a
@@ -780,19 +785,22 @@ test("the supply-chain lane is told what it may read on the GitHub side, and to 
     "supply-chain: the bound does not say what it is not about, so it reads as cancelling " +
       "the lane's own non-GitHub bullets",
   );
-  // The two surfaces the bound calls another lane's, closed by the path `gh api -X GET` would
-  // take to them rather than by the name alone: that call is this list's only `gh` entry and it
-  // fetches whatever the API serves, so an exclusion stated only as a name excludes nothing.
-  for (const wayRound of [
-    "actions/runs/{id}/logs",
-    "actions/jobs/{id}/logs",
-    "repos/{owner}/{repo}/issues",
-  ]) {
-    assert.ok(
-      flat.includes(wayRound),
-      `supply-chain: the lane is not told ${wayRound} is off its list`,
+  // The rendered list is path-scoped, and the prompt says that is the rule rather than an
+  // example: `gh api` reaches every endpoint GitHub serves, and this lane has no other `gh`
+  // entry, so a bullet rendering as a bare `- gh api -X GET` would be the whole bound undone.
+  const apiBullets = lines.filter((line, index) => !inside[index] && /^- gh api /.test(line));
+  assert.ok(apiBullets.length > 0, "supply-chain: no `gh api` entry reached the prompt");
+  for (const bullet of apiBullets) {
+    assert.match(
+      bullet,
+      /^- gh api -X GET repos\/\{owner\}\/\{repo\}\/\S+$/,
+      `supply-chain: ${bullet} does not name the path it may ask for`,
     );
   }
+  assert.ok(
+    flat.includes("`gh api` entry names its path"),
+    "supply-chain: the lane is not told its `gh api` entries name their path on purpose",
+  );
   // And the record that makes the bound auditable after the run.
   assert.match(
     flat,

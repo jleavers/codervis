@@ -973,8 +973,11 @@ MUTATIONS: tuple[Mutation, ...] = (
         # The list is two entries, which is what makes a third look like housekeeping. This
         # lane's shell holds the operator's own `gh`, and its other bullets read a registry, an
         # advisory database and a second project's source -- text it did not write.
-        before="const SUPPLY_CHAIN_READ_CALLS = [\n  'gh api -X GET',\n",
-        after="const SUPPLY_CHAIN_READ_CALLS = [\n  'gh api -X GET',\n  'gh issue comment',\n",
+        before="const SUPPLY_CHAIN_READ_CALLS = [\n  'gh api -X GET repos/{owner}/{repo}/activity',\n",
+        after=(
+            "const SUPPLY_CHAIN_READ_CALLS = [\n"
+            "  'gh api -X GET repos/{owner}/{repo}/activity',\n  'gh issue comment',\n"
+        ),
         caught_by=(_SUPPLY_CHAIN_BOUND,),
     ),
     Mutation(
@@ -986,8 +989,8 @@ MUTATIONS: tuple[Mutation, ...] = (
         # `gh api` is the lane's only `gh` entry, so the bare spelling is the quietest widening
         # available to it: a `GET` until a field is added and a `POST` afterwards, while reading
         # to anyone checking the list like the activity-endpoint read it was meant to be.
-        before="const SUPPLY_CHAIN_READ_CALLS = [\n  'gh api -X GET',\n",
-        after="const SUPPLY_CHAIN_READ_CALLS = [\n  'gh api',\n",
+        before="const SUPPLY_CHAIN_READ_CALLS = [\n  'gh api -X GET repos/{owner}/{repo}/activity',\n",
+        after="const SUPPLY_CHAIN_READ_CALLS = [\n  'gh api repos/{owner}/{repo}/activity',\n",
         caught_by=(_SUPPLY_CHAIN_BOUND,),
     ),
     Mutation(
@@ -1002,41 +1005,28 @@ MUTATIONS: tuple[Mutation, ...] = (
         # it is looking for is what no ref names, which a clone does not fetch -- so adding it
         # widens the reach without answering the question that sent the lane to GitHub.
         before="  'git ls-remote origin',\n]\n\nconst SUPPLY_CHAIN_READ_BOUND",
-        after="  'git ls-remote origin',\n  'git clone --mirror',\n]\n\nconst SUPPLY_CHAIN_READ_BOUND",
-        caught_by=(_SUPPLY_CHAIN_BOUND,),
-    ),
-    Mutation(
-        key="sweep-supply-chain-skill-drops-the-closed-path",
-        widening=True,
-        area=SWEEP,
-        rule="SKILL.md tells the operator which paths this lane's one `gh` call may not take",
-        path=SWEEP_SKILL,
-        # The operator's half of the control above. The audit's per-lane question is whether a
-        # call was one the lane's brief names, and `gh api -X GET` is; what makes a run-log fetch
-        # from this lane visible as a breach is the operator's copy saying which paths it may not
-        # take. A copy that drops them reads a permitted call and moves on.
-        before="`repos/{owner}/{repo}/actions/runs/{id}/logs` and `.../actions/jobs/{id}/logs`",
-        after="the run-log endpoints",
-        caught_by=(_SUPPLY_CHAIN_BOUND,),
-    ),
-    Mutation(
-        key="sweep-supply-chain-run-log-left-open",
-        widening=True,
-        area=SWEEP,
-        rule="a surface off this lane's list is closed by the path `gh api -X GET` reaches it by",
-        path=SWEEP_WORKFLOW,
-        # The widening that reads like tightening prose: the bound still *says* an Actions run
-        # log is another lane's surface, and the call that fetches one is still on the list.
-        # `gh api -X GET repos/{owner}/{repo}/actions/jobs/{id}/logs` then satisfies the post-run
-        # audit's per-lane question -- it is a call the lane's own brief names -- while putting
-        # megabytes of the corpus most likely to hold a pasted credential in this lane's context.
-        # It is `public/outsiders`' `variables` defect (#95) in the lane that got its list last.
-        before=(
-            "log body is the \\`publication\\` and \\`disclosure\\` lanes' surface -- so never\n"
-            "  \\`gh run view --log\\`, and never \\`repos/{owner}/{repo}/actions/runs/{id}/logs\\` or\n"
-            "  \\`repos/{owner}/{repo}/actions/jobs/{id}/logs\\` through \\`gh api -X GET\\` either."
+        after=(
+            "  'git ls-remote origin',\n  'git clone --mirror',\n]\n\n"
+            "const SUPPLY_CHAIN_READ_BOUND"
         ),
-        after="log body is the \\`publication\\` and \\`disclosure\\` lanes' surface.",
+        caught_by=(_SUPPLY_CHAIN_BOUND,),
+    ),
+    Mutation(
+        key="sweep-supply-chain-api-entry-loses-its-path",
+        widening=True,
+        area=SWEEP,
+        rule="each `gh api` entry on this lane's list names the path it may ask for",
+        path=SWEEP_WORKFLOW,
+        # The widening that reads like tidying, and the one the first draft of this list shipped:
+        # `gh api -X GET` with nothing after it is read-only by every check in the suite and is a
+        # way to every endpoint GitHub serves. This lane has no other `gh` entry for the rest of
+        # the list to bound it with, so the bare spelling reaches an Actions run log, an issue
+        # thread and `repos/{owner}/{repo}/actions/variables` -- whose values GitHub serves to
+        # anyone who can read a public repository -- while satisfying the post-run audit's
+        # per-lane question, which asks only whether a call is one the lane's brief names. It is
+        # `public/outsiders`' `variables` defect (#95) one level up from where that one was.
+        before="  'gh api -X GET repos/{owner}/{repo}/activity',\n",
+        after="  'gh api -X GET',\n",
         caught_by=(_SUPPLY_CHAIN_BOUND,),
     ),
     Mutation(
@@ -1060,8 +1050,8 @@ MUTATIONS: tuple[Mutation, ...] = (
         path=SWEEP_SKILL,
         # The operator audits the transcripts against this copy. A copy that has drifted wider
         # than the workflow's is an audit that reads a call as permitted and moves on.
-        before="`gh api -X GET` and `git ls-remote origin`",
-        after="`gh api` and `git ls-remote origin`",
+        before="`gh api -X GET repos/{owner}/{repo}/activity`, `gh api -X GET repos/{owner}/{repo}/events`",
+        after="`gh api -X GET`",
         caught_by=(_SUPPLY_CHAIN_BOUND,),
     ),
     Mutation(

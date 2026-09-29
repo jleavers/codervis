@@ -1294,17 +1294,24 @@ OUTSIDERS_READ_CALLS = [
     "git clone --depth 1",
 ]
 
-#: Every GitHub-side read `unowned/supply-chain` may make (#96). Two entries, and what is off the
-#: list is the argued half. `gh api -X GET` is the lane's reason for being on the GitHub side at
-#: all: `repos/{owner}/{repo}/activity` is the endpoint its history bullet names, and a commit
-#: that endpoint lists which no ref names any more is served by SHA from the same API.
-#: `git ls-remote origin` is what tells such a SHA from one a ref still names. There is no
+#: Every GitHub-side read `unowned/supply-chain` may make (#96). **The `gh api` entries name
+#: their path, which no other lane's do**, and that is the same rule as `gh api`'s method one
+#: level down: `gh api` reaches every endpoint GitHub serves, so `gh api -X GET` with nothing
+#: after it is an allow-list of one call and a way to every surface in the sweep -- an Actions
+#: run log, an issue thread, `actions/variables`, a webhook's URL, an artifact. For the other
+#: four lanes what else is on their lists bounds that; here `gh api` is the only `gh` entry, so
+#: the bare spelling would be the whole of the bound. Naming two or three of those surfaces as
+#: forbidden was the first draft, and it is the defect AGENTS.md's rule for how a pin is written
+#: describes one level down -- the key somebody adds is the fourth one the deny-list does not
+#: name. `activity` is the endpoint the history bullet names, `events` the window it is to be
+#: compared against, `commits/{sha}` how a commit either names is read once no ref names it, and
+#: `git ls-remote origin` what tells such a SHA from one a ref still does. There is no
 #: `git clone --mirror` -- the widest read on any of these lists -- because a mirror clone
-#: fetches what a ref names and this lane is looking for what none does, and no `gh run` read,
-#: because its CI bullet reads `.github/` in the checkout and the Actions logs are the
-#: `publication` and `disclosure` lanes' surface.
+#: fetches what a ref names and this lane is looking for what none does.
 SUPPLY_CHAIN_READ_CALLS = [
-    "gh api -X GET",
+    "gh api -X GET repos/{owner}/{repo}/activity",
+    "gh api -X GET repos/{owner}/{repo}/events",
+    "gh api -X GET repos/{owner}/{repo}/commits/{sha}",
     "git ls-remote origin",
 ]
 
@@ -1741,23 +1748,31 @@ def test_the_supply_chain_lane_bounds_and_records_its_github_side_read() -> None
         "one no ref names, which a clone does not fetch"
     )
 
-    # And the same question one level down, which is where the `variables` entry on
-    # `public/outsiders`' list was answered (#95): this list's only `gh` entry is `gh api -X GET`,
-    # and it reaches whatever the API serves. A bound that calls a surface another lane's while
-    # leaving that call unqualified has excluded nothing, so each excluded surface is closed by
-    # the path as well as by the name -- the run-log endpoints, and the tracker, which is the
-    # stranger-written corpus the `publication` and `disclosure` lanes exist for and which no
-    # bullet of this lane asks for.
-    for way_round in (
-        "actions/runs/{id}/logs",
-        "actions/jobs/{id}/logs",
-        "repos/{owner}/{repo}/issues",
-    ):
-        assert way_round in flat_bound, (
-            f"`unowned/supply-chain`'s bound names a surface as another lane's without closing "
-            f"the path `gh api -X GET` takes to it ({way_round!r} is missing): that call is on "
-            f"this list, and it fetches whatever the API serves"
+    # And the same question one level down, which is where `public/outsiders`' `variables` entry
+    # was answered (#95) and where the first draft of this list got it wrong. `gh api` is this
+    # lane's only `gh` entry and it reaches every endpoint GitHub serves, so an entry reading
+    # `gh api -X GET` with nothing after it is an allow-list of one call and a way to every
+    # surface in the sweep. Naming the two or three worth worrying about as forbidden is the
+    # shape AGENTS.md rules out -- "the key somebody actually adds will be a fourth" -- so what
+    # is pinned is that each `gh api` entry says which path it may ask for.
+    for call in calls:
+        if not call.startswith("gh api"):
+            continue
+        assert re.fullmatch(r"gh api -X GET repos/\{owner\}/\{repo\}/[\w{}/.-]+", call), (
+            f"`unowned/supply-chain`'s entry {call!r} does not name the path it may ask for, "
+            f"against the repository the sweep resolves. `gh api` reaches every endpoint GitHub "
+            f"serves, and this lane has no other `gh` entry to bound it"
         )
+    # And the bound says why, because an agent reading a path-scoped entry has to know it is the
+    # rule rather than an example -- the reach it closes is everything not named.
+    assert "names its path" in flat_bound, (
+        "`unowned/supply-chain`'s bound does not say that its `gh api` entries name their path "
+        "on purpose, which is what stops the next one being written bare"
+    )
+    assert r"record in \`coverage\` as unreached, naming the path" in flat_bound, (
+        "`unowned/supply-chain`'s bound does not say what to do about a path the list does not "
+        "name, which leaves asking for it the obvious thing to do"
+    )
 
     # The coverage record is the half an operator can check: a bound nobody can audit after the
     # fact is a sentence in a prompt.
@@ -1808,12 +1823,11 @@ def test_the_supply_chain_lane_bounds_and_records_its_github_side_read() -> None
         "SKILL.md's record does not say that the mirror clone the other lanes may make is off "
         "this lane's list, which is the entry an operator would otherwise read across from them"
     )
-    for way_round in ("actions/runs/{id}/logs", "repos/{owner}/{repo}/issues"):
-        assert way_round in flat, (
-            f"SKILL.md's record does not say that {way_round!r} is off this lane's list. The "
-            f"audit's per-lane question is whether a call was one the lane's brief names, and "
-            f"`gh api -X GET` is; what the operator needs is which paths it may not take"
-        )
+    assert "entries name their path" in flat, (
+        "SKILL.md's record does not say that this lane's `gh api` entries name their paths. The "
+        "audit's per-lane question is whether a call was one the lane's brief names, so what "
+        "the operator is auditing against is the path and not the subcommand"
+    )
 
 
 def test_the_post_run_audit_looks_for_what_a_stage_still_holds() -> None:

@@ -78,10 +78,13 @@ to a second repository, so `jleavers/issuebot` is named on its list and on no ot
 wandering one. Prose is what all of this is made of, which is why the audit has a second pass
 that reads the record against the transcripts: the profile is not what makes it true.
 `unowned/supply-chain` was the last one without a list — admitted to the allow-list by #91 with
-the audit as the only thing behind it, and given two entries of its own by #96, which are
-`gh api -X GET` for the activity endpoint and the commits it lists, and `git ls-remote origin`
-for telling a SHA no ref names from one a ref still does. The `git clone --mirror` two of the
-other lanes may make is deliberately not among them.
+the audit as the only thing behind it, and given one of its own by #96. Its entries are the one
+place in the sweep where a `gh api` call names the **path** it may ask for and not only its
+method: `gh api` reaches every endpoint GitHub serves, and that is the lane's only `gh` entry,
+so a bare `gh api -X GET` would have been the whole of the bound rather than part of it. The
+three paths are the repository activity endpoint, the events window it is compared against, and
+a commit by SHA; `git ls-remote origin` is the fourth entry, and the `git clone --mirror` two of
+the other lanes may make is deliberately not among them.
 
 Which profile a lane gets is the `web` flag on the lane in the workflow, and the reason is a
 comment beside it.

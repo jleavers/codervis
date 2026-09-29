@@ -292,10 +292,13 @@ What the repository does control is the text itself:
   `publication` lanes through `PUBLICATION_READ_BOUND` (#85), the two
   `public` lanes through a bound each (#95), which replaced a closing line of
   prose that forbade five write verbs and so left the sixth, and
-  `unowned/supply-chain` through `SUPPLY_CHAIN_READ_BOUND` (#96), which is the
-  shortest of the five and is the one that says what it is *not* about, since
-  most of that lane is a scratch venv and an advisory lookup rather than a call
-  to GitHub. A list per lane, because a bound is a block of text and a lane
+  `unowned/supply-chain` through `SUPPLY_CHAIN_READ_BOUND` (#96), whose list is
+  the shortest of the five and the only one whose `gh api` entries name the
+  **path** they may ask for: that call reaches every endpoint GitHub serves and
+  it is the lane's only `gh` entry, so the bare spelling would have been the
+  whole of the bound. It is also the one bound that says what it is *not*
+  about, since most of that lane is a scratch venv and an advisory lookup
+  rather than a call to GitHub. A list per lane, because a bound is a block of text and a lane
   that interpolates another's name acquires the whole of that lane's reach.
   "Against the repository the sweep resolved" is the rule for four of them and
   not a fifth: `public/outsiders` reads `jleavers/issuebot` too, so its own

@@ -148,32 +148,35 @@ value would otherwise be in the lane's context and in this run's transcripts wha
 finding said. A webhook URL is the same shape: the host and the event list, never the rest of
 the URL.
 
-**`unowned/supply-chain` carries one too (#96), and it is the shortest of the five.** #91 put
-this lane in the allow-list above, because it is genuinely sent to the GitHub side and four
-documents said four lanes went; it left the lane without a bound, because what a lane may call
-is a decision about text an agent executes rather than part of a change to an allow-list. Until
-#96 the audit below was not a second check on this lane but the only one. Its list is
-`gh api -X GET` and `git ls-remote origin` — `repos/{owner}/{repo}/activity` is the endpoint
-its history bullet names, a commit that endpoint lists which no ref names any more is served by
-SHA from the same API, and `git ls-remote origin` is what tells such a SHA from one a ref still
-names. **What is off the list is the part worth reading twice.** There is no
-`git clone --mirror`, which two of the other lanes may make: a mirror clone fetches what a ref
-names, and this lane is looking for what none does, so the wider call would not even answer its
-question. There is no `gh run list` or `gh run view --log` either — its CI bullet reads
-`.github/` in the checkout, and the Actions logs belong to the `publication` and `disclosure`
-lanes. **Both of those exclusions are closed by the path and not only by the name**, because
-the one `gh` call on that list reaches whatever the API serves: the bound names
-`repos/{owner}/{repo}/actions/runs/{id}/logs` and `.../actions/jobs/{id}/logs` as off it, and
-the tracker — `repos/{owner}/{repo}/issues` and its comment endpoints, which are those same two
-lanes' surface and which no bullet of this lane asks for — as off it too. That is the shape
-`public/outsiders`' bound uses for the `variables` endpoint one section up, and the reason is
-the same: a list that excludes a surface while leaving the call that fetches it unqualified has
-excluded nothing. And the bound says in as many words what it is *not* about, which none of the
-other four has to: most of this lane is a scratch venv, `pip-audit`, advisory lookups on the web and reads
-of issuebot's tracked source in a checkout on this host, and "the only calls you may make"
-would otherwise read as cancelling them. Its `coverage` says how far back the activity events
-it was served reach, what retention it established, and how many pushes, commits and refs it
-scanned.
+**`unowned/supply-chain` carries one too (#96), and its list is the shortest of the five.**
+#91 put this lane in the allow-list above, because it is genuinely sent to the GitHub side and
+four documents said four lanes went; it left the lane without a bound, because what a lane may
+call is a decision about text an agent executes rather than part of a change to an allow-list.
+Until #96 the audit below was not a second check on this lane but the only one.
+
+**Its `gh api` entries name their path, which no other lane's do, and that is the part to read
+twice.** `gh api` reaches every endpoint GitHub serves, so `gh api -X GET` with nothing after
+it is an allow-list of one call and a way to every surface in the sweep — an Actions run log,
+an issue thread, `actions/variables` (whose values GitHub serves to anyone who can read a
+public repository), a webhook's URL, an artifact. For the other four lanes what else is on
+their lists bounds that; here `gh api` is the only `gh` entry, so the bare spelling would have
+been the whole of the bound, and naming two or three of those surfaces as forbidden instead is
+the deny-list AGENTS.md's rule for how a pin is written rules out one level down. So the list
+is `gh api -X GET repos/{owner}/{repo}/activity`, `gh api -X GET repos/{owner}/{repo}/events`,
+`gh api -X GET repos/{owner}/{repo}/commits/{sha}` and `git ls-remote origin`: the endpoint the
+history bullet names, the window it is compared against, how a commit either names is read once
+no ref names it, and what tells such a SHA from one a ref still does. **A `gh api` path from
+this lane that is not one of those three is a lane that wandered**, which is the form the
+per-lane question below takes here.
+
+There is no `git clone --mirror` either, which two of the other lanes may make: a mirror clone
+fetches what a ref names, and this lane is looking for what none does, so the wider call would
+not even answer its question. And the bound says in as many words what it is *not* about,
+which none of the other four has to: most of this lane is a scratch venv, `pip-audit`, advisory
+lookups on the web and reads of issuebot's tracked source in a checkout on this host, and "the
+only calls you may make" would otherwise read as cancelling them. Its `coverage` says how far
+back the activity events it was served reach, what retention it established, and how many
+pushes, commits and refs it scanned.
 
 After a run, audit what the agents actually ran before presenting: the per-agent transcripts sit
 beside the workflow's `journal.jsonl`, in the directory the task notification names. Look for:
