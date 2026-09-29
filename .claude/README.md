@@ -68,17 +68,27 @@ really launched with. That first test also requires both documents to name every
 set, so a new one is a change to both tests and to both documents rather than to the tests
 alone (#91).
 
-A tool list still cannot say "read-only `gh`" for any of them, so four of the five say it in the
-brief instead (#85, #95): the calls a lane may make are a named list in the workflow, read-only
-on their face, and what it read goes in its `coverage` record. One list per lane rather than one
-shared block, because a bound is a block of text and a lane that interpolates another's name
-acquires the whole of that lane's reach. `public/outsiders` is the one lane sent to a second
-repository, so `jleavers/issuebot` is named on its list and on no other's, which
+A tool list still cannot say "read-only `gh`" for any of them, so each of the five says it in
+the brief instead (#85, #95, #96): the calls a lane may make are a named list in the workflow,
+read-only on their face, and what it read goes in its `coverage` record. One list per lane
+rather than one shared block, because a bound is a block of text and a lane that interpolates
+another's name acquires the whole of that lane's reach. `public/outsiders` is the one lane sent
+to a second repository, so `jleavers/issuebot` is named on its list and on no other's, which
 `tests/test_agent_tooling_context.py` pins — that is what lets the audit tell a sent read from a
 wandering one. Prose is what all of this is made of, which is why the audit has a second pass
 that reads the record against the transcripts: the profile is not what makes it true.
-`unowned/supply-chain` carries no such list at all, so for that one the audit is not a second
-pass but the only one.
+`unowned/supply-chain` was the last one without a list — admitted to the allow-list by #91 with
+the audit as the only thing behind it, and given one of its own by #96. Its entries are the one
+place in the sweep where a `gh api` call names the **path** it may ask for and not only its
+method: `gh api` reaches every endpoint GitHub serves, so a bare `gh api -X GET` beside it is a
+deny-list of whatever the author thought of. The three paths are the repository activity
+endpoint, the events window it is compared against, and a commit by SHA; `git ls-remote origin`
+is the fourth entry, and the `git clone --mirror` two of the other lanes may make is
+deliberately not among them. It is also the one bound that closes the *web* route to the same
+surfaces, because this lane holds `WebFetch` with no allow-list. The other four lists are
+written the older way, and for three of them their own entries bound what a bare `gh api -X GET`
+adds; `public/outsiders` is the one where that is not so, and closing it is its own change (see
+#102).
 
 Which profile a lane gets is the `web` flag on the lane in the workflow, and the reason is a
 comment beside it.

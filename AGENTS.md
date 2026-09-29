@@ -287,19 +287,34 @@ What the repository does control is the text itself:
   `unowned/supply-chain`. That is the shape an exception takes, and it is
   written down beside the post-run audit rather than left implicit. What bounds
   an exception like that is what the brief says and what the audit checks, and
-  it is per lane: four of those lanes may make only the read-only calls their
-  own brief names, with their `coverage` record saying what they read — the
-  `publication` lanes through `PUBLICATION_READ_BOUND` (#85) and the two
+  it is per lane: each of those lanes may make only the read-only calls its
+  own brief names, with its `coverage` record saying what it read — the
+  `publication` lanes through `PUBLICATION_READ_BOUND` (#85), the two
   `public` lanes through a bound each (#95), which replaced a closing line of
-  prose that forbade five write verbs and so left the sixth. A list per lane,
-  because a bound is a block of text and a lane that interpolates another's
-  name acquires the whole of that lane's reach. "Against the repository the
-  sweep resolved" is the rule for three of them and not a fourth:
-  `public/outsiders` reads `jleavers/issuebot` too, so its own list names that
-  second repository, which is what lets the audit tell that read from a lane
-  that wandered. `unowned/supply-chain` has no such list written into it, so
-  the audit is the only thing behind that one (#96). A lane admitted to the
-  list without a bound of its own is a gap to close rather than a precedent.
+  prose that forbade five write verbs and so left the sixth, and
+  `unowned/supply-chain` through `SUPPLY_CHAIN_READ_BOUND` (#96), whose list is
+  the shortest of the five and the only one whose `gh api` entries name the
+  **path** they may ask for: that call reaches every endpoint GitHub serves, so
+  a bare `gh api -X GET` beside it is a deny-list of whatever the author thought
+  of, which is what the rule below forbids. The other four are written the older
+  way; for three of them their own entries bound what the bare call adds, and
+  `public/outsiders` is the one where that is not so. It is also the one bound
+  that says what it is *not* about, since most of that lane is a scratch venv
+  and an advisory lookup rather than a read of the swept repository's GitHub
+  surface -- the accurate form, since a GHSA id resolves on that host -- and the
+  one that closes
+  the *web* route to the surfaces it keeps off its list, since that lane holds
+  `WebFetch` with no allow-list of its own. A list per lane, because a bound is a block of text and a lane
+  that interpolates another's name acquires the whole of that lane's reach.
+  "Against the repository the sweep resolved" is the rule for four of them and
+  not a fifth: `public/outsiders` reads `jleavers/issuebot` too, so its own
+  list names that second repository, which is what lets the audit tell that
+  read from a lane that wandered. A lane admitted to the allow-list without a
+  bound of its own is a gap to close rather than a precedent, which is what
+  `unowned/supply-chain` was between #91 and #96: sent to the GitHub side with
+  the post-run audit's write-verb grep — detection once the run is over — as
+  the only thing behind it. `UNBOUNDED_GITHUB_SIDE_LANES` in that test is empty
+  and stays there for the next one to be written into.
   Read the membership from the allow-list rather than from a count restated
   here: #91 is what happened when the workflow gained
   lanes and none of the four statements of that list did.
