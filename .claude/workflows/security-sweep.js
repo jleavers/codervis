@@ -431,7 +431,9 @@ const STAGE_PROFILES = {
 // `args.toolProfiles: false` launches every stage on the default workflow subagent instead.
 // The agent registry is read once when a session starts, like the workflow registry, so a
 // session that has just created these files does not see them; this is the way to run anyway.
-// It is a way to run with less scoping, never a way to give a stage more room than its profile.
+// It runs with less scoping, not more: every stage that launches under it holds whatever the
+// session holds, which is more room than any profile gives it, so the post-run audit matters
+// more, not less.
 const useProfiles = args.toolProfiles !== false
 
 // A lane's refuters get the lane's own profile: reproducing a finding independently means
@@ -1012,10 +1014,11 @@ they name -- is there any scheme or host check, and what does an \`http://\` val
 cost; whether urllib's default redirect handling carries the \`Authorization\` and
 \`ChatGPT-Account-Id\` headers to wherever a 3xx points, including a different host; the Codex
 client's fall-through to \`USAGE_PATH_ALT\` on 401/403/404, which sends the same bearer a second
-time; every \`LiveQuotaError\` / \`CodexLiveQuotaError\` message, since \`source_error\` is shipped
-verbatim to the page, the SSE stream and \`/api/usage\` -- can any of them carry file contents,
-a header, an upstream body or a token fragment; the \`raw\` payload kept on each snapshot; and
-what \`/healthz\` reveals about which credentials exist.
+time; every \`LiveQuotaError\` / \`CodexLiveQuotaError\` message -- \`source_error\` comes from the
+fixed vocabulary in \`app/degrade.py\` (#14) and the boundary logs only an exception's type
+name, so the question is whether any other road carries a message out, and whether one can
+carry file contents, a header, an upstream body or a token fragment; the \`raw\` payload kept on
+each snapshot; and what \`/healthz\` reveals about which credentials exist.
 
 Then history, not only the tree: \`git log -p\`, \`git log --all --full-history\` and
 \`git rev-list --objects --all\` for token-shaped strings, \`.env\` files, \`*.log\` /
@@ -1030,24 +1033,27 @@ A credential that is real and live is \`critical\` however it got there.`,
   {
     key: 'exposure',
     title: 'what anyone who can reach the port can read or do',
-    brief: `The dashboard has no authentication, and docker-compose.yml publishes it on every
-host interface by default. README "Security notes" acknowledges the LAN reach; your job is to
-establish exactly what it gives away and who else can get it.
+    brief: `The dashboard has no authentication. docker-compose.yml publishes it on \`127.0.0.1\`
+unless \`DASHBOARD_BIND\` names another address, and the app answers only the \`Host\` values
+\`DASHBOARD_ALLOWED_HOSTS\` names (#15); README "Security notes" says what those two leave
+reachable, and on which engines. Your job is to establish exactly what it gives away and who
+else can get it.
 
 Start with the attackers: a machine on the same network; another container on the same Docker
 host; and -- the one people forget -- any web page open in the operator's browser, which can
 reach \`localhost:8765\` and, via DNS rebinding, read it as same-origin unless something checks
 the \`Host\` header. Enumerate what each learns from \`/\`, \`/api/usage\`, \`/api/stream\` and
 \`/healthz\`: plan type, reset times, \`last_activity\` (a presence signal: when the operator is at
-the keyboard), \`source_error\` strings and the paths inside them, which credential files exist.
+the keyboard), \`source_error\` strings, which credential files exist.
 
 Then the rendering path: Jinja autoescape in \`app/templates/index.html\`, the
-\`{{ data | tojson }}\` inside a \`<script>\` block, and every DOM write in \`app/static/app.js\`
-and \`widget-state.js\` -- which fields are upstream- or file-controlled, and does any reach an
-HTML, attribute or style sink unescaped. Then response headers: CSP, \`X-Frame-Options\` /
-\`frame-ancestors\`, \`X-Content-Type-Options\`, and CORS -- present or absent, and what each
-absence permits here. Then the SSE loop in \`main.py:stream()\`: what one client holding many
-connections costs the server, and whether anything bounds it.
+\`{{ payload_json | safe }}\` inside a \`<script>\` block and \`_payload_script_json()\` in
+\`app/main.py\`, which is what escapes it for that block, and every DOM write in
+\`app/static/app.js\` and \`widget-state.js\` -- which fields are upstream- or file-controlled,
+and does any reach an HTML, attribute or style sink unescaped. Then response headers: CSP,
+\`X-Frame-Options\` / \`frame-ancestors\`, \`X-Content-Type-Options\`, and CORS -- present or
+absent, and what each absence permits here. Then the SSE loop in \`main.py:stream()\`: what one
+client holding many connections costs the server, and whether anything bounds it.
 
 Severity is about this deployment's real reach, not about "unauthenticated" as a word: say who
 the attacker is and what they walk away with.`,
@@ -1072,14 +1078,18 @@ Trace every exception that can leave \`LiveQuotaClient._fetch\`, \`CodexLiveQuot
 a top-level JSON array where an object is expected, a string where a dict is expected (in the
 response and in the credential file), a read timeout or connection reset raised while reading
 the body rather than at connect, an \`OverflowError\` from datetime arithmetic on an extreme
-timestamp -- and follow it up through \`_claude_section\`, \`_codex_section\` and
-\`_build_payload\`: the activity snapshots are taken outside the \`try\`. Compare the two
-\`_float_field\` implementations: Claude's rejects booleans and non-finite values and Codex's
-does not; follow a NaN or Infinity to every place a payload is serialised, since
-\`JSONResponse\` and the SSE \`json.dumps\` do not treat it the same way. Then size and time: an
-unbounded \`resp.read()\`, \`rglob\` over trees a local process can grow or fill with symlinks,
-and whole-file reads of every changed transcript -- all of which run synchronously inside
-\`async def\` routes, on the event loop, while holding a client lock.
+timestamp -- and follow it up through \`_provider_section\`, which \`_claude_section\` and
+\`_codex_section\` both call, \`_activity_fields\` and \`_build_payload\`: since #14 the quota
+snapshot and the activity snapshot are each caught by a \`try\` of their own, so the question is
+what gets past one. Both \`_float_field\` implementations reject booleans and non-finite values,
+and \`_payload_json()\` serialises the payload once, with \`allow_nan=False\`, for the page, the
+SSE stream and \`/api/usage\` alike (#14); look for a NaN, an Infinity or a boolean that reaches
+the payload by another road. Then size and time. Since #16 every read that feeds the payload
+runs in a refresher thread (\`app/refresh.py\`) rather than in a route, and \`app/budget.py\`
+bounds it: the upstream body by a total deadline and a byte cap, the transcript scan by a
+whole-scan deadline and per-record and per-file caps, the credential file by a byte cap alone.
+Try to exceed each, over a tree a local process can grow, and to stall a refresher without its
+source going \`unavailable\`.
 
 For this lane in particular, \`attack_path\` must name the specific attacker-controlled input
 and the specific line where it breaks the contract.`,
@@ -1213,9 +1223,9 @@ Run the suite only in a sealed environment, never the ambient one:
 host, with read access to both credential directories, not as documents:
 
 - \`docs/superpowers/**\` (four files), \`AGENTS.md\`, and \`CLAUDE.md\` as a whole.
-- The sweep's own skill and workflow. They are on PR #17's branch, not at this commit, so
-  read them with \`git show origin/feat/security-sweep:.claude/skills/security-sweep/SKILL.md\`
-  and \`git show origin/feat/security-sweep:.claude/workflows/security-sweep.js\`.
+- The sweep's own skill and workflow, \`.claude/skills/security-sweep/SKILL.md\` and
+  \`.claude/workflows/security-sweep.js\`. PR #17 merged them to \`main\`, so they are in the
+  tree you are sweeping: read them there.
 
 What does any of it tell an agent to run, read, capture, print or paste that would move a
 credential? Candidates:
@@ -1430,12 +1440,16 @@ Cover what the container can reach other than \`egress:3128\`:
   \`internal\` network? A resolver that forwards is an exfiltration channel with no TCP
   connection at all.
 - **The other service on \`inside\`.** Can the dashboard use \`ingress\` as a way out?
-- **The host.** Is there a bridge gateway on an internal network, and can the container reach
-  a host service listening on all interfaces?
+- **The host.** #37 (closed, do not re-derive) was the bridge gateway on an internal network,
+  and it is closed: the \`inside\` network asks the bridge driver for
+  \`gateway_mode_ipv4: isolated\`, which on Docker Engine 28.0+ leaves the host no address on
+  that bridge, and \`check\`'s on-link half dials the addresses the container's own routing
+  tables put on-link. Go past it: can the container reach a host service listening on all
+  interfaces by any other route?
 - **IPv6 and link-local addresses.**
 
-Then work out whether \`python -m app.egress check\`, whose direct-route probe is one TCP
-connection to \`example.com:443\`, would detect each channel. A route the check cannot see is a
+Then work out whether \`python -m app.egress check\` -- its on-link half, and its direct probe
+of \`example.com:443\` -- would detect each channel. A route the check cannot see is a
 route the operator believes is closed.
 
 Then the proxy itself:
@@ -1533,9 +1547,10 @@ Cover:
   operator's own configuration. You may reproduce it with a throwaway client configuration you
   write yourself in a temporary directory (\`DOCKER_CONFIG=<tmpdir>\`) and a \`--network none\`
   container you create and remove. Say which parts you verified and which you inferred.
-- **uvicorn's environment.** \`Dockerfile:16\` runs \`uvicorn app.main:app --host 0.0.0.0
-  --port 8000\`. Which \`UVICORN_*\` variables, and \`WEB_CONCURRENCY\`, does uvicorn 0.53 read
-  despite that argv?
+- **uvicorn's environment.** \`Dockerfile:19\` runs \`python -m app.server --bind 0.0.0.0
+  --port 8000\` (#43), which builds a \`uvicorn.Config\` itself and never goes through uvicorn's
+  own command line. Which \`UVICORN_*\` variables, and \`WEB_CONCURRENCY\`, does uvicorn 0.53
+  still read on that path?
   - Extra workers each start their own four refreshers (\`app/refresh.py\`). That multiplies
     credential reads and upstream calls, which the whole design assumes are single.
   - With \`ingress\` in front, what do \`--proxy-headers\` and \`FORWARDED_ALLOW_IPS\` do to the
@@ -1681,8 +1696,8 @@ to them rather than a finding here. Go past it:
   where bytes go but not who receives them. \`app/egress.py\`'s module docstring already
   concedes exactly that: it claims only that a token cannot reach a host off the allow-list,
   and says in as many words that the tunnel's interior is outside what the proxy can see or
-  limit (#45, open). So the gap itself is known and is not a finding; a concrete mechanism,
-  named and shown, is.
+  limit (#45, closed, do not re-derive). So the gap itself is known and is not a finding; a
+  concrete mechanism, named and shown, is.
   - Establish this from the vendors' and CDNs' documentation, and from reasoning about
     \`app/egress.py\`.
   - **Never send anything to claude.ai or chatgpt.com.**
@@ -1768,12 +1783,13 @@ goes round one of them is yours to establish, not #38's record to quote. Cover:
   copy, sealed, with \`PYTHONDONTWRITEBYTECODE=1\` and \`-p no:cacheprovider\`. A rule whose
   removal leaves the suite green is a vacuous-test finding, and its \`attack_path\` is the
   regression it would let through. Never mutate the worktree itself.
-- **The unarchived design specs** (gap 15, named by three critics).
+- **The design specs** (gap 15, named by three critics).
   \`docs/superpowers/specs/2026-06-08-browser-widget-toggles-design.md\` (including its :138
   claim that "OAuth tokens are never logged or returned") and
-  \`docs/superpowers/specs/2026-06-08-agy-1.0.6-compatibility-design.md\`. Check each stated
-  invariant against the code, and whether either spec reads as work still to do. Record a read
-  of each, or declare it out of scope with a reason.
+  \`docs/superpowers/specs/2026-06-08-agy-1.0.6-compatibility-design.md\`. Both have opened
+  with the \`> **Archived —\` header since #46 (closed, do not re-derive). Check each stated
+  invariant against the code, and whether the prose under either header still reads as work
+  to do. Record a read of each, or declare it out of scope with a reason.
 - **Container logs as agent input** (gap 6). uvicorn's default access log records the path and
   query string of every request, including refused ones, so any client of the published port
   can write text into it. CLAUDE.md and AGENTS.md tell agents to run \`docker compose logs\`,
@@ -1877,18 +1893,21 @@ and go past it to what the change to public alters:
   vulnerability reporting's status. Several of these cannot be set until the repository is
   public. Say which of them the change turns on by default, and which would be unsafe at that
   default on the first day.
-- **Agents that read the tracker.** Two of them run on this host with the operator's GitHub
-  credential, and until now only collaborators could write what they read. This sweep's report
-  stage reads every issue and pull request body. issuebot, which works this repository's
-  issues, reads every review comment on its pull requests and every human comment on its
-  issues, and runs the steps of any \`Validation\` or \`Test Plan\` section of an issue it is
-  given. Establish issuebot's rules from its published repository alone (\`jleavers/issuebot\`:
+- **Agents that read the tracker.** Two of them run on this host, and until now only
+  collaborators could write what they read. This sweep's report stage has held no shell since
+  #86: the launching session hands it a tracker listing filtered to maintainer-authored items.
+  issuebot, which works this repository's issues, reads only the comments and reviews whose
+  author association is \`OWNER\`, \`MEMBER\` or \`COLLABORATOR\` since issuebot#247, and since
+  issuebot#246 the issue text a session is given is pinned to what a person approved with the
+  label. A session still runs the steps of a \`Validation\`, \`Test Plan\` or \`Testing\`
+  section of an issue a maintainer approved, as its published \`configs/WORKFLOW.md\` says.
+  Establish issuebot's rules from its published repository alone (\`jleavers/issuebot\`:
   \`configs/WORKFLOW.md\` and the files it names, read with that repository's
   \`contents\` path on the list below or a \`git clone --depth 1\` into your scratch
   directory): never a deployment's \`.env\`, untracked overlay or running process, and never a
   path on this host. For each reader, say
   what a stranger can put in front of it after the change that they could not before, and what
-  stands between that text and the reader's shell. A fix that lives in issuebot belongs to
+  stands between that text and what the reader can do. A fix that lives in issuebot belongs to
   issuebot's own tracker; say so in the finding rather than shaping it as a change here.
 - **This sweep as a publisher.** Establish from SKILL.md's phase 7 where each approved cluster
   is filed, in what form, and who can read it the moment it is. On a public repository a public
@@ -1900,9 +1919,11 @@ and go past it to what the change to public alters:
   exist on the first day? Does any template ask a reporter to paste something that can carry a
   credential, a home path or a payload -- \`docker compose logs\`, \`docker inspect\`, a
   \`.env\`, a credential file's contents?
-- **A pull request from a fork.** The \`main\` ruleset requires a pull request with no
-  approvals. What does a stranger's pull request have to get past, and what runs on its behalf
-  before a human has read it?
+- **A pull request from a fork.** The \`main\` ruleset requires a pull request with one
+  approving review of its latest push, from a code owner, and dismisses an approval a later
+  push makes stale. The repository admin role may bypass it for pull requests only, and no
+  status check is required yet. What does a stranger's pull request have to get past, and what
+  runs on its behalf before a human has read it?
 
 ${OUTSIDERS_READ_BOUND}`,
   },

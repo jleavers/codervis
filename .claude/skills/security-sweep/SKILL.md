@@ -496,7 +496,7 @@ out-of-scope, never silence:
 | `front-door` | every route into `codervis:8000` that skips `ingress`'s bounds, `/healthz` under a hung mount, the FastAPI default routes and HEAD/Range on `/static`, and the browser side; may start a throwaway stack |
 | `inside-codervis` | code already running in the dashboard: the allowed hosts as exfiltration sinks (reasoned and stub-tested, never sent to the real services), what the whole-tree mounts hold, and what root with `NET_RAW` adds; may start a throwaway stack |
 | `supply-chain` | CI and Dependabot, advisories across the pip closure and the base image, variable names shared with issuebot, and history GitHub serves by SHA |
-| `assurance` | the gate-level tests (by mutation, on a copy), the unarchived design specs, container logs as agent input, and the sweep's own tooling |
+| `assurance` | the gate-level tests (by mutation, on a copy), the design specs (archived since #46), container logs as agent input, and the sweep's own tooling |
 
 The `public` lanes (`args.lanes: "public"`) are for the tree about to be made public, which no
 earlier set asked about: every earlier run swept one operator's deployment of a private
