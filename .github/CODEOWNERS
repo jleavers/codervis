@@ -1,3 +1,8 @@
+# Every path has a human owner, so the pull request rule's "Require review from Code Owners"
+# holds the approval that merges to the human named here and never to the account issuebot
+# runs as, which has write and could otherwise approve another account's pull request.
+* @jleavers
+
 # A change to these paths is a change to what every agent working in a checkout inherits:
 # the instruction files it is handed, the sweep skill and workflow it runs, and the CI that
 # runs on every pull request. Review one as a change to the agent's privileges, not as
