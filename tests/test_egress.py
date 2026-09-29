@@ -1019,12 +1019,14 @@ def test_a_resolver_call_in_the_module_is_made_only_from_the_bounded_lookup() ->
     this test, on purpose.
 
     **Be exact about what this does not cover**, because the name it used to carry claimed the
-    module resolved no name outside a deadline and that is not true. `socket.create_connection`
-    on a *name* is the same unbounded lookup wearing a timeout that does not cover it, and
-    `probe_direct` still makes one: the public name's lookup is #51's, and README says so where
-    it states what `check` costs. `probe_on_link` needs nothing, since every address it is
-    handed is a literal from the routing table. So what is pinned here is the resolver calls,
-    not every name that gets resolved.
+    module resolved no name outside a deadline, and that was not true when it was written.
+    `socket.create_connection` on a *name* is the same unbounded lookup wearing a timeout that
+    does not cover it, and this test would not see one: it counts resolver calls, and that
+    lookup happens inside the socket module. None is made today. `probe_direct` resolves the
+    public name through `_resolve_direct`, which is `_resolve_within` under the probe's own
+    budget (#51), and `probe_on_link` hands `create_connection` nothing but literals from the
+    routing table. So what is pinned here is the resolver calls, not every name that gets
+    resolved.
     """
     # `gethostname` is deliberately absent: it reads the name this host was given and asks no
     # resolver, which is why `own_addresses` may call it and then pass the result through the
@@ -1065,6 +1067,69 @@ def test_a_resolver_call_in_the_module_is_made_only_from_the_bounded_lookup() ->
         if is_lookup(node)
     ]
     assert [name for name, _ in lookups] == ["_resolve_within"], lookups
+
+
+#: The budget constants both probes read. Each was once defined twice with equal values, the
+#: second copy beside `probe_direct` (#81): the later assignment is the one Python keeps, so
+#: editing the first -- beside `_resolve_within`, where a reader goes looking for the lookup's
+#: share -- changed nothing at all, and no test could say so while the two values agreed.
+SINGLY_DEFINED_BUDGETS = ("RESOLVE_BUDGET_SHARE", "MIN_DIAL_BUDGET_S")
+
+
+def test_each_budget_constant_is_assigned_once_at_module_level() -> None:
+    """One binding each, counted in the source, since a check of the value cannot see a second.
+
+    Module level is everything outside a function or class body, which includes an `if` or a
+    `try` at the top of the module. A function that declares one of these names `global` would
+    rebind it from somewhere no count here reads, so that is refused too.
+    """
+    tree = ast.parse(Path(egress.__file__).read_text())
+    scopes = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+
+    def module_level(nodes: list[ast.stmt]) -> list[ast.AST]:
+        found: list[ast.AST] = []
+        pending: list[ast.AST] = list(nodes)
+        while pending:
+            node = pending.pop()
+            found.append(node)
+            if not isinstance(node, scopes):
+                pending.extend(ast.iter_child_nodes(node))
+        return found
+
+    def bound_names(node: ast.AST) -> list[str]:
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
+            targets = [node.target]
+        else:
+            return []
+        return [
+            name.id
+            for target in targets
+            for name in ast.walk(target)
+            if isinstance(name, ast.Name) and isinstance(name.ctx, ast.Store)
+        ]
+
+    bindings = {name: [] for name in SINGLY_DEFINED_BUDGETS}
+    for node in module_level(tree.body):
+        for name in bound_names(node):
+            if name in bindings:
+                bindings[name].append(node.lineno)
+    for name, lines in bindings.items():
+        assert len(lines) == 1, (
+            f"{name} is bound at module level on lines {sorted(lines)} of app/egress.py, not "
+            f"once. The last binding is the one both probes read, so an edit to any other one "
+            f"changes nothing"
+        )
+
+    rebinds = sorted(
+        (node.lineno, name)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Global)
+        for name in node.names
+        if name in bindings
+    )
+    assert not rebinds, f"a function declares a budget constant `global`: {rebinds}"
 
 
 def test_nothing_to_probe_names_where_the_candidates_should_have_come_from() -> None:

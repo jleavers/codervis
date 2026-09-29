@@ -810,13 +810,28 @@ def split_proxy_url(proxy_url: str) -> SplitResult | None:
 # How much of a probe's budget the name lookup may have, with the connection taking what is
 # left. A share rather than the whole, because a resolver that is merely slow would otherwise
 # spend the budget the connection needs and leave the probe unable to say anything about the
-# thing it exists to ask. Half of a ten-second budget is one full resolver attempt, and leaves
-# five seconds for the dial.
+# thing it exists to ask -- for the direct probe, `DIRECT_UNVERIFIED`, which fails the check.
+# It is the dials that establish the thing being asserted, so what they are guaranteed is what
+# this number is for. Half of a ten-second budget is one full resolver attempt, and leaves five
+# seconds for the dial; `check` sizes the budget it passes so that half of it is a share worth
+# having on each side. `probe_proxy` and `probe_direct` both read it, and this is the one
+# definition of it (#81).
 RESOLVE_BUDGET_SHARE = 0.5
 # The least a candidate address may be dialled with. Below this a connect is not a probe: it
-# would time out whatever is at the other end. A candidate whose window has fallen this low is
-# reported as unasked instead, so that is a property of the loop rather than of how the
-# arithmetic happened to land.
+# would time out whatever is at the other end. It rules out the degenerate window -- the
+# microsecond left over when the address before it overshot the deadline -- which `connect`
+# would spend in `select` and come back from as a timeout, reading as silence, and in the
+# direct probe silence is the *pass*. A candidate whose window has fallen this low is reported
+# as unasked instead, so that is a property of the loop rather than of how the arithmetic
+# happened to land.
+#
+# It is not a window an address can be relied on to answer in: the module puts that figure an
+# order of magnitude higher (`probe_direct`, on Linux's first SYN retransmit), and a floor that
+# size cannot live here, because it would have to be a fraction of the caller's budget rather
+# than a constant to avoid leaving a small budget with nothing dialled at all. What carries the
+# real guarantee in the direct probe is the order: the *first* address gets the whole of what
+# the lookup left, which at `check`'s budget is five seconds. Like the share above, it has one
+# definition, here, for both probes (#81).
 MIN_DIAL_BUDGET_S = 0.1
 # What one name lookup outside a probe's own budget may cost: `resolved_addresses`, which is
 # labelling rather than probing and has no budget of its own to take a share of. One full
@@ -1093,23 +1108,8 @@ DIRECT_NO_DNS = "does not resolve"
 DIRECT_NO_RESOLVER = "resolver did not answer"
 DIRECT_UNVERIFIED = "not probed"
 
-# How much of the direct probe's budget name resolution may have, with the dials taking what
-# is left. A share rather than the whole, because a resolver that is merely slow would
-# otherwise spend the budget the dials need and leave the probe unable to settle the name at
-# all -- `DIRECT_UNVERIFIED`, which fails the check. It is the dials that establish the thing
-# being asserted, so what they are guaranteed is what this number is for. `check` sizes the
-# budget it passes so that half of it is a share worth having on each side.
-RESOLVE_BUDGET_SHARE = 0.5
-# The least a candidate may be dialled with. It rules out the degenerate window -- the
-# microsecond left over when the address before it overshot the deadline -- which `connect`
-# would spend in `select` and come back from as a timeout, reading as silence, which is the
-# *pass*. It is not a window an address can be relied on to answer in: the module puts that
-# figure an order of magnitude higher (`probe_direct`, on Linux's first SYN retransmit), and
-# a floor that size cannot live here, because it would have to be a fraction of the caller's
-# budget rather than a constant to avoid leaving a small budget with nothing dialled at all.
-# What carries the real guarantee is the order: the *first* address gets the whole of what
-# the lookup left, which at `check`'s budget is five seconds.
-MIN_DIAL_BUDGET_S = 0.1
+# The direct probe's lookup share and dial floor are `RESOLVE_BUDGET_SHARE` and
+# `MIN_DIAL_BUDGET_S`, defined once with the bounded lookup above and read by both probes.
 
 
 def _direct_errno_outcome(err: int | None) -> str:
