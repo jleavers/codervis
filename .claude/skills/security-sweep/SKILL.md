@@ -59,14 +59,13 @@ three different reasons that are worth keeping apart:
   The object it is looking for is the one a checkout is missing by definition.
 
 All five hold a shell, and the post-run audit below is what stands behind them — do not read
-the dedupe paragraph above as covering them. Four of the five also bound themselves in the
-brief, each through a named read-only call list of its own: the two `publication` lanes
-through `PUBLICATION_READ_BOUND` (#85), and the two `public` lanes through
-`DISCLOSURE_READ_BOUND` and `OUTSIDERS_READ_BOUND` (#95), which replaced a closing line of
-each brief's own prose. The bound is what a brief interpolates; the `*_READ_CALLS` array
-beside each one is the list it renders. `supply-chain` carries no such list, so for that lane the audit is not
-a second check but the only one — read its transcript accordingly until the brief says
-otherwise. `public/cloner` and `public/shipped-text` send an
+the dedupe paragraph above as covering them. All five also bound themselves in the brief, each
+through a named read-only call list of its own: the two `publication` lanes through
+`PUBLICATION_READ_BOUND` (#85), the two `public` lanes through `DISCLOSURE_READ_BOUND` and
+`OUTSIDERS_READ_BOUND` (#95), which replaced a closing line of each brief's own prose, and
+`supply-chain` through `SUPPLY_CHAIN_READ_BOUND` (#96), which had no bound of its own at all
+until then. The bound is what a brief interpolates; the `*_READ_CALLS` array beside each one is
+the list it renders. `public/cloner` and `public/shipped-text` send an
 agent to no GitHub surface, and neither does `unowned/assurance`: `shipped-text` and
 `assurance` mutate a copy of this tree, and `cloner` runs the stack on a stranger's machine. It
 does hold the web, for Docker's and each CLI vendor's documentation, so what bounds it there is
@@ -149,6 +148,26 @@ value would otherwise be in the lane's context and in this run's transcripts wha
 finding said. A webhook URL is the same shape: the host and the event list, never the rest of
 the URL.
 
+**`unowned/supply-chain` carries one too (#96), and it is the shortest of the five.** #91 put
+this lane in the allow-list above, because it is genuinely sent to the GitHub side and four
+documents said four lanes went; it left the lane without a bound, because what a lane may call
+is a decision about text an agent executes rather than part of a change to an allow-list. Until
+#96 the audit below was not a second check on this lane but the only one. Its list is
+`gh api -X GET` and `git ls-remote origin` — `repos/{owner}/{repo}/activity` is the endpoint
+its history bullet names, a commit that endpoint lists which no ref names any more is served by
+SHA from the same API, and `git ls-remote origin` is what tells such a SHA from one a ref still
+names. **What is off the list is the part worth reading twice.** There is no
+`git clone --mirror`, which two of the other lanes may make: a mirror clone fetches what a ref
+names, and this lane is looking for what none does, so the wider call would not even answer its
+question. There is no `gh run list` or `gh run view --log` either — its CI bullet reads
+`.github/` in the checkout, and the Actions logs belong to the `publication` and `disclosure`
+lanes. And the bound says in as many words what it is *not* about, which none of the other four
+has to: most of this lane is a scratch venv, `pip-audit`, advisory lookups on the web and reads
+of issuebot's tracked source in a checkout on this host, and "the only calls you may make"
+would otherwise read as cancelling them. Its `coverage` says how far back the activity events
+it was served reach, what retention it established, and how many pushes, commits and refs it
+scanned.
+
 After a run, audit what the agents actually ran before presenting: the per-agent transcripts sit
 beside the workflow's `journal.jsonl`, in the directory the task notification names. Look for:
 
@@ -162,9 +181,7 @@ beside the workflow's `journal.jsonl`, in the directory the task notification na
 - **what a lane read on the GitHub side**, which is the other half of that same surface: for
   a lane sent there the read *is* the exposure, and no bullet above looks at one. The question
   is per lane, because the lists differ: every GitHub-side call has to be one the calling lane's
-  own brief names, and four of the five lanes sent there name theirs above --
-  `unowned/supply-chain` is the one that names none, so for that lane this bullet is the whole
-  of the answer rather than a cross-check. A `gh` read from a
+  own brief names, and all five lanes sent there name theirs above. A `gh` read from a
   stage whose brief sends it nowhere near GitHub is one that went outside its brief, whether or
   not it was a write. A path naming another repository is the same question and not the same
   answer — `jleavers/issuebot` is on `public/outsiders`' own list and on no other lane's, so
@@ -192,7 +209,7 @@ hit is a thing to explain.
 grep -ohE '(gh (api|issue|pr|repo|ruleset|run|search|release|workflow|cache|secret|variable)|git (ls-remote|clone|fetch|push))( [-a-zA-Z0-9@:/{}._]+)*' <transcript-dir>/*.jsonl | sort | uniq -c | sort -rn | head -40
 ```
 
-Read it against the `coverage` records of the four lanes that carry a read list, which are
+Read it against the `coverage` records of the five lanes that carry a read list, which are
 required to say what each of them read. A call in a transcript that no record accounts for, and a record that claims more than
 the transcripts show, are the two halves of one question: whether what a lane says it examined
 is what it examined.

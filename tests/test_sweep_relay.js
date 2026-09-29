@@ -69,7 +69,9 @@ const STRANGER_ITEM = {
 // is really launched with, rather than the workflow's source, so the four have to agree here
 // too (#91). Every key is listed, `public` included, and the list is checked against the
 // workflow's own below: a set this table has no key for is a set nobody asks the question
-// of. Both `public` lanes now carry a named read list of their own as well (#95).
+// of. Each of the five carries a named read list of its own: the two `public` lanes since
+// #95, and `supply-chain` -- the last one sent there with nothing but the post-run audit
+// behind it -- since #96.
 const GITHUB_SIDE_BY_DESIGN = {
   baseline: [],
   gaps: ["scan:publication"],
@@ -521,21 +523,29 @@ const OUTSIDERS_READ_CALLS = [
 // the post-run audit can tell the read `outsiders` was sent to make from a lane that wandered.
 const OUTSIDERS_OTHER_REPOS = ["jleavers/issuebot"];
 
+// `unowned/supply-chain`'s own list (#96), which is two entries and no more: the activity
+// endpoint and the commits it lists are served by the API, and `git ls-remote origin` is what
+// tells a SHA no ref names from one that is current. No `git clone --mirror`, because a mirror
+// clone fetches what a ref names and this lane is after what none does.
+const SUPPLY_CHAIN_READ_CALLS = ["gh api -X GET", "git ls-remote origin"];
+
 // Every prompt that is handed a named list of GitHub-side reads, and which list. The keys are
 // `<lane set>/<agent label>`, and what this table pins is the rendering: a prompt carrying a
 // list that is not here is a lane that acquired another's reach, and a prompt here carrying a
 // different list from the one stated is a bound that changed under it.
 //
-// It does *not* answer which GitHub-side lanes have a list at all -- `unowned/scan:supply-chain`
-// is in `GITHUB_SIDE_BY_DESIGN` above and absent here, on purpose (#96), and this file would
-// not notice either way. That relation is pinned in `tests/test_agent_tooling_context.py`,
-// against the workflow's source, where the one excused lane is named rather than derived. It
-// is not restated here because a third hand-kept copy of a list is what #91 was.
+// It does *not* answer which GitHub-side lanes have a list at all: every entry here having one
+// is a fact about this table, not a property this file establishes. That relation is pinned in
+// `tests/test_agent_tooling_context.py`, against the workflow's source, where the lanes sent to
+// the GitHub side and the lanes excused from carrying a list are each named rather than
+// derived. It is not restated here because a third hand-kept copy of a list is what #91 was.
+// Every one of the five carries a list since #96, which closed the last excused lane.
 const READ_LISTS = {
   "gaps/scan:publication": PUBLICATION_READ_CALLS,
   "fixes/scan:publication": PUBLICATION_READ_CALLS,
   "public/scan:disclosure": DISCLOSURE_READ_CALLS,
   "public/scan:outsiders": OUTSIDERS_READ_CALLS,
+  "unowned/scan:supply-chain": SUPPLY_CHAIN_READ_CALLS,
 };
 
 // The sentence every one of those bounds opens with, which is how a prompt is asked whether it
@@ -726,6 +736,64 @@ test("the public set's two GitHub-side lanes are told what they may read, and to
     assert.ok(
       outsiders.includes(surface),
       `outsiders: the coverage record the lane is asked for does not name ${surface}`,
+    );
+  }
+});
+
+test("the supply-chain lane is told what it may read on the GitHub side, and to record it", async () => {
+  // #91 admitted this lane to the GitHub-side allow-list and deliberately left it without a
+  // bound; #96 wrote one. The rendered prompt is where that has to be visible, because what
+  // bounds an agent is the text it was handed and not the constant the workflow declares.
+  const { calls } = await run({ lanes: "unowned", tracker: [MAINTAINER_ITEM] });
+  const scan = calls.find(({ opts }) => opts.label === "scan:supply-chain");
+  assert.ok(scan, "the supply-chain lane did not run");
+
+  // Outside the fence: this is the prompt's own voice, and a bound that arrived as relayed
+  // data would be something the lane is told to treat as data rather than to obey.
+  const { lines, inside } = fenceMap(scan.prompt);
+  const own = lines.filter((_, index) => !inside[index]).join("\n");
+  const flat = own.replace(/\s+/g, " ");
+
+  assert.ok(flat.includes(BOUND_MARKER), "supply-chain: the lane is handed no bound on its reads");
+  for (const call of SUPPLY_CHAIN_READ_CALLS) {
+    assert.ok(
+      own.includes(`- ${call}`),
+      `supply-chain: the lane is not told it may run \`${call}\``,
+    );
+  }
+  assert.ok(
+    flat.includes("`gh api` says `-X GET` every time"),
+    "supply-chain: the lane is not told which method `gh api` may use",
+  );
+  // The repository the launching session resolved, rendered -- not `gh`'s idea of the current
+  // directory, and not a literal. `run()` passes `jleavers/codervis` as `args.repo`.
+  assert.ok(
+    flat.includes("against jleavers/codervis and no other repository"),
+    "supply-chain: the bound does not name the repository the sweep resolved",
+  );
+  // This lane is the one whose GitHub-side list bounds a minority of what it does, so the
+  // rendered prompt has to say which of its bullets the list is not about. Without it, "the
+  // only calls you may make" reads as cancelling the scratch venv, `pip-audit` and the reads
+  // of issuebot's tracked source that its other three bullets require.
+  assert.ok(
+    flat.includes("That bounds what you send to GitHub, and nothing else in this lane"),
+    "supply-chain: the bound does not say what it is not about, so it reads as cancelling " +
+      "the lane's own non-GitHub bullets",
+  );
+  // And the record that makes the bound auditable after the run.
+  assert.match(
+    flat,
+    /coverage` is what says what you read/,
+    "supply-chain: the lane is not asked to record what it read",
+  );
+  assert.ok(
+    flat.includes("counts, not adjectives"),
+    "supply-chain: the coverage record the lane is asked for does not have to carry counts",
+  );
+  for (const surface of ["activity events", "retention", "pushes", "commits", "refs"]) {
+    assert.ok(
+      flat.includes(surface),
+      `supply-chain: the coverage record the lane is asked for does not name ${surface}`,
     );
   }
 });

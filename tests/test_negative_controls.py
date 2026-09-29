@@ -134,6 +134,9 @@ _PUBLICATION_BOUND = (
 _PUBLIC_LANE_BOUND = (
     f"{CONTEXT_TESTS}::test_the_public_sets_github_side_lanes_bound_and_record_their_reads"
 )
+_SUPPLY_CHAIN_BOUND = (
+    f"{CONTEXT_TESTS}::test_the_supply_chain_lane_bounds_and_records_its_github_side_read"
+)
 SWEEP_SKILL = ".claude/skills/security-sweep/SKILL.md"
 SWEEP_WORKFLOW = ".claude/workflows/security-sweep.js"
 
@@ -953,6 +956,76 @@ MUTATIONS: tuple[Mutation, ...] = (
         after="`gh api`, `gh ruleset list` and `gh ruleset view`",
         caught_by=(_PUBLIC_LANE_BOUND,),
     ),
+    # The same bound again, on the lane #91 admitted to the GitHub side and #96 gave a list to.
+    # Each of these is a widening that lane's state before #96 admitted: it kept the shell, and
+    # the post-run audit's write-verb grep -- which reads a transcript once the run is over --
+    # was the whole of what stood behind it.
+    Mutation(
+        key="sweep-supply-chain-calls-admit-a-write",
+        widening=True,
+        area=SWEEP,
+        rule="`unowned/supply-chain` may make only the read-only calls its brief lists",
+        path=SWEEP_WORKFLOW,
+        # The list is two entries, which is what makes a third look like housekeeping. This
+        # lane's shell holds the operator's own `gh`, and its other bullets read a registry, an
+        # advisory database and a second project's source -- text it did not write.
+        before="const SUPPLY_CHAIN_READ_CALLS = [\n  'gh api -X GET',\n",
+        after="const SUPPLY_CHAIN_READ_CALLS = [\n  'gh api -X GET',\n  'gh issue comment',\n",
+        caught_by=(_SUPPLY_CHAIN_BOUND,),
+    ),
+    Mutation(
+        key="sweep-supply-chain-api-call-without-a-method",
+        widening=True,
+        area=SWEEP,
+        rule="`gh api` on `unowned/supply-chain`'s list names its method, because `gh api`'s is not one",
+        path=SWEEP_WORKFLOW,
+        # `gh api` is the lane's only `gh` entry, so the bare spelling is the quietest widening
+        # available to it: a `GET` until a field is added and a `POST` afterwards, while reading
+        # to anyone checking the list like the activity-endpoint read it was meant to be.
+        before="const SUPPLY_CHAIN_READ_CALLS = [\n  'gh api -X GET',\n",
+        after="const SUPPLY_CHAIN_READ_CALLS = [\n  'gh api',\n",
+        caught_by=(_SUPPLY_CHAIN_BOUND,),
+    ),
+    Mutation(
+        key="sweep-supply-chain-acquires-a-mirror-clone",
+        widening=True,
+        area=SWEEP,
+        rule="the mirror clone two lanes may make is off `unowned/supply-chain`'s list",
+        path=SWEEP_WORKFLOW,
+        # The widening a reader would wave through, because two other lists carry this entry and
+        # it is a read: `git clone --mirror` copies every ref and every object they name into the
+        # lane's scratch directory. It is also the entry this lane has the least use for -- what
+        # it is looking for is what no ref names, which a clone does not fetch -- so adding it
+        # widens the reach without answering the question that sent the lane to GitHub.
+        before="  'git ls-remote origin',\n]\n\nconst SUPPLY_CHAIN_READ_BOUND",
+        after="  'git ls-remote origin',\n  'git clone --mirror',\n]\n\nconst SUPPLY_CHAIN_READ_BOUND",
+        caught_by=(_SUPPLY_CHAIN_BOUND,),
+    ),
+    Mutation(
+        key="sweep-supply-chain-loses-its-read-list",
+        widening=True,
+        area=SWEEP,
+        rule="every lane sent to the GitHub side carries a named list of the reads it may make",
+        path=SWEEP_WORKFLOW,
+        # Not a deletion of a check but a widening of a lane: `unowned/supply-chain` keeps the
+        # shell and the activity endpoint and goes back to bounding itself in nothing at all,
+        # which is the state #91 left it in and #96 found.
+        before="\n\n${SUPPLY_CHAIN_READ_BOUND}`,",
+        after="`,",
+        caught_by=(_SUPPLY_CHAIN_BOUND, _PUBLIC_LANE_BOUND),
+    ),
+    Mutation(
+        key="sweep-supply-chain-skill-list-drifts",
+        widening=True,
+        area=SWEEP,
+        rule="the list SKILL.md gives the operator is the list `unowned/supply-chain` is handed",
+        path=SWEEP_SKILL,
+        # The operator audits the transcripts against this copy. A copy that has drifted wider
+        # than the workflow's is an audit that reads a call as permitted and moves on.
+        before="`gh api -X GET` and `git ls-remote origin`",
+        after="`gh api` and `git ls-remote origin`",
+        caught_by=(_SUPPLY_CHAIN_BOUND,),
+    ),
     Mutation(
         key="sweep-audit-drops-the-github-side-read",
         widening=True,
@@ -1052,19 +1125,32 @@ MUTATIONS: tuple[Mutation, ...] = (
         after="  third lane asks that of the change to public itself",
         caught_by=(_TRACKER_AUTHORSHIP,),
     ),
-    # The third marker alternative, which is the one that is not a command. `unowned/supply-chain`
-    # is sent to the repository activity endpoint and names no `gh` and no Actions run, so until
-    # #91 it read the GitHub side with the marker blind to it and all four documents saying four
-    # lanes did. This mutation spells the same instruction without the phrase: the lane still
-    # goes, and the check stops seeing it.
+    # The third marker alternative, which is the one that is not a command at all.
+    # `unowned/supply-chain` is sent to the repository activity endpoint and named no `gh` and no
+    # Actions run, so until #91 it read the GitHub side with the marker blind to it and all four
+    # documents saying four lanes went.
+    #
+    # This control used to spell that lane's own instruction without the phrase, and #96 is why
+    # it no longer can: the lane's brief now interpolates `SUPPLY_CHAIN_READ_BOUND`, which lists
+    # `gh api -X GET`, so the first alternative catches the lane whatever the history bullet
+    # says and the mutation survived. It is re-anchored rather than dropped, because what it is
+    # about is the alternative and not that lane: the widening it now applies is the one a
+    # *new* lane arrives as, which is the direction its two siblings above already take.
+    # `shipped-text` is the lane to send for the reason given there -- the `public` set's one
+    # lane with neither the web nor any business with the tracker -- and it is sent in the
+    # spelling that names no command, so the phrase is the only thing that can catch it. Delete
+    # that alternative from the marker and this mutation goes green with the lane still going.
     Mutation(
         key="sweep-github-side-lane-evades-the-marker",
         widening=True,
         area=SWEEP,
         rule="a lane sent to GitHub's own copy of the history is in GITHUB_SIDE_BY_DESIGN",
         path=SWEEP_WORKFLOW,
-        before="Establish whether the repository activity endpoint reaches further",
-        after="Establish whether GitHub's own record of pushes reaches further",
+        before="Read its list first, then mutate what it does not cover",
+        after=(
+            "Read its list first, then establish from the repository activity endpoint which "
+            "of those rules were force-pushed over, then mutate what it does not cover"
+        ),
         caught_by=(_TRACKER_AUTHORSHIP,),
     ),
     # ------------------------------------------------- the compose shape, widened

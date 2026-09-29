@@ -159,20 +159,23 @@ def _shipped_text_files() -> list[Path]:
 #   what the lane is asking is how far back that reaches and what the retention is. The object
 #   it is looking for is the one a checkout is missing by definition, so there is nowhere else
 #   to ask. It was not in this set until #91 and should have been from the start: its brief
-#   names no `gh` command and no Actions run, so the marker below never saw it, and being
-#   invisible to a spelling check is not the same as not going.
+#   named no `gh` command and no Actions run, so the marker below never saw it, and being
+#   invisible to a spelling check is not the same as not going. (It names one now, because the
+#   read bound #96 gave it lists `gh api -X GET` -- so the marker's first alternative catches
+#   this lane today and its third is what caught it between #91 and then.)
 #
-# Four of the five carry a named list of the reads they may make, stated in the workflow and
-# pinned below rather than left to prose: the two `publication` lanes through
-# `PUBLICATION_READ_CALLS` and `PUBLICATION_READ_BOUND` (#85), and the two `public` lanes
-# through `DISCLOSURE_READ_CALLS` and `OUTSIDERS_READ_CALLS` with a bound each (#95) -- which
-# replaced a closing line of each brief's own prose, a deny-list that nothing pinned.
-# `unowned/supply-chain` is the one that carries neither, and admitting it here without saying so
-# would be the silence this set exists to prevent. The post-run audit's `gh` write-verb grep is
-# what stands behind it meanwhile, which is detection after the fact rather than a bound. What
-# that lane is missing is a named read list of its own -- not the closing line the two `public`
-# lanes used to carry, which #95 replaced -- and writing one is a change to a brief and belongs
-# to whoever owns the lane, so it is filed as #96 rather than made here.
+# All five carry a named list of the reads they may make, stated in the workflow and pinned
+# below rather than left to prose: the two `publication` lanes through
+# `PUBLICATION_READ_CALLS` and `PUBLICATION_READ_BOUND` (#85), the two `public` lanes through
+# `DISCLOSURE_READ_CALLS` and `OUTSIDERS_READ_CALLS` with a bound each (#95) -- which replaced
+# a closing line of each brief's own prose, a deny-list that nothing pinned -- and
+# `unowned/supply-chain` through `SUPPLY_CHAIN_READ_CALLS` and `SUPPLY_CHAIN_READ_BOUND` (#96).
+# That last one was the lane admitted here with no bound of its own, because #91 was a change
+# about this allow-list and what a lane may call is a decision about the text an agent
+# executes. While it had none, the post-run audit's `gh` write-verb grep was the only thing
+# behind it, which is detection after the fact rather than a bound: it shows a write in a
+# transcript once the run is over. `UNBOUNDED_GITHUB_SIDE_LANES` below is empty as a result,
+# and stays in place so that the next lane admitted without a list is a line somebody writes.
 #
 # The lanes that are not here and should not be: `public/cloner` runs the stack on a stranger's
 # machine, `public/shipped-text` mutates a copy of the tree, and `unowned/assurance` mutates
@@ -221,8 +224,13 @@ GITHUB_SIDE_BY_DESIGN = {
 #
 # The third alternative is a phrase rather than a command, and it is here because a brief can
 # send an agent to the GitHub side without naming the tool it gets there with:
-# `unowned/supply-chain` asks for the **repository activity endpoint** and names no `gh` at
-# all. That is the honest shape of this marker and the reason it is not the whole control --
+# `unowned/supply-chain` asks for the **repository activity endpoint**, and named no `gh` at
+# all until #96 wrote it a read bound that lists one. It is not redundant now that it does.
+# What this alternative answers for is the *next* lane sent to GitHub in prose, and the control
+# for it in `tests/test_negative_controls.py` moved with this: mutating this lane's own bullet
+# no longer hides it, so what that control now widens is a lane with no GitHub business picking
+# the phrase up. That is the honest shape of this marker and the reason it is not the whole
+# control --
 # it reads what a brief *says*, so "with the GitHub CLI", a bare `api.github.com` URL or
 # "mirror-clone the remote" would each evade it. What it catches is a lane acquiring the
 # GitHub side in the spelling lanes actually use; a lane that reaches it some other way is
@@ -1218,13 +1226,12 @@ def _lanes_interpolating(source: str, constant: str) -> set[str]:
 PUBLICATION_READ_BOUND_LANES = {"gaps/publication", "fixes/publication"}
 
 #: The lanes sent to the GitHub side that carry no named read list, stated here rather than
-#: derived so that the next one is a line somebody writes on purpose. There is one, and it is
-#: open work: `unowned/supply-chain` is sent to the repository activity endpoint (#91) and its
-#: brief names neither a call list nor a closing prohibition, which is #96. Giving it one is a
-#: change to text an agent executes and belongs with that lane rather than with #95, so the pin
-#: records the gap instead of hiding it -- a *sixth* GitHub-side lane arriving without a list
-#: still turns this test red, which is the whole point of naming this one.
-UNBOUNDED_GITHUB_SIDE_LANES = {"unowned/supply-chain"}
+#: derived so that the next one is a line somebody writes on purpose. There are none:
+#: `unowned/supply-chain` was the one, admitted to the set by #91 and given a list of its own
+#: by #96, and the constant stays at empty rather than being deleted because what it is for is
+#: the *next* lane. A sixth GitHub-side lane arriving without a list turns this test red until
+#: someone either writes it a list or writes its name here with the argument for the exception.
+UNBOUNDED_GITHUB_SIDE_LANES: set[str] = set()
 
 #: Every GitHub-side read those lanes may make, spelled as the workflow spells them. This is an
 #: allow-list stated here rather than read back out of the workflow, for the reason AGENTS.md
@@ -1287,6 +1294,20 @@ OUTSIDERS_READ_CALLS = [
     "git clone --depth 1",
 ]
 
+#: Every GitHub-side read `unowned/supply-chain` may make (#96). Two entries, and what is off the
+#: list is the argued half. `gh api -X GET` is the lane's reason for being on the GitHub side at
+#: all: `repos/{owner}/{repo}/activity` is the endpoint its history bullet names, and a commit
+#: that endpoint lists which no ref names any more is served by SHA from the same API.
+#: `git ls-remote origin` is what tells such a SHA from one a ref still names. There is no
+#: `git clone --mirror` -- the widest read on any of these lists -- because a mirror clone
+#: fetches what a ref names and this lane is looking for what none does, and no `gh run` read,
+#: because its CI bullet reads `.github/` in the checkout and the Actions logs are the
+#: `publication` and `disclosure` lanes' surface.
+SUPPLY_CHAIN_READ_CALLS = [
+    "gh api -X GET",
+    "git ls-remote origin",
+]
+
 #: The one repository in the whole sweep that is not the repository the sweep resolved, named on
 #: the list rather than implied by a sentence. `public/outsiders` asks what rules bound the agents
 #: that read this tracker, and issuebot's are not answerable from this repository at all. Named
@@ -1296,13 +1317,15 @@ OUTSIDERS_OTHER_REPOS = ["jleavers/issuebot"]
 
 #: Which lane brief interpolates which read bound, and nothing else does. A bound is a block of
 #: shared text, so a lane acquires the whole of another lane's reach -- a shell pointed at that
-#: lane's surface -- by interpolating one name. The union of these is what the four GitHub-side
-#: lanes are, and that no lane appears twice is the other half: a lane with two lists has the
-#: wider of them, and the post-run audit cannot tell which read it was sent to make.
+#: lane's surface -- by interpolating one name. The union of these is `GITHUB_SIDE_BY_DESIGN`
+#: less `UNBOUNDED_GITHUB_SIDE_LANES`, which is checked below rather than counted here, and that
+#: no lane appears twice is the other half: a lane with two lists has the wider of them, and the
+#: post-run audit cannot tell which read it was sent to make.
 READ_BOUND_LANES = {
     "PUBLICATION_READ_BOUND": PUBLICATION_READ_BOUND_LANES,
     "DISCLOSURE_READ_BOUND": {"public/disclosure"},
     "OUTSIDERS_READ_BOUND": {"public/outsiders"},
+    "SUPPLY_CHAIN_READ_BOUND": {"unowned/supply-chain"},
 }
 
 
@@ -1447,9 +1470,9 @@ def test_the_public_sets_github_side_lanes_bound_and_record_their_reads() -> Non
     assert set(carried) | UNBOUNDED_GITHUB_SIDE_LANES == GITHUB_SIDE_BY_DESIGN, (
         f"the lanes with a named list of permitted reads are {sorted(carried)}, the lanes sent "
         f"to the GitHub side are {sorted(GITHUB_SIDE_BY_DESIGN)}, and the ones knowingly sent "
-        f"there without a list are {sorted(UNBOUNDED_GITHUB_SIDE_LANES)}. A lane sent there and "
-        f"on neither list bounds itself in whatever its own closing line happens to say, which "
-        f"is what #95 found the two `public` lanes doing"
+        f"there without a list are {sorted(UNBOUNDED_GITHUB_SIDE_LANES)}, which is empty since "
+        f"#96. A lane sent there and on neither list bounds itself in whatever its own closing "
+        f"line happens to say, which is what #95 found the two `public` lanes doing"
     )
     assert UNBOUNDED_GITHUB_SIDE_LANES <= GITHUB_SIDE_BY_DESIGN, (
         f"{sorted(UNBOUNDED_GITHUB_SIDE_LANES - GITHUB_SIDE_BY_DESIGN)} is excused from carrying "
@@ -1647,6 +1670,116 @@ def test_the_public_sets_github_side_lanes_bound_and_record_their_reads() -> Non
     )
 
 
+def test_the_supply_chain_lane_bounds_and_records_its_github_side_read() -> None:
+    """The last lane admitted to the GitHub side without a bound now carries one (#96).
+
+    #91 put `unowned/supply-chain` in `GITHUB_SIDE_BY_DESIGN`, because it really is sent to the
+    repository activity endpoint and four documents said four lanes went. It deliberately did
+    not give the lane a bound: a brief is text an agent executes, and #91 was a change about an
+    allow-list. So between the two, the post-run audit's write-verb grep was the only thing
+    behind this lane -- a check that reads a transcript once the run is over, while nothing in
+    the brief told the lane not to write.
+
+    Which lane carries this bound is pinned with the other three, in `READ_BOUND_LANES` above;
+    what is here is this lane's own half. Three things have to hold, and each is a way the
+    bound goes quiet: the list is what this module states and every entry on it reads, the lane
+    is told what the list is *not* about, and the `coverage` record says what it read.
+    """
+    source = WORKFLOW.read_text(encoding="utf-8")
+    briefs = _sweep_briefs(source)
+
+    calls = _const_body_list(source, "SUPPLY_CHAIN_READ_CALLS")
+    assert calls == SUPPLY_CHAIN_READ_CALLS, (
+        f"the reads `unowned/supply-chain` may make are {calls}, not {SUPPLY_CHAIN_READ_CALLS}. "
+        f"Widening that list is a decision: say in the same change what an injected instruction "
+        f"could reach with the call being added -- the lane's shell holds the operator's own `gh`"
+    )
+    _assert_read_only_on_their_face(calls, "unowned/supply-chain")
+
+    # And the lane is handed the list, not only the constant: what the agent reads is what the
+    # interpolations render to.
+    rendered = re.sub(r"\s+", " ", briefs["unowned/supply-chain"])
+    for call in calls:
+        assert call in rendered, f"`unowned/supply-chain`'s brief does not name {call!r}"
+
+    bound = _const_body(source, "SUPPLY_CHAIN_READ_BOUND")
+    flat_bound = re.sub(r"\s+", " ", bound)
+    # The repository the sweep resolved, never a literal -- a lane sent at a repository this run
+    # did not resolve audits a different project while reporting on this one.
+    assert "${repo}" in bound, (
+        "SUPPLY_CHAIN_READ_BOUND does not name the repository the sweep resolved, so what it "
+        "bounds is `gh`'s idea of the current repository rather than the tree being audited"
+    )
+    literals = re.findall(r"repos/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)", bound)
+    assert not literals, f"SUPPLY_CHAIN_READ_BOUND names the repository literal(s) {literals!r}"
+
+    # This lane is the one whose GitHub-side list covers a minority of what its brief asks for:
+    # the other three bullets resolve a pip closure in a scratch venv, look advisories up on the
+    # web, and read issuebot's tracked source out of a checkout on this host. So the bound has to
+    # say what it is not about. Without that, "these are the only calls you may make" reads as
+    # cancelling three quarters of the lane -- and a bound an agent has to reinterpret to do its
+    # work is one it will reinterpret the other way too.
+    assert "and nothing else in this lane" in flat_bound, (
+        "SUPPLY_CHAIN_READ_BOUND does not say which of the lane's work it is not about, so it "
+        "reads as forbidding the scratch venv, `pip-audit` and the reads of issuebot's tracked "
+        "source that the same brief requires"
+    )
+    # The one call that would reach this lane's own quarry and is deliberately off the list. A
+    # mirror clone fetches what a ref names; what this lane is after is what no ref names, so the
+    # widest read on any of these lists would not even answer its question.
+    # Matched with the backtick escapes the workflow's source carries, since this reads the
+    # source and not the rendered prompt.
+    assert r"There is no \`git clone --mirror\` on this list" in flat_bound, (
+        "SUPPLY_CHAIN_READ_BOUND does not say that the mirror clone on two of the other lanes' "
+        "lists is off this one, which is the reach a lane picks up by reading across briefs"
+    )
+    assert "git clone" not in " ".join(calls), (
+        "a clone is on `unowned/supply-chain`'s list; the object this lane is looking for is the "
+        "one no ref names, which a clone does not fetch"
+    )
+
+    # The coverage record is the half an operator can check: a bound nobody can audit after the
+    # fact is a sentence in a prompt.
+    assert "coverage" in flat_bound and "counts, not adjectives" in flat_bound, (
+        "SUPPLY_CHAIN_READ_BOUND does not require counts in `coverage`, which is what makes an "
+        "empty result mean `clean` here rather than `never looked`"
+    )
+    assert "unreached" in flat_bound, (
+        "SUPPLY_CHAIN_READ_BOUND does not say what to do with a surface the list does not cover, "
+        "which leaves making the call the obvious thing to do"
+    )
+    for surface in ("activity events", "retention", "pushes", "commits", "refs"):
+        assert surface in flat_bound, (
+            f"the coverage record `unowned/supply-chain` is asked for does not name {surface!r}"
+        )
+
+    # And the operator's copy of the list is the lane's copy. SKILL.md is where the decision is
+    # recorded for whoever runs the sweep; a list that drifts from the workflow's is a bound the
+    # operator would audit the transcripts against and find nothing wrong with. Read between
+    # anchors rather than whole, as the other two records are: the `unowned` set's lane table
+    # names this lane far below, and a whole-file search would let that entry answer for a
+    # deleted argument here.
+    skill = SKILL.read_text(encoding="utf-8")
+    start = "**`unowned/supply-chain` carries one too (#96)"
+    assert start in skill, "SKILL.md has no paragraph recording `unowned/supply-chain`'s list"
+    decision = skill[skill.index(start) :]
+    decision = decision[: decision.index("\n\nAfter a run")]
+    flat = re.sub(r"\s+", " ", decision)
+    for call in calls:
+        assert call in flat, (
+            f"SKILL.md's record of `unowned/supply-chain`'s list does not name {call!r}. The "
+            f"operator audits the transcripts against this copy, so a copy wider than the "
+            f"workflow's is an audit that reads a call as permitted and moves on"
+        )
+    assert "coverage" in flat, (
+        "SKILL.md's record of the decision does not say that the lane's coverage record is what "
+        "says what it read"
+    )
+    assert "git clone --mirror" in flat, (
+        "SKILL.md's record does not say that the mirror clone the other lanes may make is off "
+        "this lane's list, which is the entry an operator would otherwise read across from them"
+    )
+
 def test_the_post_run_audit_looks_for_what_a_stage_still_holds() -> None:
     """Scoping is not the whole control, so the audit covers what the profiles cannot.
 
@@ -1654,7 +1787,7 @@ def test_the_post_run_audit_looks_for_what_a_stage_still_holds() -> None:
     every stage that holds one -- the lanes `GITHUB_SIDE_BY_DESIGN` names, which are sent
     to the GitHub side on purpose, included. SKILL.md's audit is what stands behind those, so
     it names them, and its second pass has to be able to print every subcommand the lanes'
-    own read lists permit (#95).
+    own read lists permit (#95, #96).
     """
     skill = SKILL.read_text(encoding="utf-8")
 
@@ -1690,13 +1823,16 @@ def test_the_post_run_audit_looks_for_what_a_stage_still_holds() -> None:
     )
     # The second pass reaches every `gh` surface the bounded lanes read, by subcommand, because
     # a pass that named `api` alone would leave `gh run view --log` -- the Actions logs, the
-    # surface the bound exists for -- out of what the operator is shown. Derived from the four
+    # surface the bound exists for -- out of what the operator is shown. Derived from the five
     # lists rather than listed here, because that is the set the question is about: `gh repo` and
     # `gh ruleset` arrived with `public/outsiders` (#95), and a probe list written out by hand
     # goes stale exactly when a lane gains a surface, which is when it matters.
     subcommands = {
         call.split()[1]
-        for call in PUBLICATION_READ_CALLS + DISCLOSURE_READ_CALLS + OUTSIDERS_READ_CALLS
+        for call in PUBLICATION_READ_CALLS
+        + DISCLOSURE_READ_CALLS
+        + OUTSIDERS_READ_CALLS
+        + SUPPLY_CHAIN_READ_CALLS
     }
     for probe in sorted(subcommands) + ["gh ", "uniq"]:
         assert probe in read_passes[0], (
