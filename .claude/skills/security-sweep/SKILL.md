@@ -60,10 +60,13 @@ three different reasons that are worth keeping apart:
 
 All five hold a shell, and the post-run audit below is what stands behind them — do not read
 the dedupe paragraph above as covering them. Four of the five also bound themselves in the
-brief: the two `publication` lanes through their named read-only call list (#85), and both
-`public` lanes in a closing line that forbids every write verb and `-X`/`--method`.
-`supply-chain` carries no such line, so for that lane the audit is not a second check but the
-only one — read its transcript accordingly until the brief says otherwise. `public/cloner` and `public/shipped-text` send an
+brief, each through a named read-only call list of its own: the two `publication` lanes
+through `PUBLICATION_READ_BOUND` (#85), and the two `public` lanes through
+`DISCLOSURE_READ_BOUND` and `OUTSIDERS_READ_BOUND` (#95), which replaced a closing line of
+each brief's own prose. The bound is what a brief interpolates; the `*_READ_CALLS` array
+beside each one is the list it renders. `supply-chain` carries no such list, so for that lane the audit is not
+a second check but the only one — read its transcript accordingly until the brief says
+otherwise. `public/cloner` and `public/shipped-text` send an
 agent to no GitHub surface, and neither does `unowned/assurance`: `shipped-text` and
 `assurance` mutate a copy of this tree, and `cloner` runs the stack on a stranger's machine. It
 does hold the web, for Docker's and each CLI vendor's documentation, so what bounds it there is
@@ -106,6 +109,46 @@ many issues, PR threads, comments, review comments and Actions runs, and how man
 commits. Widening that list is a decision, and `tests/test_agent_tooling_context.py` stays
 red until it is made on purpose.
 
+**The two `public` lanes carry a named list of their own (#95).** Each used to bound itself in a
+closing line of prose — "every `gh` call in this lane reads", a handful of forbidden verbs — and
+that was not enough three ways over. It was a deny-list, so the verb somebody adds is the sixth
+one it does not name. It said "never pass `-X` or `--method` to `gh api`", which forbids `-X GET`
+and so asks for the bare `gh api` that #85 was corrected to forbid. And nothing pinned it, so a
+widening turned no test red and the per-lane question in the audit below had only that prose to
+be measured against. So each of them now names its reads the way the `publication` lanes do,
+with a `coverage` record that says what it read, and one list per lane rather than one shared
+one — a bound is a block of text, and a lane that interpolates another's name acquires the whole
+of that lane's reach.
+
+`public/disclosure` reads the same corpus as the `publication` lanes, so its list is the same
+list: `gh issue list` and `gh issue view`, `gh pr list` and `gh pr view`, `gh run list`,
+`gh run view --log`, `gh api -X GET`, and `git ls-remote origin` and `git clone --mirror` for
+the refs GitHub serves that a checkout does not hold — against the repository the sweep resolved
+and no other. An artifact's *contents* are the one surface it is told to record as unreached
+rather than to fetch.
+
+`public/outsiders` reads settings rather than text, so its list is its own: `gh repo view`,
+`gh api -X GET`, `gh ruleset list` and `gh ruleset view`, `gh secret list`,
+`gh variable list --json name`, and `git clone --depth 1`. **It is the one lane in the sweep
+that reads a second repository, and its list names which**: `jleavers/issuebot`, issuebot's
+published repository, for `configs/WORKFLOW.md` and the files it names and nothing else —
+because the question it asks about the agents that read this tracker cannot be answered from the
+swept repository at all. Nothing of a deployment: no `.env`, no untracked overlay, no running
+process, no path on this host. A third repository is not on the list, and neither is a listing
+of an account's repositories — whoever runs this sweep would be listing their own.
+
+**One entry on that list is spelled the way it is for the same reason `gh api` names its
+method.** The closing line this bound replaced said "never fetch a secret's or a variable's
+value", and a bare `gh variable list` fetches one: a secret's value is served to nobody, but a
+*variable's* is served to anyone who can read a public repository, and both `gh variable list`
+and `GET /repos/{owner}/{repo}/actions/variables` return it beside the name. So the entry is
+`gh variable list --json name`, which cannot return one, and the bound says in as many words
+that neither the bare form nor that endpoint through `gh api -X GET` is how this lane enumerates
+them. The prohibition is on the fetch and not only on what the lane writes down, because the
+value would otherwise be in the lane's context and in this run's transcripts whatever the
+finding said. A webhook URL is the same shape: the host and the event list, never the rest of
+the URL.
+
 After a run, audit what the agents actually ran before presenting: the per-agent transcripts sit
 beside the workflow's `journal.jsonl`, in the directory the task notification names. Look for:
 
@@ -118,13 +161,15 @@ beside the workflow's `journal.jsonl`, in the directory the task notification na
   the run has any business writing to the tracker.
 - **what a lane read on the GitHub side**, which is the other half of that same surface: for
   a lane sent there the read *is* the exposure, and no bullet above looks at one. The question
-  is per lane, because the briefs differ: every GitHub-side call has to be one the calling
-  lane's own brief names, and for the two `publication` lanes that is the bounded list above,
-  on the repository the sweep resolved. A `gh` read from a stage whose brief sends it nowhere
-  near GitHub is one that went outside its brief, whether or not it was a write. A path
-  naming another repository is the same question and not always the same answer — the `public`
-  set's `outsiders` lane is told to read `jleavers/issuebot`, and a `publication` lane is told
-  to read nothing but the swept repository.
+  is per lane, because the lists differ: every GitHub-side call has to be one the calling lane's
+  own brief names, and four of the five lanes sent there name theirs above --
+  `unowned/supply-chain` is the one that names none, so for that lane this bullet is the whole
+  of the answer rather than a cross-check. A `gh` read from a
+  stage whose brief sends it nowhere near GitHub is one that went outside its brief, whether or
+  not it was a write. A path naming another repository is the same question and not the same
+  answer — `jleavers/issuebot` is on `public/outsiders`' own list and on no other lane's, so
+  that path from that lane is the read it was sent to make and from any other lane is a lane
+  that wandered.
 - a `WebFetch`, `curl`, `wget` or `nc` to anything that is not loopback, and any call at all to
   `claude.ai` or `chatgpt.com`
 - a call to an MCP connector. The profiles grant none, so one in a transcript means a stage did
@@ -144,11 +189,11 @@ alternation that is allowed to match forty times an audit does not belong in a g
 hit is a thing to explain.
 
 ```bash
-grep -ohE '(gh (api|issue|pr|run|search|release|workflow|cache|secret|variable)|git (ls-remote|clone|fetch|push))( [-a-zA-Z0-9@:/{}._]+)*' <transcript-dir>/*.jsonl | sort | uniq -c | sort -rn | head -40
+grep -ohE '(gh (api|issue|pr|repo|ruleset|run|search|release|workflow|cache|secret|variable)|git (ls-remote|clone|fetch|push))( [-a-zA-Z0-9@:/{}._]+)*' <transcript-dir>/*.jsonl | sort | uniq -c | sort -rn | head -40
 ```
 
-Read it against the two lanes' own `coverage` records, which are required to say what they
-read. A call in a transcript that no record accounts for, and a record that claims more than
+Read it against the `coverage` records of the four lanes that carry a read list, which are
+required to say what each of them read. A call in a transcript that no record accounts for, and a record that claims more than
 the transcripts show, are the two halves of one question: whether what a lane says it examined
 is what it examined.
 

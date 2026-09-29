@@ -287,14 +287,21 @@ What the repository does control is the text itself:
   `unowned/supply-chain`. That is the shape an exception takes, and it is
   written down beside the post-run audit rather than left implicit. What bounds
   an exception like that is what the brief says and what the audit checks, and
-  it is per lane: the `publication` lanes may make only the read-only calls
-  their brief lists, against the repository the sweep resolved, with their
-  `coverage` record saying what they read (#85); the two `public` lanes forbid
-  every write verb in a closing line of their own; `unowned/supply-chain` has
-  no such bound written into it, so the audit is the only thing behind that
-  one. A lane admitted to the list without a bound of its own is a gap to close
-  rather than a precedent. Read the membership from the allow-list rather than
-  from a count restated here: #91 is what happened when the workflow gained
+  it is per lane: four of those lanes may make only the read-only calls their
+  own brief names, with their `coverage` record saying what they read — the
+  `publication` lanes through `PUBLICATION_READ_BOUND` (#85) and the two
+  `public` lanes through a bound each (#95), which replaced a closing line of
+  prose that forbade five write verbs and so left the sixth. A list per lane,
+  because a bound is a block of text and a lane that interpolates another's
+  name acquires the whole of that lane's reach. "Against the repository the
+  sweep resolved" is the rule for three of them and not a fourth:
+  `public/outsiders` reads `jleavers/issuebot` too, so its own list names that
+  second repository, which is what lets the audit tell that read from a lane
+  that wandered. `unowned/supply-chain` has no such list written into it, so
+  the audit is the only thing behind that one (#96). A lane admitted to the
+  list without a bound of its own is a gap to close rather than a precedent.
+  Read the membership from the allow-list rather than from a count restated
+  here: #91 is what happened when the workflow gained
   lanes and none of the four statements of that list did.
   This repository's issue forms are the rule facing outward: no field a
   stranger fills in is named, or rendered, as an executable validation section,

@@ -68,13 +68,17 @@ really launched with. That first test also requires both documents to name every
 set, so a new one is a change to both tests and to both documents rather than to the tests
 alone (#91).
 
-A tool list still cannot say "read-only `gh`" for the two `publication` lanes, so their brief
-says it instead (#85): the calls they may make are a named list in the workflow, read-only and
-on the repository the sweep resolved, and what they read goes in their `coverage` record. Prose
-is what that bound is made of, which is why the audit has a second pass that reads the record
-against the transcripts — the profile is not what makes it true. The two `public` lanes bound
-themselves the same way, in their own closing line. `unowned/supply-chain` carries no such
-bound at all, so for that one the audit is not a second pass but the only one.
+A tool list still cannot say "read-only `gh`" for any of them, so four of the five say it in the
+brief instead (#85, #95): the calls a lane may make are a named list in the workflow, read-only
+on their face, and what it read goes in its `coverage` record. One list per lane rather than one
+shared block, because a bound is a block of text and a lane that interpolates another's name
+acquires the whole of that lane's reach. `public/outsiders` is the one lane sent to a second
+repository, so `jleavers/issuebot` is named on its list and on no other's, which
+`tests/test_agent_tooling_context.py` pins — that is what lets the audit tell a sent read from a
+wandering one. Prose is what all of this is made of, which is why the audit has a second pass
+that reads the record against the transcripts: the profile is not what makes it true.
+`unowned/supply-chain` carries no such list at all, so for that one the audit is not a second
+pass but the only one.
 
 Which profile a lane gets is the `web` flag on the lane in the workflow, and the reason is a
 comment beside it.

@@ -67,7 +67,9 @@ const STRANGER_ITEM = {
 // `tests/test_agent_tooling_context.py`'s `GITHUB_SIDE_BY_DESIGN` say the same, beside the
 // post-run audit that stands behind them; this copy is the one that reads the prompt a stage
 // is really launched with, rather than the workflow's source, so the four have to agree here
-// too (#91).
+// too (#91). Every key is listed, `public` included, and the list is checked against the
+// workflow's own below: a set this table has no key for is a set nobody asks the question
+// of. Both `public` lanes now carry a named read list of their own as well (#95).
 const GITHUB_SIDE_BY_DESIGN = {
   baseline: [],
   gaps: ["scan:publication"],
@@ -96,6 +98,18 @@ const PROFILE_FOR = {
   "dedupe-report": "sweep-report",
 };
 const LANE_PROFILES = new Set(["sweep-lane", "sweep-lane-web"]);
+
+// The lane sets the workflow defines, off `LANE_SETS` itself. `compileWorkflow` cannot be asked:
+// the script reads `args.lanes` at the top and throws on a name it does not know, so it never
+// gets to a point where the object could be inspected from outside.
+function laneSetNames() {
+  const source = fs.readFileSync(WORKFLOW, "utf8");
+  const body = /const LANE_SETS = \{([^}]*)\}/.exec(source);
+  assert.ok(body, "no LANE_SETS object in the workflow");
+  const names = [...body[1].matchAll(/^\s*(\w+):/gm)].map((match) => match[1]);
+  assert.ok(names.length > 0, "no lane sets parsed out of LANE_SETS");
+  return names;
+}
 
 function compileWorkflow() {
   const source = fs.readFileSync(WORKFLOW, "utf8").replace("export const meta", "const meta");
@@ -416,10 +430,7 @@ test("the dedupe pass is handed the tracker rather than sent to fetch it", async
   // missing from the map above and from the literal array this replaces, so the two lanes #89
   // added were never asked the fenced half of this question. A hand-kept list is how that
   // happens, so the set of keys is asserted against the workflow's own before it is used.
-  const defined = [...fs.readFileSync(WORKFLOW, "utf8").matchAll(/\n  (\w+): \w+_LANES,/g)].map(
-    ([, name]) => name,
-  );
-  assert.ok(defined.length, "no lane sets found; has LANE_SETS moved?");
+  const defined = laneSetNames();
   assert.deepEqual(
     Object.keys(GITHUB_SIDE_BY_DESIGN).sort(),
     [...defined].sort(),
@@ -478,7 +489,57 @@ const PUBLICATION_READ_CALLS = [
   "git clone --mirror",
 ];
 
-// The sentence the bound opens with, which is how a prompt is asked whether it carries it.
+// The `public` set's two GitHub-side lanes got the same treatment for the same reasons (#95),
+// and a list each rather than a shared one: a bound is a block of text, so a lane that
+// interpolates another's name acquires the whole of that lane's reach. `disclosure` is sent to
+// the same corpus as the `publication` lanes and so carries the same entries; `outsiders` reads
+// repository state, which is in no checkout, and is the one lane in the sweep sent to a second
+// repository. Spelled here rather than read out of the workflow, for the same reason as above.
+const DISCLOSURE_READ_CALLS = [
+  "gh issue list",
+  "gh issue view",
+  "gh pr list",
+  "gh pr view",
+  "gh run list",
+  "gh run view --log",
+  "gh api -X GET",
+  "git ls-remote origin",
+  "git clone --mirror",
+];
+
+const OUTSIDERS_READ_CALLS = [
+  "gh repo view",
+  "gh api -X GET",
+  "gh ruleset list",
+  "gh ruleset view",
+  "gh secret list",
+  "gh variable list --json name",
+  "git clone --depth 1",
+];
+
+// The one repository in the sweep that is not the one the sweep resolved, named on the list so
+// the post-run audit can tell the read `outsiders` was sent to make from a lane that wandered.
+const OUTSIDERS_OTHER_REPOS = ["jleavers/issuebot"];
+
+// Every prompt that is handed a named list of GitHub-side reads, and which list. The keys are
+// `<lane set>/<agent label>`, and what this table pins is the rendering: a prompt carrying a
+// list that is not here is a lane that acquired another's reach, and a prompt here carrying a
+// different list from the one stated is a bound that changed under it.
+//
+// It does *not* answer which GitHub-side lanes have a list at all -- `unowned/scan:supply-chain`
+// is in `GITHUB_SIDE_BY_DESIGN` above and absent here, on purpose (#96), and this file would
+// not notice either way. That relation is pinned in `tests/test_agent_tooling_context.py`,
+// against the workflow's source, where the one excused lane is named rather than derived. It
+// is not restated here because a third hand-kept copy of a list is what #91 was.
+const READ_LISTS = {
+  "gaps/scan:publication": PUBLICATION_READ_CALLS,
+  "fixes/scan:publication": PUBLICATION_READ_CALLS,
+  "public/scan:disclosure": DISCLOSURE_READ_CALLS,
+  "public/scan:outsiders": OUTSIDERS_READ_CALLS,
+};
+
+// The sentence every one of those bounds opens with, which is how a prompt is asked whether it
+// carries one at all.
 const BOUND_MARKER = "these are the only calls you may make";
 
 test("the publication lane is told which GitHub-side calls it may make, and to record them", async () => {
@@ -531,22 +592,142 @@ test("the publication lane is told which GitHub-side calls it may make, and to r
   }
 });
 
-test("no other lane is handed the publication lanes' GitHub-side reach", async () => {
-  // Every lane set, `public` included: the bound is a block of shared text in the workflow, so
-  // a lane acquires the whole of it -- a shell pointed at the tracker and the run logs -- by
-  // interpolating one name. Which prompts carry it is the question that answers for that.
-  const carried = [];
-  for (const lanes of ["baseline", "gaps", "fixes", "unowned", "public"]) {
+test("each lane with a GitHub-side read list is handed its own and no other's", async () => {
+  // Every lane set: a bound is a block of shared text in the workflow, so a lane acquires the
+  // whole of one -- a shell pointed at that lane's whole surface -- by interpolating one name.
+  // Which prompts carry one, and which list each carries, is the question that answers for that.
+  // Keyed on the rendered call list rather than on the constant's name, because what bounds an
+  // agent is the text it was handed.
+  const carried = {};
+  for (const lanes of Object.keys(GITHUB_SIDE_BY_DESIGN)) {
     const { calls } = await run({ lanes, tracker: [MAINTAINER_ITEM] });
     for (const { prompt, opts } of calls) {
-      if (prompt.includes(BOUND_MARKER)) carried.push(`${lanes}/${opts.label}`);
+      if (!prompt.includes(BOUND_MARKER)) continue;
+      const { lines, inside } = fenceMap(prompt);
+      const listed = lines
+        .filter((line, index) => !inside[index] && /^- (gh|git) /.test(line))
+        .map((line) => line.slice(2));
+      carried[`${lanes}/${opts.label}`] = listed;
     }
   }
   assert.deepEqual(
-    carried.sort(),
-    ["fixes/scan:publication", "gaps/scan:publication"],
-    "the prompts carrying the bounded-read brief are not the two publication lanes",
+    Object.keys(carried).sort(),
+    Object.keys(READ_LISTS).sort(),
+    "the prompts handed a named list of GitHub-side reads are not the ones that say they are",
   );
+  for (const [name, listed] of Object.entries(carried)) {
+    assert.deepEqual(
+      listed,
+      READ_LISTS[name],
+      `${name} is handed a different list of reads from the one stated for it here`,
+    );
+  }
+});
+
+test("the public set's two GitHub-side lanes are told what they may read, and to record it", async () => {
+  // #85 bounded the `publication` lanes; #95 asked the same of these two and got the same
+  // answer. Each replaced a closing line of prose that forbade five verbs and, in as many
+  // words, `-X GET` -- which leaves the bare `gh api` that is a `POST` the moment a field is
+  // added, and is the shape #85 was corrected to forbid.
+  const { calls } = await run({ lanes: "public", tracker: [MAINTAINER_ITEM] });
+
+  for (const [key, expected] of [
+    ["disclosure", DISCLOSURE_READ_CALLS],
+    ["outsiders", OUTSIDERS_READ_CALLS],
+  ]) {
+    const scan = calls.find(({ opts }) => opts.label === `scan:${key}`);
+    assert.ok(scan, `the ${key} lane did not run`);
+
+    // Outside the fence: this is the prompt's own voice, and a bound that arrived as relayed
+    // data would be something the lane is told to treat as data rather than to obey.
+    const { lines, inside } = fenceMap(scan.prompt);
+    const own = lines.filter((_, index) => !inside[index]).join("\n");
+    const flat = own.replace(/\s+/g, " ");
+
+    assert.ok(flat.includes(BOUND_MARKER), `${key}: the lane is handed no bound on its reads`);
+    for (const call of expected) {
+      assert.ok(own.includes(`- ${call}`), `${key}: the lane is not told it may run \`${call}\``);
+    }
+    // `gh api`'s method, rendered. The prose the lane reads is what bounds it, and the whole
+    // lesson of #85 is that `gh api` with no method is a write as soon as a field is added.
+    assert.ok(
+      flat.includes("`gh api` says `-X GET` every time"),
+      `${key}: the lane is not told which method \`gh api\` may use`,
+    );
+    // And the record that makes the bound auditable after the run.
+    assert.match(
+      flat,
+      /coverage` is what says what you read/,
+      `${key}: the lane is not asked to record what it read`,
+    );
+    assert.ok(
+      flat.includes("counts, not adjectives"),
+      `${key}: the coverage record the lane is asked for does not have to carry counts`,
+    );
+  }
+
+  // The repository the launching session resolved, rendered -- not `gh`'s idea of the current
+  // directory, and not a literal. `run()` passes `jleavers/codervis` as `args.repo`.
+  const disclosure = calls
+    .find(({ opts }) => opts.label === "scan:disclosure")
+    .prompt.replace(/\s+/g, " ");
+  assert.ok(
+    disclosure.includes("against jleavers/codervis and no other repository"),
+    "disclosure: the bound does not name the repository the sweep resolved",
+  );
+  for (const surface of [
+    "refs and commits",
+    "issues",
+    "PR threads",
+    "comments",
+    "review comments",
+    "Actions runs",
+    "artifacts",
+  ]) {
+    assert.ok(
+      disclosure.includes(surface),
+      `disclosure: the coverage record the lane is asked for does not name ${surface}`,
+    );
+  }
+
+  // `outsiders` is the one lane sent to a second repository, and the rendered prompt is where
+  // that has to be visible: a name in a constant the lane is never handed bounds nothing.
+  const outsiders = calls
+    .find(({ opts }) => opts.label === "scan:outsiders")
+    .prompt.replace(/\s+/g, " ");
+  assert.ok(
+    outsiders.includes("jleavers/codervis -- the repository this sweep resolved"),
+    "outsiders: the bound does not name the repository the sweep resolved",
+  );
+  for (const other of OUTSIDERS_OTHER_REPOS) {
+    assert.ok(outsiders.includes(other), `outsiders: the bound does not name ${other}`);
+  }
+  assert.ok(
+    outsiders.includes("No third repository"),
+    "outsiders: the bound names a second repository without closing the list at two",
+  );
+  assert.ok(
+    outsiders.includes("gh variable list --json name") &&
+      outsiders.includes("never the bare") &&
+      outsiders.includes("endpoint through"),
+    "outsiders: the lane is not told which call enumerates Actions variables without their " +
+      "values, or is not told the other two ways to the same value are closed",
+  );
+  for (const surface of [
+    "repository object",
+    "Actions permissions",
+    "rulesets",
+    "collaborators",
+    "deploy keys",
+    "webhooks",
+    "secret and variable names",
+    "private vulnerability reporting",
+  ]) {
+    assert.ok(
+      outsiders.includes(surface),
+      `outsiders: the coverage record the lane is asked for does not name ${surface}`,
+    );
+  }
 });
 
 test("only maintainer-authored tracker items reach the dedupe pass", async () => {

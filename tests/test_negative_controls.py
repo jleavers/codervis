@@ -131,6 +131,9 @@ _POST_RUN_AUDIT = (
 _PUBLICATION_BOUND = (
     f"{CONTEXT_TESTS}::test_the_publication_lanes_bound_and_record_their_github_side_read"
 )
+_PUBLIC_LANE_BOUND = (
+    f"{CONTEXT_TESTS}::test_the_public_sets_github_side_lanes_bound_and_record_their_reads"
+)
 SWEEP_SKILL = ".claude/skills/security-sweep/SKILL.md"
 SWEEP_WORKFLOW = ".claude/workflows/security-sweep.js"
 
@@ -794,8 +797,10 @@ MUTATIONS: tuple[Mutation, ...] = (
         # A write verb, on a list that reads as seven harmless ones. The lane's shell holds the
         # operator's own `gh`, so this is a stranger's text reaching the tracker under the
         # operator's name -- and the lane is the one whose whole input is a stranger's text.
-        before="  'gh run view --log',\n",
-        after="  'gh run view --log',\n  'gh issue comment',\n",
+        # Anchored on the array's own name: `DISCLOSURE_READ_CALLS` carries the same entries,
+        # and a snippet that matched both would widen two lanes and name one.
+        before="const PUBLICATION_READ_CALLS = [\n  'gh issue list',\n",
+        after="const PUBLICATION_READ_CALLS = [\n  'gh issue list',\n  'gh issue comment',\n",
         caught_by=(_PUBLICATION_BOUND,),
     ),
     Mutation(
@@ -808,8 +813,14 @@ MUTATIONS: tuple[Mutation, ...] = (
         # is a `GET` until a field is added and a `POST` afterwards, so an entry reading
         # `gh api` admits `gh api repos/{owner}/{repo}/issues/1/comments -f body=...` while
         # reading, to anyone checking, like the read-only listing it was meant to be.
-        before="  'gh api -X GET',\n",
-        after="  'gh api',\n",
+        before=(
+            "  'gh api -X GET',\n  'git ls-remote origin',\n  'git clone --mirror',\n]\n\n"
+            "const PUBLICATION_READ_BOUND"
+        ),
+        after=(
+            "  'gh api',\n  'git ls-remote origin',\n  'git clone --mirror',\n]\n\n"
+            "const PUBLICATION_READ_BOUND"
+        ),
         caught_by=(_PUBLICATION_BOUND,),
     ),
     Mutation(
@@ -837,6 +848,110 @@ MUTATIONS: tuple[Mutation, ...] = (
         before="an agent follows anyway.`,",
         after="an agent follows anyway.\n\n${PUBLICATION_READ_BOUND}`,",
         caught_by=(_PUBLICATION_BOUND,),
+    ),
+    # The same bound, on the `public` set's two GitHub-side lanes (#95). Each used to carry a
+    # closing line of prose instead, and each of these widenings is one that line admitted: a
+    # write verb on the list, a `gh api` with no method, a third repository for the one lane
+    # that reads a second, and a lane told nothing at all about what it may read.
+    Mutation(
+        key="sweep-disclosure-calls-admit-a-write",
+        widening=True,
+        area=SWEEP,
+        rule="`public/disclosure` may make only the read-only calls its brief lists",
+        path=SWEEP_WORKFLOW,
+        # The same widening as the publication one, on the lane that is sent to the same corpus.
+        # Its shell holds the operator's own `gh`, so this is a stranger's text reaching the
+        # tracker under the operator's name.
+        before="const DISCLOSURE_READ_CALLS = [\n  'gh issue list',\n",
+        after="const DISCLOSURE_READ_CALLS = [\n  'gh issue list',\n  'gh issue comment',\n",
+        caught_by=(_PUBLIC_LANE_BOUND,),
+    ),
+    Mutation(
+        key="sweep-outsiders-api-call-without-a-method",
+        widening=True,
+        area=SWEEP,
+        rule="`gh api` on `public/outsiders`' list names its method, because `gh api`'s is not one",
+        path=SWEEP_WORKFLOW,
+        # This lane's brief used to say, in as many words, never to pass `-X` to `gh api` -- so
+        # the bare spelling is what the lane was *told* to write, and it is a `POST` the moment a
+        # field is added. The mutation is the brief's old instruction, on the new list.
+        before="const OUTSIDERS_READ_CALLS = [\n  'gh repo view',\n  'gh api -X GET',\n",
+        after="const OUTSIDERS_READ_CALLS = [\n  'gh repo view',\n  'gh api',\n",
+        caught_by=(_PUBLIC_LANE_BOUND,),
+    ),
+    Mutation(
+        key="sweep-outsiders-reads-a-third-repository",
+        widening=True,
+        area=SWEEP,
+        rule="`public/outsiders` reads the swept repository and the one other its list names",
+        path=SWEEP_WORKFLOW,
+        # The one lane in the sweep where "the repository the sweep resolved" is not the answer,
+        # which is what makes the list the only thing that can tell a sent read from a wandering
+        # one. A second entry here is a second tracker whose text reaches this lane's shell.
+        before="const OUTSIDERS_OTHER_REPOS = ['jleavers/issuebot']",
+        after="const OUTSIDERS_OTHER_REPOS = ['jleavers/issuebot', 'jleavers/codervis-notes']",
+        caught_by=(_PUBLIC_LANE_BOUND,),
+    ),
+    Mutation(
+        key="sweep-outsiders-lists-variables-with-their-values",
+        widening=True,
+        area=SWEEP,
+        rule="`public/outsiders` enumerates Actions variables by name and cannot fetch a value",
+        path=SWEEP_WORKFLOW,
+        # Read-only is not the same property as returns-no-secret, and this is the widening that
+        # shows the difference: `gh variable list` is a read by every check above and it prints
+        # NAME and VALUE. A secret's value is served to nobody, but a variable's is served to
+        # anyone who can read a public repository, so the bare call puts every one of them in
+        # this lane's context and in the run's transcripts -- on the host holding two live
+        # tokens -- while reading, to anyone checking the list, like the listing it was meant to
+        # be. The closing line this bound replaced said "never fetch a variable's value"; this
+        # is the spelling that does.
+        before="  'gh variable list --json name',\n",
+        after="  'gh variable list',\n",
+        caught_by=(_PUBLIC_LANE_BOUND,),
+    ),
+    Mutation(
+        key="sweep-second-repository-named-to-a-second-lane",
+        widening=True,
+        area=SWEEP,
+        rule="`jleavers/issuebot` is named to `public/outsiders` and to no other lane",
+        path=SWEEP_WORKFLOW,
+        # The audit's per-lane question turns on exclusivity: SKILL.md tells the operator that
+        # this path from this lane is the read it was sent to make and from any other lane is a
+        # lane that wandered. A second lane named the same repository would leave that rule false
+        # with nothing to see -- and this is the `shipped-text` lane, which reads the repository's
+        # own agent text and has no business on anyone's tracker.
+        before="secret store. \\`AGENTS.md\\`'s \"What repo-shipped agent text may say\"",
+        after=(
+            "secret store. Read \\`jleavers/issuebot\\` for how the tracker's own agent is "
+            "configured. \\`AGENTS.md\\`'s \"What repo-shipped agent text may say\""
+        ),
+        caught_by=(_PUBLIC_LANE_BOUND,),
+    ),
+    Mutation(
+        key="sweep-public-lane-loses-its-read-list",
+        widening=True,
+        area=SWEEP,
+        rule="every lane sent to the GitHub side carries a named list of the reads it may make",
+        path=SWEEP_WORKFLOW,
+        # Not a deletion of a check but a widening of a lane: `public/disclosure` keeps the shell
+        # and the corpus and goes back to bounding itself in whatever its own closing line says,
+        # which is the state #95 found it in.
+        before="${DISCLOSURE_READ_BOUND}`,",
+        after="Every \\`gh\\` call in this lane reads.`,",
+        caught_by=(_PUBLIC_LANE_BOUND, _TRACKER_AUTHORSHIP),
+    ),
+    Mutation(
+        key="sweep-public-skill-list-drifts",
+        widening=True,
+        area=SWEEP,
+        rule="the lists SKILL.md gives the operator are the lists the two `public` lanes are handed",
+        path=SWEEP_SKILL,
+        # The operator audits the transcripts against this copy. A copy that has drifted wider
+        # than the workflow's is an audit that reads a call as permitted and moves on.
+        before="`gh api -X GET`, `gh ruleset list` and `gh ruleset view`",
+        after="`gh api`, `gh ruleset list` and `gh ruleset view`",
+        caught_by=(_PUBLIC_LANE_BOUND,),
     ),
     Mutation(
         key="sweep-audit-drops-the-github-side-read",
@@ -904,10 +1019,13 @@ MUTATIONS: tuple[Mutation, ...] = (
     # Both of them claim a widening is a change to them as well; nothing made that true until
     # #91, so a lane could go green with the two tests agreeing and the operator still reading
     # that it is the `publication` lanes of `gaps` and `fixes`. This mutation is the cheapest
-    # shape of that: the lane stays in the allow-list and stops being named. `.claude/README.md`
-    # is the file to aim at because it names `outsiders` exactly once and is read whole; the
-    # SKILL.md half is read between two anchors, since that file's per-set lane table names
-    # every lane of every set and would answer a whole-file search for any of them.
+    # shape of that: the lane stays in the allow-list and stops being named. Both halves are
+    # read between anchors rather than whole -- SKILL.md because its per-set lane table names
+    # every lane of every set and would answer a whole-file search for any of them, and
+    # `.claude/README.md` since #95, which gave it a second paragraph about the same lanes'
+    # read lists that names `outsiders` again. This mutation takes the occurrence inside the
+    # argument, which is the one the scoping exists to make answer for itself: with the check
+    # read whole, the read-list paragraph below answers for it and this control survives.
     Mutation(
         key="sweep-github-side-lane-undocumented",
         widening=True,
