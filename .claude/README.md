@@ -88,9 +88,10 @@ the one bound that closes the *web* route to the same surfaces, because this lan
 `WebFetch` with no allow-list.
 
 `public/outsiders` is written that way too since #102, and it is the lane the shape matters most
-in: nothing on its list grants a *variable's* value, and GitHub serves one to anyone who can
-read a public repository, so with a bare `gh api -X GET` on the list the closure had to be a
-sentence in the bound naming `actions/variables` — a deny-list one level down, and
+in: nothing on its list grants a *variable's* value, and GitHub serves one to anyone with
+collaborator access, which the operator's credential that lane runs with has, so with a bare
+`gh api -X GET` on the list the closure had to be a sentence in the bound naming
+`actions/variables` — a deny-list one level down, and
 `environments/{name}/variables` is the endpoint it did not name. Its nine paths are the
 repository object, Actions permissions and the default workflow token, branch protection,
 collaborators, deploy keys, webhooks, private vulnerability reporting, and file contents for the

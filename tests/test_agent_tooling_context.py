@@ -1185,12 +1185,13 @@ def _assert_read_only_on_their_face(calls: list[str], which: str) -> None:
                 f"whichever of GET and POST the rest of the arguments imply"
             )
         # And the same shape of defect one level down, on the *fields* a read returns rather
-        # than the method it sends. An Actions **variable**'s value is served to anyone who can
-        # read a public repository -- unlike a secret's, which is served to nobody -- and both
-        # `gh variable list` and `GET /repos/{owner}/{repo}/actions/variables` return it beside
-        # the name. A lane told to enumerate "the names and nothing else" and handed the bare
-        # call has every value in its context and in this run's transcripts whatever its finding
-        # says, so the entry has to be the projection that cannot return one.
+        # than the method it sends. An Actions **variable**'s value is served to anyone with
+        # collaborator access -- unlike a secret's, which is served to nobody -- and the lanes run
+        # with the operator's credential, which has it, so both `gh variable list` and
+        # `GET /repos/{owner}/{repo}/actions/variables` return it to them beside the name. A lane
+        # told to enumerate "the names and nothing else" and handed the bare call has every value
+        # in its context and in this run's transcripts whatever its finding says, so the entry
+        # has to be the projection that cannot return one.
         if call.startswith("gh variable"):
             assert call == VARIABLE_LISTING_PROJECTION, (
                 f"{which}: {call!r} enumerates Actions variables in a form that returns each "
@@ -1288,14 +1289,15 @@ DISCLOSURE_READ_CALLS = [
 #:
 #: **The `gh api` entries name their paths (#102), as `unowned/supply-chain`'s do.** This list
 #: carried a bare `gh api -X GET` until then, and the endpoint that entry must not reach --
-#: `repos/{owner}/{repo}/actions/variables`, whose values GitHub serves to anyone who can read a
-#: public repository -- was closed by a sentence in the bound naming it. That is the deny-list
-#: one level down that AGENTS.md's rule for how a pin is written rules out, and the endpoint the
-#: sentence did not name is `repos/{owner}/{repo}/environments/{name}/variables`, which serves an
-#: *environment* variable's value by the same rule. With the paths on the list the closure is
-#: what the list does not contain. An entry is a path and not a prefix of paths, which is what
-#: keeps `repos/{owner}/{repo}` from putting every endpoint beneath it back on; the bound says so
-#: and `test_the_public_sets_github_side_lanes_bound_and_record_their_reads` requires it to.
+#: `repos/{owner}/{repo}/actions/variables`, whose values GitHub serves to collaborators, and the
+#: lane runs as the operator, who is one -- was closed by a sentence in the bound naming it. That
+#: is the deny-list one level down that AGENTS.md's rule for how a pin is written rules out, and
+#: the endpoint the sentence did not name is `repos/{owner}/{repo}/environments/{name}/variables`,
+#: which serves an *environment* variable's value by the same rule. With the paths on the list
+#: the closure is what the list does not contain. An entry is a path and not a prefix of paths,
+#: which is what keeps `repos/{owner}/{repo}` from putting every endpoint beneath it back on; the
+#: bound says so and `test_the_public_sets_github_side_lanes_bound_and_record_their_reads`
+#: requires it to.
 OUTSIDERS_READ_CALLS = [
     "gh repo view",
     "gh ruleset list",
@@ -1317,8 +1319,9 @@ OUTSIDERS_READ_CALLS = [
 #: The endpoints that return an Actions variable's *value*, which is what `public/outsiders`'
 #: list may not carry a path to. Stated here rather than derived, because what the lane is kept
 #: off is the property `gh variable list --json name` exists to give it: a secret's value is
-#: served to nobody, a variable's to anyone who can read a public repository. The second entry
-#: is the one the by-name closure this replaced never named.
+#: served to nobody, a variable's to anyone with collaborator access, which the operator's
+#: credential the lane runs with has. The second entry is the one the by-name closure this
+#: replaced never named.
 VARIABLE_VALUE_PATHS = (
     "repos/{owner}/{repo}/actions/variables",
     "repos/{owner}/{repo}/environments/{name}/variables",
@@ -1668,14 +1671,14 @@ def test_the_public_sets_github_side_lanes_bound_and_record_their_reads() -> Non
     assert "No third repository" in flat_outsiders, (
         "`public/outsiders`' bound names a second repository without closing the list at two"
     )
-    # A secret's value is served to nobody; a variable's is served to anyone who can read a
-    # public repository. So the projection on the list is the only way this lane enumerates them,
-    # and what closes the endpoints that return a value is that no path on the list reaches one
-    # (#102) -- rather than the sentence naming `actions/variables` that stood there while the
-    # list carried a bare `gh api -X GET`, which is a deny-list one level down and never named
-    # the per-environment endpoint. The prohibition is on the *fetch*, not on what ends up in a
-    # finding: a value the lane fetched is in its context and in this run's transcripts whatever
-    # it wrote down.
+    # A secret's value is served to nobody; a variable's is served to anyone with collaborator
+    # access, which the operator's credential this lane runs with has. So the projection on the
+    # list is the only way this lane enumerates them, and what closes the endpoints that return a
+    # value is that no path on the list reaches one (#102) -- rather than the sentence naming
+    # `actions/variables` that stood there while the list carried a bare `gh api -X GET`, which
+    # is a deny-list one level down and never named the per-environment endpoint. The
+    # prohibition is on the *fetch*, not on what ends up in a finding: a value the lane fetched
+    # is in its context and in this run's transcripts whatever it wrote down.
     assert VARIABLE_LISTING_PROJECTION in flat_outsiders, (
         f"`public/outsiders`' bound does not name {VARIABLE_LISTING_PROJECTION!r} as how it "
         f"enumerates Actions variables"

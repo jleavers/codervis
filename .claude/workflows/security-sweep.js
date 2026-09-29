@@ -760,9 +760,10 @@ const OUTSIDERS_OTHER_REPOS = ['jleavers/issuebot']
 
 // The decision #102 asked for. This list carried a bare `gh api -X GET` and closed the one
 // endpoint that entry must not reach -- `repos/{owner}/{repo}/actions/variables`, whose values
-// GitHub serves to anyone who can read a public repository -- by naming it as forbidden in the
-// bound below. That is a deny-list one level down from an allow-list, which is the shape
-// AGENTS.md's "How a security pin is written here" rules out in as many words, and the endpoint
+// GitHub serves to anyone with collaborator access, which the operator's credential this lane
+// runs with has -- by naming it as forbidden in the bound below. That is a deny-list one level
+// down from an allow-list, which is the shape AGENTS.md's "How a security pin is written here"
+// rules out in as many words, and the endpoint
 // somebody adds is the one it does not name: `repos/{owner}/{repo}/environments/{name}/variables`
 // serves an *environment* variable's value by the same rule and was never named at all.
 //
@@ -845,12 +846,13 @@ as unreached, naming the call you would have made; it is not a call to make.
 
 **A name is what you fetch, and a value is what you never fetch at all.** A secret's value is
 served to nobody, so no call can reach one. A *variable's* is not like that: GitHub serves it to
-anyone who can read a public repository, and the bare \`gh variable list\` returns it beside the
-name, as do the \`actions/variables\` endpoints and the per-environment ones under
-\`environments\`. So the entry on the list above is \`gh variable list --json name\`, which
-cannot return one, and that is the whole of how you enumerate them. No path on the list reaches
-a value, and that is what closes the rest of them -- not a sentence here naming one endpoint,
-which would leave the next one.
+anyone with collaborator access to the repository, and the operator's credential you run with
+has that access, so the bare \`gh variable list\` returns it to you beside the name, as do the
+\`actions/variables\` endpoints and the per-environment ones under \`environments\`. So the
+entry on the list above is \`gh variable list --json name\`, which cannot return one, and that
+is the whole of how you enumerate them. No path on the list reaches a value, and that is what
+closes the rest of them -- not a sentence here naming one endpoint, which would leave the next
+one.
 
 A webhook is the one surface where the list cannot do that for you. You need the events, so
 \`repos/{owner}/{repo}/hooks\` is on it; GitHub offers no projection that withholds the URL, and
@@ -949,11 +951,12 @@ the bullets above that ask for them carry their own rules.
 down.** \`gh api\` reaches every endpoint GitHub serves, so an entry reading \`gh api -X GET\`
 with nothing after it would be a way to every surface in this sweep: an Actions run log, an
 issue or pull-request thread, \`repos/{owner}/{repo}/actions/variables\` -- whose values GitHub
-serves to anyone who can read a public repository -- a webhook's URL, an artifact. Those are
-other lanes' surfaces or nobody's, no bullet of yours asks for one, and what you fetch is in
-your context and in this run's transcripts whatever your finding says. The three paths above
-are what you may ask for. A fourth is a surface you record in \`coverage\` as unreached,
-naming the path you would have asked for, and the lane whose surface it is if it is any lane's.
+serves to anyone with collaborator access, which the operator's credential you run with has --
+a webhook's URL, an artifact. Those are other lanes' surfaces or nobody's, no bullet of yours
+asks for one, and what you fetch is in your context and in this run's transcripts whatever
+your finding says. The three paths above are what you may ask for. A fourth is a surface you
+record in \`coverage\` as unreached, naming the path you would have asked for, and the lane
+whose surface it is if it is any lane's.
 
 And **\`gh api\` says \`-X GET\` every time**, because its default method is not fixed: it is
 \`GET\` until a field is added and \`POST\` afterwards, so \`gh api <path> -f body=...\` is a
