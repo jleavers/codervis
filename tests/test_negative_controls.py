@@ -760,8 +760,12 @@ MUTATIONS: tuple[Mutation, ...] = (
         area=SWEEP,
         rule="the phase 0 tracker command reads the repository the sweep resolved, never a literal",
         path=SWEEP_SKILL,
-        before="repos/{owner}/{repo}/issues",
-        after="repos/jleavers/codervis/issues",
+        # Anchored on the command rather than on the path alone: #96 gave this file a second
+        # occurrence of that path, in `unowned/supply-chain`'s bound, where it is named as a
+        # surface that lane may *not* reach. Two matches is a mutation the harness refuses to
+        # apply, and the one that matters is the call phase 0 runs.
+        before='gh api --paginate --slurp -X GET "repos/{owner}/{repo}/issues"',
+        after='gh api --paginate --slurp -X GET "repos/jleavers/codervis/issues"',
         caught_by=(_TRACKER_AUTHORSHIP,),
     ),
     Mutation(
