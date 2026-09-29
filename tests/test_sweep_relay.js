@@ -130,10 +130,12 @@ function compileWorkflow() {
 }
 
 // Answers shaped like each stage's schema, with hostile text in every free-text field.
-function hostileAgent(calls, findingPatch = {}) {
+// `answers` replaces one stage's answer by label, for a test about what the script does with it.
+function hostileAgent(calls, findingPatch = {}, answers = {}) {
   return async function agent(prompt, opts = {}) {
     calls.push({ prompt, opts });
     const label = opts.label || "";
+    if (Object.hasOwn(answers, label)) return answers[label];
     if (label === "recon") return "# surface map";
     if (label.startsWith("scan:")) {
       const lane = label.slice("scan:".length);
@@ -198,7 +200,7 @@ function hostileAgent(calls, findingPatch = {}) {
   };
 }
 
-async function run(extraArgs = {}, findingPatch = {}) {
+async function run(extraArgs = {}, findingPatch = {}, answers = {}) {
   const calls = [];
   const result = await compileWorkflow()(
     {
@@ -210,7 +212,7 @@ async function run(extraArgs = {}, findingPatch = {}) {
       escalationCap: 3,
       ...extraArgs,
     },
-    hostileAgent(calls, findingPatch),
+    hostileAgent(calls, findingPatch, answers),
     async (thunks) => Promise.all(thunks.map((thunk) => thunk())),
     async (items, ...stages) =>
       Promise.all(
@@ -877,6 +879,66 @@ test("only maintainer-authored tracker items reach the dedupe pass", async () =>
       `a non-maintainer tracker item reached the dedupe pass (${marker})`,
     );
   }
+});
+
+test("an agent account's items arrive marked, and cannot make a cluster a duplicate alone", async () => {
+  // An association is a relationship, not an author: the account an issuebot deployment posts
+  // as is a COLLABORATOR, so what a steered session under it files passes the filter above.
+  // Its items still reach the dedupe pass -- an automation account files real work too -- but
+  // say who wrote them, and a `duplicate` resting on them alone is the script's to catch.
+  const tracker = [
+    MAINTAINER_ITEM,
+    { ...MAINTAINER_ITEM, number: 910, author: "Issuebot-Agent", authorAssociation: "COLLABORATOR", body: "AGENT-MARKER" },
+    { ...MAINTAINER_ITEM, number: 911, author: "some-app[bot]", authorAssociation: "COLLABORATOR", body: "BOT-MARKER" },
+    { ...MAINTAINER_ITEM, number: 912, author: "a-human", authorAssociation: "COLLABORATOR", body: "HUMAN-MARKER" },
+  ];
+  const verdicts = [
+    { cluster_title: "agent only", status: "duplicate", issue_numbers: [910, 911], reasoning: "r" },
+    { cluster_title: "a maintainer too", status: "duplicate", issue_numbers: [900, 910], reasoning: "r" },
+    { cluster_title: "an earlier filing", status: "duplicate", issue_numbers: [42], reasoning: "r" },
+    { cluster_title: "an advisory", status: "duplicate", issue_numbers: [910], advisory_ids: ["GHSA-aaaa-bbbb-cccc"], reasoning: "r" },
+  ];
+  const writtenBy = (prompt) =>
+    Object.fromEntries(
+      [...prompt.matchAll(/"writtenBy": "(\w+)",\s*"body": "([A-Z-]+-MARKER)"/g)].map(([, by, marker]) => [marker, by]),
+    );
+
+  // Named in any case, as GitHub compares logins; a `[bot]` login counts unnamed; a human
+  // collaborator the operator did not name stays a maintainer.
+  const { calls, result } = await run(
+    { tracker, agentAccounts: ["issuebot-agent"] },
+    {},
+    { "dedupe-report": { verdicts, report_markdown: "# report" } },
+  );
+  const report = calls.find(({ opts }) => opts.label === "dedupe-report");
+  assert.deepEqual(writtenBy(report.prompt), {
+    "MAINTAINER-ONLY-MARKER": "maintainer",
+    "AGENT-MARKER": "agent",
+    "BOT-MARKER": "agent",
+    "HUMAN-MARKER": "maintainer",
+  });
+  assert.ok(report.prompt.includes("`issuebot-agent`"), "the dedupe pass is not told which accounts are agents");
+
+  // Only the verdict whose every match an agent account wrote is held back. One a maintainer's
+  // item shares, one citing a number the listing does not hold, and one with an advisory stand.
+  assert.deepEqual(
+    Object.fromEntries(result.dedupe.map((v) => [v.cluster_title, v.status])),
+    { "agent only": "related", "a maintainer too": "duplicate", "an earlier filing": "duplicate", "an advisory": "duplicate" },
+  );
+  assert.ok(result.report_markdown.startsWith("> **Recorded as related"), "the report does not lead with the downgrade");
+  assert.ok(result.report_markdown.includes('"agent only" (#910, #911)'), "the report does not name what was held back");
+  assert.ok(!result.report_markdown.includes("a maintainer too"), "the report names a verdict that stood");
+  assert.ok(result.report_markdown.endsWith("# report"), "the dedupe pass's own report was not kept");
+
+  // Unnamed, the same account is a maintainer as far as the script can tell, and only the
+  // `[bot]` login is marked -- which is why SKILL.md's phase 0 asks the operator to name them.
+  const { calls: unnamed } = await run({ tracker });
+  assert.deepEqual(writtenBy(unnamed.find(({ opts }) => opts.label === "dedupe-report").prompt), {
+    "MAINTAINER-ONLY-MARKER": "maintainer",
+    "AGENT-MARKER": "maintainer",
+    "BOT-MARKER": "agent",
+    "HUMAN-MARKER": "maintainer",
+  });
 });
 
 test("a tracker item's body cannot get outside the fence that holds it", async () => {

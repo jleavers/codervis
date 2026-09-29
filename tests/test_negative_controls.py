@@ -791,6 +791,30 @@ MUTATIONS: tuple[Mutation, ...] = (
         after="const TRACKER_BODY_CHARS = 4000000",
         caught_by=(_TRACKER_AUTHORSHIP,),
     ),
+    # An association is a relationship, not an author: an automation account is a COLLABORATOR,
+    # so the maintainer filter admits what a steered session under it files. Both halves of what
+    # stands in for authorship widen quietly -- an account the operator named counted as a
+    # maintainer again, and a `duplicate` resting on agent-written items alone let stand.
+    Mutation(
+        key="sweep-tracker-named-agent-passes-as-maintainer",
+        widening=True,
+        area=SWEEP,
+        rule="an item an account named in args.agentAccounts wrote is relayed as agent output",
+        path=SWEEP_WORKFLOW,
+        before="return name.endsWith('[bot]') || AGENT_ACCOUNTS.includes(name)",
+        after="return name.endsWith('[bot]')",
+        caught_by=(_TRACKER_AUTHORSHIP,),
+    ),
+    Mutation(
+        key="sweep-dedupe-agent-only-duplicate-stands",
+        widening=True,
+        area=SWEEP,
+        rule="a duplicate that rests only on agent-written tracker items is recorded as related",
+        path=SWEEP_WORKFLOW,
+        before="numbers.length > 0 && numbers.every((number) => agentWritten.has(number))",
+        after="false && numbers.every((number) => agentWritten.has(number))",
+        caught_by=(_TRACKER_AUTHORSHIP,),
+    ),
     # The bound #85 put on the one exception to all of the above. Those two lanes keep a shell
     # pointed at the GitHub side, so what stands in for the tool list is a named list of calls
     # and a coverage record -- and both of the ways that goes quiet are widenings, not

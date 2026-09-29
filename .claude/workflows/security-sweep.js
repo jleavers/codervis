@@ -65,6 +65,27 @@ const known = args.known || ''
 // reach the report stage inside the same fence as every other hand-off.
 const MAINTAINER_ASSOCIATIONS = ['OWNER', 'MEMBER', 'COLLABORATOR']
 
+// An association is a relationship to the repository, not a statement about who typed the
+// text. An automation account that works this tracker -- the account an issuebot deployment
+// posts as -- is a `COLLABORATOR` like any maintainer, so what a session running under it
+// writes passes the filter above, whatever that session was steered by. The operator names
+// those accounts (`args.agentAccounts`, SKILL.md phase 0), and a GitHub App's `[bot]` login is
+// one nobody has to name. Their items are still relayed, because an automation account files
+// real work too, but marked as agent output rather than as a maintainer's word, and the
+// check after the dedupe pass keeps one from being the whole reason a cluster reads as filed.
+// GitHub logins are case-insensitive, so the comparison is too.
+const AGENT_ACCOUNTS = (
+  Array.isArray(args.agentAccounts)
+    ? args.agentAccounts
+    : String(args.agentAccounts || '').split(',')
+)
+  .map((login) => String(login).trim().toLowerCase())
+  .filter(Boolean)
+const writtenByAgent = (login) => {
+  const name = String(login || '').toLowerCase()
+  return name.endsWith('[bot]') || AGENT_ACCOUNTS.includes(name)
+}
+
 // Mirrors the `--limit 200` and `--limit 100` the two listings carried. **It bounds records,
 // not bytes** -- be exact, because the two are not the same bound and one issue body can be
 // 65,536 characters, so 300 capped records is still a prompt of any size. `TRACKER_BODY_CHARS`
@@ -88,10 +109,13 @@ const AUTHOR_UNKNOWN = '(author unknown)'
 // counters, like the funnel's, so they belong in the prompt's own voice. Both cuts are in it,
 // for the one reason: a stage told to report how much of the tracker it searched cannot see
 // either of them, and a cut it cannot see is a search it reports as whole.
-const trackerNote = (total, relayed, truncated) => {
-  const cut = total === relayed
+const trackerNote = (total, relayed, truncated, byAgents = 0) => {
+  const whole = total === relayed
     ? `${relayed} maintainer-authored item(s)`
     : `the oldest ${Math.floor(TRACKER_CAP / 2)} and the newest ${TRACKER_CAP - Math.floor(TRACKER_CAP / 2)} of the ${total} maintainer-authored items; the ${total - relayed} in the middle were not relayed, so the search is partial and the report must say so`
+  const cut = byAgents
+    ? `${whole}. ${byAgents} of the relayed item(s) were written by an agent account and are marked \`writtenBy: agent\``
+    : whole
   return truncated
     ? `${cut}. ${truncated} of the relayed item(s) had a body longer than ${TRACKER_BODY_CHARS} characters, cut to that length and marked \`${BODY_TRUNCATED}\` where it was cut; a cut body is matched on the invariant it states, and the report must say that bodies were cut`
     : cut
@@ -139,6 +163,7 @@ const maintainerAuthored = (raw) => {
       // field: an empty string reads the same as a field nobody filled in.
       author: String(item.author || AUTHOR_UNKNOWN),
       authorAssociation: item.authorAssociation,
+      writtenBy: writtenByAgent(item.author) ? 'agent' : 'maintainer',
       body: cut(String(item.body || '')),
     })
   }
@@ -2225,6 +2250,15 @@ is out of your sight on purpose. A cluster matching nothing in the listing is \`
 report says both which part of the tracker was searched — maintainer-authored items — and how
 much of it, from the count above, so that a human reading it knows what was looked at.
 
+**An item whose \`writtenBy\` is \`agent\` was written by an automation account**, not by a
+maintainer: ${AGENT_ACCOUNTS.length ? `the operator named ${AGENT_ACCOUNTS.map((login) => `\`${login}\``).join(', ')}` : 'the operator named none'}, and any
+\`[bot]\` login counts too. Such an account holds a maintainer's association because of what it
+is to the repository, not because a maintainer wrote the text, and a session it runs writes
+what it was steered to write. So an agent-written item is a pointer and never evidence: it can
+make a cluster \`related\`, but a cluster whose only matches are agent-written items is not a
+\`duplicate\`, and the report names the account. This script re-checks that after you answer,
+and records a \`duplicate\` resting on agent-written items alone as \`related\`.
+
 Closed issues matter more than open ones here: what you are looking for is something already
 reported and fixed, or reported and forgotten. Match on the invariant, not on wording — a
 cluster is a duplicate when an existing issue would be closed by the same fix. Return, per
@@ -2449,14 +2483,17 @@ const counts = {
 phase('Report')
 const dedupe = (clusters.length || singletons.length)
   ? await launch({
-    instructions: reportPrompt(counts, trackerNote(tracker.total, tracker.items.length, tracker.truncated)),
+    instructions: reportPrompt(counts, trackerNote(
+      tracker.total, tracker.items.length, tracker.truncated,
+      tracker.items.filter((item) => item.writtenBy === 'agent').length,
+    )),
     relayed: [
       relay('clusters', 'written by the triage pass from the findings that survived refutation', clusters),
       relay('singletons', 'written by the triage pass from the findings it could not cluster', singletons),
       relay('coverage gaps', 'written by the completeness critic from the lanes\' own coverage records', gaps),
       relay(
         'tracker items',
-        `issues and pull requests of ${repo}, listed by the launching session and filtered here to ${MAINTAINER_ASSOCIATIONS.join('/')}`,
+        `issues and pull requests of ${repo}, listed by the launching session and filtered here to ${MAINTAINER_ASSOCIATIONS.join('/')}; an item an agent account wrote is marked writtenBy: agent`,
         tracker.items,
       ),
     ],
@@ -2464,6 +2501,32 @@ const dedupe = (clusters.length || singletons.length)
   })
   : null
 if (!dedupe) log('nothing survived to report; the run directory still holds every raw finding and 04-gaps.md')
+
+// The agent-written rule in the dedupe prompt, held here rather than left to the stage that
+// was asked to follow it. A verdict is data this script can check: a `duplicate` whose every
+// cited item an agent account wrote is exactly what a steered session filing "already
+// handled" would produce, so it is recorded as `related`, and the report says so up front
+// rather than in a footnote. A cited number the listing does not hold -- an earlier run's
+// filing, say -- is not agent-written, so it leaves the verdict alone; so does any advisory id.
+const agentWritten = new Set(
+  tracker.items.filter((item) => item.writtenBy === 'agent').map((item) => item.number),
+)
+const heldBack = []
+const verdicts = (dedupe && Array.isArray(dedupe.verdicts) ? dedupe.verdicts : []).map((verdict) => {
+  const numbers = Array.isArray(verdict.issue_numbers) ? verdict.issue_numbers : []
+  const advisories = Array.isArray(verdict.advisory_ids) ? verdict.advisory_ids : []
+  const agentOnly = verdict.status === 'duplicate' && !advisories.length &&
+    numbers.length > 0 && numbers.every((number) => agentWritten.has(number))
+  if (!agentOnly) return verdict
+  heldBack.push({ title: String(verdict.cluster_title), numbers })
+  return { ...verdict, status: 'related' }
+})
+for (const { title, numbers } of heldBack) {
+  log(`dedupe: "${title}" matched only agent-written ${numbers.map((n) => `#${n}`).join(', ')}; recorded as related, not duplicate`)
+}
+const heldBackNote = heldBack.length
+  ? `> **Recorded as related, not duplicate, by the workflow.** Each of these was matched only to items an agent account wrote, which are pointers rather than evidence that the cluster was filed: ${heldBack.map(({ title, numbers }) => `"${title}" (${numbers.map((n) => `#${n}`).join(', ')})`).join('; ')}. Where the report below says duplicate for one of them, read related.\n\n`
+  : ''
 
 return {
   stamp,
@@ -2474,10 +2537,10 @@ return {
   clusters,
   singletons,
   gaps,
-  dedupe: dedupe && dedupe.verdicts ? dedupe.verdicts : [],
+  dedupe: verdicts,
   // Subagents may not write report files, so the report comes back as text and the launching
   // session writes it to report_path (see SKILL.md, phase 6).
   report_path: dedupe && dedupe.report_markdown ? `${runDir}/report-${stamp}.md` : null,
-  report_markdown: dedupe && dedupe.report_markdown ? dedupe.report_markdown : null,
+  report_markdown: dedupe && dedupe.report_markdown ? heldBackNote + dedupe.report_markdown : null,
   run_dir: runDir,
 }

@@ -395,15 +395,30 @@ Five things about this command:
   then an empty `tracker.json` — but it fails on every run, and a step that needs a shell to
   persist is a step that needs an explanation. This one needs none.
 - **An oldest-first order and a per-body cap, because both ends are bounded downstream.**
-  `TRACKER_CAP` in the workflow bounds how many items are relayed, and it keeps the front of
-  the list: `/issues` defaults to newest-first, which would have thrown away the oldest issues
-  — exactly the "reported and fixed, or reported and forgotten" material the dedupe pass is
-  told matters most — so the order is asked for rather than inherited. The cap bounds records
-  and not bytes, and a single issue body can be 65,536 characters, so the body is cut here too.
-  A truncated body still matches on its invariant, which is what the dedupe pass matches on.
+  `TRACKER_CAP` in the workflow bounds how many items are relayed. Past it, it keeps both ends
+  of the list, the oldest half and the newest half, drops the middle, and tells the dedupe pass
+  so. The order is asked for rather than inherited so that those halves are what they say:
+  `/issues` defaults to newest-first, and the oldest issues are exactly the "reported and fixed,
+  or reported and forgotten" material the dedupe pass is told matters most. The cap bounds
+  records and not bytes, and a single issue body can be 65,536 characters, so the body is cut
+  here too. A truncated body still matches on its invariant, which is what the dedupe pass
+  matches on.
 
 Expect the dropped items to be Dependabot's pull requests (`NONE`), which is the intended
 shape: `AGENTS.md` names their release notes as other people's text.
+
+**Name the accounts that run agents against this tracker.** An author association is a
+relationship to the repository, not a statement about who typed the text. The account an
+issuebot deployment posts as is a `COLLABORATOR`, so everything a session running under it
+writes passes the filter above, whatever that session was steered by. List each such login and
+pass the list as `args.agentAccounts`. The workflow relays those accounts' items marked
+`writtenBy: agent`, tells the dedupe pass they are pointers rather than evidence, and records a
+`duplicate` that rests on them alone as `related`. A GitHub App's `[bot]` login counts without
+being named. The collaborators are one call away; which of them are automation is yours to say:
+
+```bash
+gh api repos/{owner}/{repo}/collaborators --jq '.[] | "\(.login)\t\(.role_name)"'
+```
 
 ## Phase 1-5: the workflow
 
@@ -411,15 +426,17 @@ shape: `AGENTS.md` names their release notes as other people's text.
 Workflow({
   name: "security-sweep",
   args: {stamp, sha, repo, worktree: <absolute>, runDir: <absolute>, escalationCap: 3,
-         tracker: <the array from $RD/tracker.json>}
+         tracker: <the array from $RD/tracker.json>, agentAccounts: [<login>, ...]}
 })
 ```
 
 `worktree` and `runDir` must be absolute: the agents resolve them directly. `tracker` is the
 listing from phase 0; leaving it out is not an error, and the dedupe pass then reports that it
-searched an empty tracker rather than implying it found nothing to match. Optional args:
-`lanes` (a lane-set name; default `baseline`), `known` (prose naming what is already filed, so
-lanes do not re-derive it — see below for what belongs in it), and `toolProfiles: false`.
+searched an empty tracker rather than implying it found nothing to match. `agentAccounts` is the
+list of logins from phase 0; leaving it out marks only `[bot]` logins as agent-written. Optional
+args: `lanes` (a lane-set name; default `baseline`), `known` (prose naming what is already
+filed, so lanes do not re-derive it — see below for what belongs in it), and
+`toolProfiles: false`.
 
 **What goes in `known`.** It reaches every lane as "already filed, go past it", so an item in
 it that is not actually fixed costs the run that whole surface. Build it from
