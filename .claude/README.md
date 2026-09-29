@@ -78,17 +78,26 @@ to a second repository, so `jleavers/issuebot` is named on its list and on no ot
 wandering one. Prose is what all of this is made of, which is why the audit has a second pass
 that reads the record against the transcripts: the profile is not what makes it true.
 `unowned/supply-chain` was the last one without a list — admitted to the allow-list by #91 with
-the audit as the only thing behind it, and given one of its own by #96. Its entries are the one
-place in the sweep where a `gh api` call names the **path** it may ask for and not only its
-method: `gh api` reaches every endpoint GitHub serves, so a bare `gh api -X GET` beside it is a
-deny-list of whatever the author thought of. The three paths are the repository activity
-endpoint, the events window it is compared against, and a commit by SHA; `git ls-remote origin`
-is the fourth entry, and the `git clone --mirror` two of the other lanes may make is
-deliberately not among them. It is also the one bound that closes the *web* route to the same
-surfaces, because this lane holds `WebFetch` with no allow-list. The other four lists are
-written the older way, and for three of them their own entries bound what a bare `gh api -X GET`
-adds; `public/outsiders` is the one where that is not so, and closing it is its own change (see
-#102).
+the audit as the only thing behind it, and given one of its own by #96. It is where a `gh api`
+entry first named the **path** it may ask for and not only its method: `gh api` reaches every
+endpoint GitHub serves, so a bare `gh api -X GET` beside it is a deny-list of whatever the
+author thought of. The three paths are the repository activity endpoint, the events window it
+is compared against, and a commit by SHA; `git ls-remote origin` is the fourth entry, and the
+`git clone --mirror` two of the other lanes may make is deliberately not among them. It is also
+the one bound that closes the *web* route to the same surfaces, because this lane holds
+`WebFetch` with no allow-list.
+
+`public/outsiders` is written that way too since #102, and it is the lane the shape matters most
+in: nothing on its list grants a *variable's* value, and GitHub serves one to anyone who can
+read a public repository, so with a bare `gh api -X GET` on the list the closure had to be a
+sentence in the bound naming `actions/variables` — a deny-list one level down, and
+`environments/{name}/variables` is the endpoint it did not name. Its nine paths are the
+repository object, Actions permissions and the default workflow token, branch protection,
+collaborators, deploy keys, webhooks, private vulnerability reporting, and file contents for the
+second repository; a variable is reached by `gh variable list --json name` and by nothing else,
+and no path on the list returns a value, which is what closes the rest without naming one. The
+`publication` lanes and `public/disclosure` keep the older shape, because their own entries —
+`gh issue view`, `gh run view --log` — already bound what a bare `gh api -X GET` adds.
 
 Which profile a lane gets is the `web` flag on the lane in the workflow, and the reason is a
 comment beside it.

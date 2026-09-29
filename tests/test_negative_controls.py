@@ -881,9 +881,63 @@ MUTATIONS: tuple[Mutation, ...] = (
         path=SWEEP_WORKFLOW,
         # This lane's brief used to say, in as many words, never to pass `-X` to `gh api` -- so
         # the bare spelling is what the lane was *told* to write, and it is a `POST` the moment a
-        # field is added. The mutation is the brief's old instruction, on the new list.
-        before="const OUTSIDERS_READ_CALLS = [\n  'gh repo view',\n  'gh api -X GET',\n",
-        after="const OUTSIDERS_READ_CALLS = [\n  'gh repo view',\n  'gh api',\n",
+        # field is added. The mutation is the brief's old instruction, on the new list. Anchored
+        # on the repository-object entry, which is the one line of the nine whose path ends where
+        # the entry does, so the replacement matches once.
+        before="  'gh api -X GET repos/{owner}/{repo}',\n",
+        after="  'gh api repos/{owner}/{repo}',\n",
+        caught_by=(_PUBLIC_LANE_BOUND,),
+    ),
+    # The decision #102 asked for, and the two ways it goes quiet. Until it, this lane's list
+    # carried a bare `gh api -X GET` and the bound closed `repos/{owner}/{repo}/actions/variables`
+    # by naming it -- a deny-list one level down from the allow-list, in the lane where it
+    # mattered most, since nothing else on the list grants a variable's value.
+    Mutation(
+        key="sweep-outsiders-api-entry-loses-its-path",
+        widening=True,
+        area=SWEEP,
+        rule="each `gh api` entry on `public/outsiders`' list names the path it may ask for",
+        path=SWEEP_WORKFLOW,
+        # The widening that reads like tidying, and the shape this list shipped until #102:
+        # `gh api -X GET` with nothing after it is read-only by every other check in the suite
+        # and is a way to every endpoint GitHub serves. It satisfies the post-run audit's
+        # per-lane question too, which asks only whether a call is one the lane's brief names.
+        # What it reaches here is a variable's value, which GitHub serves to anyone who can read
+        # a public repository and which no other entry on this list grants.
+        before="  'gh api -X GET repos/{owner}/{repo}/actions/permissions',\n",
+        after="  'gh api -X GET',\n",
+        caught_by=(_PUBLIC_LANE_BOUND,),
+    ),
+    Mutation(
+        key="sweep-outsiders-fetches-a-variables-value",
+        widening=True,
+        area=SWEEP,
+        rule="no path on `public/outsiders`' list returns an Actions variable's value",
+        path=SWEEP_WORKFLOW,
+        # The same widening written as an addition rather than a deletion, and the one a reader
+        # would wave through now that the entries are paths: one more settings path beside eight
+        # others, spelled exactly like them. It is the endpoint `gh variable list --json name` is
+        # on the list to avoid, and the per-environment one beside it is the endpoint the by-name
+        # closure this replaced never named at all.
+        before="  'gh api -X GET repos/{owner}/{repo}/actions/permissions/workflow',\n",
+        after=(
+            "  'gh api -X GET repos/{owner}/{repo}/actions/permissions/workflow',\n"
+            "  'gh api -X GET repos/{owner}/{repo}/actions/variables',\n"
+        ),
+        caught_by=(_PUBLIC_LANE_BOUND,),
+    ),
+    Mutation(
+        key="sweep-outsiders-entry-becomes-a-prefix",
+        widening=True,
+        area=SWEEP,
+        rule="an entry on `public/outsiders`' list is a path and not a prefix of paths",
+        path=SWEEP_WORKFLOW,
+        # `repos/{owner}/{repo}` is on the list, so an agent reading the entries as prefixes has
+        # every endpoint beneath it -- `actions/variables` included -- with the list unchanged
+        # and nothing to see in a diff of it. The sentence is what makes the nine paths nine
+        # paths, so dropping it is a widening of the bound rather than a deletion of a check.
+        before="entry names the path it may ask for, and an entry is a path and not a prefix\nof paths.**",
+        after="entry names the path it may ask for.**",
         caught_by=(_PUBLIC_LANE_BOUND,),
     ),
     Mutation(
@@ -956,8 +1010,11 @@ MUTATIONS: tuple[Mutation, ...] = (
         path=SWEEP_SKILL,
         # The operator audits the transcripts against this copy. A copy that has drifted wider
         # than the workflow's is an audit that reads a call as permitted and moves on.
-        before="`gh api -X GET`, `gh ruleset list` and `gh ruleset view`",
-        after="`gh api`, `gh ruleset list` and `gh ruleset view`",
+        # Anchored on a path with no longer path above it on the list: `actions/permissions` is
+        # a substring of `actions/permissions/workflow`, so dropping *that* one would leave the
+        # workflow's entry still findable in this file and the drift invisible.
+        before="`gh api -X GET repos/{owner}/{repo}/hooks`",
+        after="`gh api -X GET`",
         caught_by=(_PUBLIC_LANE_BOUND,),
     ),
     # The same bound again, on the lane #91 admitted to the GitHub side and #96 gave a list to.

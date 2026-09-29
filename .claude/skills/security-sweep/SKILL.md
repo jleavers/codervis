@@ -126,9 +126,19 @@ the refs GitHub serves that a checkout does not hold — against the repository 
 and no other. An artifact's *contents* are the one surface it is told to record as unreached
 rather than to fetch.
 
-`public/outsiders` reads settings rather than text, so its list is its own: `gh repo view`,
-`gh api -X GET`, `gh ruleset list` and `gh ruleset view`, `gh secret list`,
-`gh variable list --json name`, and `git clone --depth 1`. **It is the one lane in the sweep
+`public/outsiders` reads settings rather than text, so its list is its own — and since #102 its
+`gh api` entries name their paths, as `unowned/supply-chain`'s do. It is `gh repo view`,
+`gh ruleset list` and `gh ruleset view`, `gh secret list`, `gh variable list --json name`,
+`git clone --depth 1`, and nine `gh api` paths: `gh api -X GET repos/{owner}/{repo}` for the
+repository object, then `gh api -X GET repos/{owner}/{repo}/actions/permissions` and
+`gh api -X GET repos/{owner}/{repo}/actions/permissions/workflow`,
+`gh api -X GET repos/{owner}/{repo}/branches/{branch}/protection`,
+`gh api -X GET repos/{owner}/{repo}/collaborators`, `gh api -X GET repos/{owner}/{repo}/keys`,
+`gh api -X GET repos/{owner}/{repo}/hooks`,
+`gh api -X GET repos/{owner}/{repo}/private-vulnerability-reporting` and
+`gh api -X GET repos/{owner}/{repo}/contents/{path}`. **An entry is a path and not a prefix of
+paths**, which is what keeps the first of those nine from putting every endpoint under it back
+on the list. **It is the one lane in the sweep
 that reads a second repository, and its list names which**: `jleavers/issuebot`, issuebot's
 published repository, for `configs/WORKFLOW.md` and the files it names and nothing else —
 because the question it asks about the agents that read this tracker cannot be answered from the
@@ -136,17 +146,22 @@ swept repository at all. Nothing of a deployment: no `.env`, no untracked overla
 process, no path on this host. A third repository is not on the list, and neither is a listing
 of an account's repositories — whoever runs this sweep would be listing their own.
 
-**One entry on that list is spelled the way it is for the same reason `gh api` names its
-method.** The closing line this bound replaced said "never fetch a secret's or a variable's
-value", and a bare `gh variable list` fetches one: a secret's value is served to nobody, but a
-*variable's* is served to anyone who can read a public repository, and both `gh variable list`
-and `GET /repos/{owner}/{repo}/actions/variables` return it beside the name. So the entry is
-`gh variable list --json name`, which cannot return one, and the bound says in as many words
-that neither the bare form nor that endpoint through `gh api -X GET` is how this lane enumerates
-them. The prohibition is on the fetch and not only on what the lane writes down, because the
-value would otherwise be in the lane's context and in this run's transcripts whatever the
-finding said. A webhook URL is the same shape: the host and the event list, never the rest of
-the URL.
+**One entry on that list is not a path, and it is spelled the way it is for the same reason the
+paths are.** A secret's value is served to nobody, but a *variable's* is served to anyone who
+can read a public repository, and the bare `gh variable list` returns it beside the name, as do
+`GET /repos/{owner}/{repo}/actions/variables` and the per-environment endpoints under
+`environments`. So the entry is `gh variable list --json name`, the projection that cannot
+return one, and no path on the list reaches a value: **that is what closes the rest of them**.
+Until #102 it was a sentence in the bound forbidding `actions/variables` by name, beside a bare
+`gh api -X GET` that reached every endpoint GitHub serves — a deny-list one level down from the
+allow-list, and the endpoint it did not name was `environments/{name}/variables`. The
+prohibition is on the fetch and not on what the lane writes down, because a value it fetched is
+in its context and in this run's transcripts whatever the finding said.
+
+A webhook is the one surface where the list cannot do that, and so the one rule here about what
+the lane records: `repos/{owner}/{repo}/hooks` is on the list because the lane needs the events,
+GitHub offers no projection that withholds the URL, and a hook URL's query string can carry a
+credential. The host and the event list, never the rest of the URL.
 
 **`unowned/supply-chain` carries one too (#96), and its list is the shortest of the five.**
 #91 put this lane in the allow-list above, because it is genuinely sent to the GitHub side and
@@ -154,26 +169,27 @@ four documents said four lanes went; it left the lane without a bound, because w
 call is a decision about text an agent executes rather than part of a change to an allow-list.
 Until #96 the audit below was not a second check on this lane but the only one.
 
-**Its `gh api` entries name their path, which no other lane's do, and that is the part to read
-twice.** `gh api` reaches every endpoint GitHub serves, so `gh api -X GET` with nothing after
+**Its `gh api` entries name their path, which was true of no other lane's until #102, and
+that is the part to read twice.** `gh api` reaches every endpoint GitHub serves, so `gh api -X GET` with nothing after
 it is an allow-list of one call and a way to every surface in the sweep — an Actions run log,
 an issue thread, `actions/variables` (whose values GitHub serves to anyone who can read a
 public repository), a webhook's URL, an artifact. Naming two or three of those as forbidden
 instead is the deny-list AGENTS.md's rule for how a pin is written rules out one level down —
-the key somebody adds is the fourth one. **Why the other four lists are not written this way is
-worth reading twice, because the flattering answer is not true**: it holds for `publication` ×2
-and `disclosure`, whose lists already grant `gh issue view` and `gh run view --log`, so their
-bare `gh api -X GET` adds little to a reach they already have. It does not hold for
-`public/outsiders`, whose list grants no variable's value and whose bound therefore closes
-`actions/variables` by name two paragraphs above — the same deny-list shape, in the lane where
-it matters most. This is where the rule is applied first, and closing that one is its own
-change. So the list
+the key somebody adds is the fourth one. **Why the other three lists are not written this way is
+worth reading twice, because the flattering answer is not true of all of them**: it holds for
+`publication` ×2 and `disclosure`, whose lists already grant `gh issue view` and
+`gh run view --log`, so their bare `gh api -X GET` adds little to a reach they already have. It
+did not hold for `public/outsiders`, whose list granted no variable's value and whose bound
+therefore closed `actions/variables` by name — the same deny-list shape, in the lane where it
+mattered most. This is where the rule was applied first and that lane is where it was applied
+second (#102), which is why the paragraphs above read the way they do. So the list
 is `gh api -X GET repos/{owner}/{repo}/activity`, `gh api -X GET repos/{owner}/{repo}/events`,
 `gh api -X GET repos/{owner}/{repo}/commits/{sha}` and `git ls-remote origin`: the endpoint the
 history bullet names, the window it is compared against, how a commit either names is read once
 no ref names it, and what tells such a SHA from one a ref still does. **A `gh api` path from
 this lane that is not one of those three is a lane that wandered**, which is the form the
-per-lane question below takes here.
+per-lane question below takes here — and the same question has an answer for `public/outsiders`
+now, against the nine paths on its own list.
 
 There is no `git clone --mirror` either, which two of the other lanes may make: a mirror clone
 fetches what a ref names, and this lane is looking for what none does, so the wider call would
