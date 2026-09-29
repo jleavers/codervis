@@ -68,17 +68,20 @@ really launched with. That first test also requires both documents to name every
 set, so a new one is a change to both tests and to both documents rather than to the tests
 alone (#91).
 
-A tool list still cannot say "read-only `gh`" for any of them, so four of the five say it in the
-brief instead (#85, #95): the calls a lane may make are a named list in the workflow, read-only
-on their face, and what it read goes in its `coverage` record. One list per lane rather than one
-shared block, because a bound is a block of text and a lane that interpolates another's name
-acquires the whole of that lane's reach. `public/outsiders` is the one lane sent to a second
-repository, so `jleavers/issuebot` is named on its list and on no other's, which
+A tool list still cannot say "read-only `gh`" for any of them, so each of the five says it in
+the brief instead (#85, #95, #96): the calls a lane may make are a named list in the workflow,
+read-only on their face, and what it read goes in its `coverage` record. One list per lane
+rather than one shared block, because a bound is a block of text and a lane that interpolates
+another's name acquires the whole of that lane's reach. `public/outsiders` is the one lane sent
+to a second repository, so `jleavers/issuebot` is named on its list and on no other's, which
 `tests/test_agent_tooling_context.py` pins — that is what lets the audit tell a sent read from a
 wandering one. Prose is what all of this is made of, which is why the audit has a second pass
 that reads the record against the transcripts: the profile is not what makes it true.
-`unowned/supply-chain` carries no such list at all, so for that one the audit is not a second
-pass but the only one.
+`unowned/supply-chain` was the last one without a list — admitted to the allow-list by #91 with
+the audit as the only thing behind it, and given two entries of its own by #96, which are
+`gh api -X GET` for the activity endpoint and the commits it lists, and `git ls-remote origin`
+for telling a SHA no ref names from one a ref still does. The `git clone --mirror` two of the
+other lanes may make is deliberately not among them.
 
 Which profile a lane gets is the `web` flag on the lane in the workflow, and the reason is a
 comment beside it.
