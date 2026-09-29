@@ -848,6 +848,12 @@ and did not record is what it is there to catch.`
 //   which is in the checkout; the Actions logs are the `publication` and `disclosure` lanes'
 //   surface, and this lane is not sent to them.
 //
+// Saying a surface is another lane's is not what keeps this lane off it, because `gh api -X GET`
+// is on the list and reaches both the run-log endpoints and the tracker. So the bound closes
+// each of them by the *path* as well as by the name, which is how `OUTSIDERS_READ_BOUND` closes
+// the `variables` endpoint that its own `gh api -X GET` would otherwise reach. A list that
+// excludes a surface and leaves the call that fetches it unqualified has excluded nothing.
+//
 // What this list does not bound is the rest of the lane, which is most of it: the scratch venv
 // and `pip-audit`, the advisory lookups its web tool makes, and the reads of issuebot's
 // *tracked* source in the checkout on this host are not calls to GitHub. Those bullets carry
@@ -877,13 +883,29 @@ tells such a SHA from one a ref still names. Neither call writes: never a \`git 
 never a fetch into the worktree's own repository.
 
 There is no \`git clone --mirror\` on this list, and that is not an oversight: a mirror clone
-fetches what a ref names, and what you are looking for is what no ref names. Neither are the
-Actions logs on it -- the CI bullet above is a read of \`.github/\` in the checkout, and a run
-log is another lane's surface.
+fetches what a ref names, and what you are looking for is what no ref names.
+
+**Two surfaces are off this list that \`gh api -X GET\` would otherwise reach, and off it means
+you do not fetch them at all.** A saying-so is not a bound where the call that reaches them is
+on the list, so each is closed by the path as well as by the name:
+
+- An **Actions run log**. The CI bullet above is a read of \`.github/\` in the checkout, and a
+  log body is the \`publication\` and \`disclosure\` lanes' surface -- so never
+  \`gh run view --log\`, and never \`repos/{owner}/{repo}/actions/runs/{id}/logs\` or
+  \`repos/{owner}/{repo}/actions/jobs/{id}/logs\` through \`gh api -X GET\` either.
+- The **tracker**. Issues, pull-request threads, comments and review comments are those same two
+  lanes' surface, and no bullet of yours asks for one -- so never \`gh issue\` or \`gh pr\`,
+  and never \`repos/{owner}/{repo}/issues\` or its comment endpoints through
+  \`gh api -X GET\`.
+
+What \`gh api -X GET\` is on this list for is the repository activity and events the history
+bullet sends you to, and the commits they name. A question that needs one of the two surfaces
+above is one you record in \`coverage\` as unreached, naming the lane whose surface it is.
 
 Nothing else. No write verb -- no \`create\`, \`edit\`, \`close\`, \`comment\`, \`merge\`
 or \`delete\`, and no \`gh workflow run\` or \`gh run rerun\` -- no \`-X\`/\`--method\` other
-than \`GET\`, no GraphQL mutation, and nothing that reaches GitHub by another route: not
+than \`GET\`, no GraphQL at all -- \`gh api graphql\` is not on this list and a query is a
+\`POST\` -- and nothing that reaches GitHub by another route: not
 \`curl\`, not \`wget\`, not a \`gh\` extension. (Reaching OSV, PyPI or Debian's tracker is
 the advisory bullet's business and not a route to GitHub, so this line is not about it.) A
 surface you need that is not on this list is something you record in \`coverage\` as

@@ -1681,9 +1681,12 @@ def test_the_supply_chain_lane_bounds_and_records_its_github_side_read() -> None
     the brief told the lane not to write.
 
     Which lane carries this bound is pinned with the other three, in `READ_BOUND_LANES` above;
-    what is here is this lane's own half. Three things have to hold, and each is a way the
-    bound goes quiet: the list is what this module states and every entry on it reads, the lane
-    is told what the list is *not* about, and the `coverage` record says what it read.
+    what is here is this lane's own half, and each assertion below is a way the bound goes
+    quiet: the list is what this module states, every entry on it reads on its face, the lane
+    is handed the list rather than the constant, the repository is the one the sweep resolved,
+    the surfaces the bound calls another lane's are closed by the path `gh api -X GET` would
+    take to them, the lane is told what the list is *not* about, the `coverage` record says
+    what it read, and SKILL.md's copy is the lane's copy.
     """
     source = WORKFLOW.read_text(encoding="utf-8")
     briefs = _sweep_briefs(source)
@@ -1738,6 +1741,24 @@ def test_the_supply_chain_lane_bounds_and_records_its_github_side_read() -> None
         "one no ref names, which a clone does not fetch"
     )
 
+    # And the same question one level down, which is where the `variables` entry on
+    # `public/outsiders`' list was answered (#95): this list's only `gh` entry is `gh api -X GET`,
+    # and it reaches whatever the API serves. A bound that calls a surface another lane's while
+    # leaving that call unqualified has excluded nothing, so each excluded surface is closed by
+    # the path as well as by the name -- the run-log endpoints, and the tracker, which is the
+    # stranger-written corpus the `publication` and `disclosure` lanes exist for and which no
+    # bullet of this lane asks for.
+    for way_round in (
+        "actions/runs/{id}/logs",
+        "actions/jobs/{id}/logs",
+        "repos/{owner}/{repo}/issues",
+    ):
+        assert way_round in flat_bound, (
+            f"`unowned/supply-chain`'s bound names a surface as another lane's without closing "
+            f"the path `gh api -X GET` takes to it ({way_round!r} is missing): that call is on "
+            f"this list, and it fetches whatever the API serves"
+        )
+
     # The coverage record is the half an operator can check: a bound nobody can audit after the
     # fact is a sentence in a prompt.
     assert "coverage" in flat_bound and "counts, not adjectives" in flat_bound, (
@@ -1763,7 +1784,15 @@ def test_the_supply_chain_lane_bounds_and_records_its_github_side_read() -> None
     start = "**`unowned/supply-chain` carries one too (#96)"
     assert start in skill, "SKILL.md has no paragraph recording `unowned/supply-chain`'s list"
     decision = skill[skill.index(start) :]
-    decision = decision[: decision.index("\n\nAfter a run")]
+    stop = "\n\nAfter a run"
+    # Asserted rather than indexed straight, because a `ValueError` here is an *error* and the
+    # negative-control harness requires its named tests to fail: a control that turned this
+    # uncollectable would read as "the rule was never exercised" rather than as a red test.
+    assert stop in decision, (
+        "SKILL.md's paragraph for `unowned/supply-chain` is not followed by the post-run audit, "
+        "so this check cannot tell where the record of the decision ends"
+    )
+    decision = decision[: decision.index(stop)]
     flat = re.sub(r"\s+", " ", decision)
     for call in calls:
         assert call in flat, (
@@ -1779,6 +1808,13 @@ def test_the_supply_chain_lane_bounds_and_records_its_github_side_read() -> None
         "SKILL.md's record does not say that the mirror clone the other lanes may make is off "
         "this lane's list, which is the entry an operator would otherwise read across from them"
     )
+    for way_round in ("actions/runs/{id}/logs", "repos/{owner}/{repo}/issues"):
+        assert way_round in flat, (
+            f"SKILL.md's record does not say that {way_round!r} is off this lane's list. The "
+            f"audit's per-lane question is whether a call was one the lane's brief names, and "
+            f"`gh api -X GET` is; what the operator needs is which paths it may not take"
+        )
+
 
 def test_the_post_run_audit_looks_for_what_a_stage_still_holds() -> None:
     """Scoping is not the whole control, so the audit covers what the profiles cannot.

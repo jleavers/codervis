@@ -1002,6 +1002,40 @@ MUTATIONS: tuple[Mutation, ...] = (
         caught_by=(_SUPPLY_CHAIN_BOUND,),
     ),
     Mutation(
+        key="sweep-supply-chain-skill-drops-the-closed-path",
+        widening=True,
+        area=SWEEP,
+        rule="SKILL.md tells the operator which paths this lane's one `gh` call may not take",
+        path=SWEEP_SKILL,
+        # The operator's half of the control above. The audit's per-lane question is whether a
+        # call was one the lane's brief names, and `gh api -X GET` is; what makes a run-log fetch
+        # from this lane visible as a breach is the operator's copy saying which paths it may not
+        # take. A copy that drops them reads a permitted call and moves on.
+        before="`repos/{owner}/{repo}/actions/runs/{id}/logs` and `.../actions/jobs/{id}/logs`",
+        after="the run-log endpoints",
+        caught_by=(_SUPPLY_CHAIN_BOUND,),
+    ),
+    Mutation(
+        key="sweep-supply-chain-run-log-left-open",
+        widening=True,
+        area=SWEEP,
+        rule="a surface off this lane's list is closed by the path `gh api -X GET` reaches it by",
+        path=SWEEP_WORKFLOW,
+        # The widening that reads like tightening prose: the bound still *says* an Actions run
+        # log is another lane's surface, and the call that fetches one is still on the list.
+        # `gh api -X GET repos/{owner}/{repo}/actions/jobs/{id}/logs` then satisfies the post-run
+        # audit's per-lane question -- it is a call the lane's own brief names -- while putting
+        # megabytes of the corpus most likely to hold a pasted credential in this lane's context.
+        # It is `public/outsiders`' `variables` defect (#95) in the lane that got its list last.
+        before=(
+            "log body is the \\`publication\\` and \\`disclosure\\` lanes' surface -- so never\n"
+            "  \\`gh run view --log\\`, and never \\`repos/{owner}/{repo}/actions/runs/{id}/logs\\` or\n"
+            "  \\`repos/{owner}/{repo}/actions/jobs/{id}/logs\\` through \\`gh api -X GET\\` either."
+        ),
+        after="log body is the \\`publication\\` and \\`disclosure\\` lanes' surface.",
+        caught_by=(_SUPPLY_CHAIN_BOUND,),
+    ),
+    Mutation(
         key="sweep-supply-chain-loses-its-read-list",
         widening=True,
         area=SWEEP,

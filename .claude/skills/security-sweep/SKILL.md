@@ -161,8 +161,15 @@ names. **What is off the list is the part worth reading twice.** There is no
 names, and this lane is looking for what none does, so the wider call would not even answer its
 question. There is no `gh run list` or `gh run view --log` either — its CI bullet reads
 `.github/` in the checkout, and the Actions logs belong to the `publication` and `disclosure`
-lanes. And the bound says in as many words what it is *not* about, which none of the other four
-has to: most of this lane is a scratch venv, `pip-audit`, advisory lookups on the web and reads
+lanes. **Both of those exclusions are closed by the path and not only by the name**, because
+the one `gh` call on that list reaches whatever the API serves: the bound names
+`repos/{owner}/{repo}/actions/runs/{id}/logs` and `.../actions/jobs/{id}/logs` as off it, and
+the tracker — `repos/{owner}/{repo}/issues` and its comment endpoints, which are those same two
+lanes' surface and which no bullet of this lane asks for — as off it too. That is the shape
+`public/outsiders`' bound uses for the `variables` endpoint one section up, and the reason is
+the same: a list that excludes a surface while leaving the call that fetches it unqualified has
+excluded nothing. And the bound says in as many words what it is *not* about, which none of the
+other four has to: most of this lane is a scratch venv, `pip-audit`, advisory lookups on the web and reads
 of issuebot's tracked source in a checkout on this host, and "the only calls you may make"
 would otherwise read as cancelling them. Its `coverage` says how far back the activity events
 it was served reach, what retention it established, and how many pushes, commits and refs it

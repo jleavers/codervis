@@ -780,6 +780,19 @@ test("the supply-chain lane is told what it may read on the GitHub side, and to 
     "supply-chain: the bound does not say what it is not about, so it reads as cancelling " +
       "the lane's own non-GitHub bullets",
   );
+  // The two surfaces the bound calls another lane's, closed by the path `gh api -X GET` would
+  // take to them rather than by the name alone: that call is this list's only `gh` entry and it
+  // fetches whatever the API serves, so an exclusion stated only as a name excludes nothing.
+  for (const wayRound of [
+    "actions/runs/{id}/logs",
+    "actions/jobs/{id}/logs",
+    "repos/{owner}/{repo}/issues",
+  ]) {
+    assert.ok(
+      flat.includes(wayRound),
+      `supply-chain: the lane is not told ${wayRound} is off its list`,
+    );
+  }
   // And the record that makes the bound auditable after the run.
   assert.match(
     flat,
