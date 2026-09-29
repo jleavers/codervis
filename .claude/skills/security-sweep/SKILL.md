@@ -201,9 +201,9 @@ profile, whose `WebFetch` has no allow-list, and the bound's closing line refuse
 of the swept repository's own GitHub pages — with `github.com/advisories`, where a GHSA id
 resolves, as the one exception and that page rather than the host. And the bound says in as
 many words what it is *not* about,
-which none of the other four has to: most of this lane is a scratch venv, `pip-audit`, advisory
-lookups on the web and reads of issuebot's tracked source in a checkout on this host, and "the
-only calls you may make" would otherwise read as cancelling them. Its `coverage` says how far
+which none of the other four has to: most of this lane is a scratch venv, `pip-audit` and
+advisory lookups on the web, and "the only calls you may make" would otherwise read as
+cancelling them. Its `coverage` says how far
 back the activity events it was served reach, what retention it established, and how many
 pushes, commits and refs it scanned.
 
@@ -498,7 +498,7 @@ out-of-scope, never silence:
 | --- | --- |
 | `front-door` | every route into `codervis:8000` that skips `ingress`'s bounds, `/healthz` under a hung mount, the FastAPI default routes and HEAD/Range on `/static`, and the browser side; may start a throwaway stack |
 | `inside-codervis` | code already running in the dashboard: the allowed hosts as exfiltration sinks (reasoned and stub-tested, never sent to the real services), what the whole-tree mounts hold, and what root with `NET_RAW` adds; may start a throwaway stack |
-| `supply-chain` | CI and Dependabot, advisories across the pip closure and the base image, variable names shared with issuebot, and history GitHub serves by SHA |
+| `supply-chain` | CI and Dependabot, advisories across the pip closure and the base image, the variable names the compose file takes from the shell, and history GitHub serves by SHA |
 | `assurance` | the gate-level tests (by mutation, on a copy), the design specs (archived since #46), container logs as agent input, and the sweep's own tooling |
 
 The `public` lanes (`args.lanes: "public"`) are for the tree about to be made public, which no

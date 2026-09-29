@@ -924,11 +924,10 @@ and did not record is what it is there to catch.`
 // all, so the wider call would not even answer its question.
 //
 // What this list does not bound is the rest of the lane, which is most of it: the scratch venv
-// and `pip-audit`, the advisory lookups its web tool makes, and the reads of issuebot's
-// *tracked* source in the checkout on this host are not reads of the swept repository's GitHub
-// surface -- which is the accurate form, since one of those lookups resolves a GHSA id at
-// `github.com/advisories` and so does reach the host. Those bullets carry
-// their own rules, and the bound says so rather than leaving an agent to decide whether
+// and `pip-audit`, and the advisory lookups its web tool makes, are not reads of the swept
+// repository's GitHub surface -- which is the accurate form, since one of those lookups
+// resolves a GHSA id at `github.com/advisories` and so does reach the host. Those bullets
+// carry their own rules, and the bound says so rather than leaving an agent to decide whether
 // "the only calls you may make" cancelled them.
 const SUPPLY_CHAIN_READ_CALLS = [
   'gh api -X GET repos/{owner}/{repo}/activity',
@@ -943,9 +942,8 @@ against ${repo} and no other repository, and nothing but:
 ${SUPPLY_CHAIN_READ_CALLS.map((call) => '- ' + call).join('\n')}
 
 That bounds what you send to GitHub, and nothing else in this lane: the scratch venv and
-\`pip-audit\`, the advisory lookups you make with the web tool, and the reads of issuebot's
-*tracked* source in its checkout on this host are not reads of ${repo}'s GitHub surface, and
-the bullets above that ask for them carry their own rules.
+\`pip-audit\`, and the advisory lookups you make with the web tool, are not reads of ${repo}'s
+GitHub surface, and the bullets above that ask for them carry their own rules.
 
 **Each \`gh api\` entry names its path, and that is the same rule as its method one level
 down.** \`gh api\` reaches every endpoint GitHub serves, so an entry reading \`gh api -X GET\`
@@ -1749,13 +1747,15 @@ first run's deploy lane, which saw a much smaller CI file.
   rest; resolve it in a scratch venv) and the Debian packages in \`python:3.14-slim\`, against
   published advisories. Use pip-audit or OSV, and Debian's security tracker. Say which
   advisories are reachable in this tree and why, and give version numbers, not adjectives.
-- **Shared variable names with issuebot** (gap 9). issuebot runs on this host, and
-  \`app/egress.py\` was ported from it. Does issuebot's setup export variables that codervis's
-  compose file interpolates, such as \`EGRESS_ALLOW\`, \`DASHBOARD_*\` or \`*_HOME\`? An
-  operator shell configured for issuebot would then widen codervis's egress allow-list or
-  mounts without warning. Establish this from issuebot's *tracked* source and docs:
-  \`git -C ~/_dev/issuebot ls-files\` and \`git -C ~/_dev/issuebot show HEAD:<path>\`. Never
-  read its \`.env\` or any untracked file, and never the operator's shell environment.
+- **Variable names the compose file takes from the shell** (gap 9). \`docker-compose.yml\`
+  interpolates \`EGRESS_ALLOW\`, \`DASHBOARD_*\` and the \`*_HOME\` paths from the environment it
+  is run in, and \`app/egress.py\` was ported from issuebot's proxy. A shell set up for another
+  tool on the same host that exports one of those names would widen codervis's egress
+  allow-list or mounts without a warning. Establish from this tree alone which names it reads
+  from the environment, which are generic enough to collide, and what each does when set.
+  Which names a *particular* other project exports is not this lane's question, since it reads
+  no repository but the one being swept: record that comparison in \`coverage\` as unreached
+  rather than reaching for another checkout, and never read the operator's shell environment.
 - **History GitHub will serve by SHA** (gap 11). The third run's publication lane showed that
   GitHub serves force-pushed-over commits by SHA. It could not see rewrites older than the
   events API's window. Establish whether the repository activity endpoint reaches further

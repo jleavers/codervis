@@ -1817,15 +1817,13 @@ def test_the_supply_chain_lane_bounds_and_records_its_github_side_read() -> None
     assert not literals, f"SUPPLY_CHAIN_READ_BOUND names the repository literal(s) {literals!r}"
 
     # This lane is the one whose GitHub-side list covers a minority of what its brief asks for:
-    # the other three bullets resolve a pip closure in a scratch venv, look advisories up on the
-    # web, and read issuebot's tracked source out of a checkout on this host. So the bound has to
-    # say what it is not about. Without that, "these are the only calls you may make" reads as
-    # cancelling three quarters of the lane -- and a bound an agent has to reinterpret to do its
-    # work is one it will reinterpret the other way too.
+    # its other bullets resolve a pip closure in a scratch venv and look advisories up on the
+    # web. So the bound has to say what it is not about. Without that, "these are the only calls
+    # you may make" reads as cancelling most of the lane -- and a bound an agent has to
+    # reinterpret to do its work is one it will reinterpret the other way too.
     assert "and nothing else in this lane" in flat_bound, (
         "SUPPLY_CHAIN_READ_BOUND does not say which of the lane's work it is not about, so it "
-        "reads as forbidding the scratch venv, `pip-audit` and the reads of issuebot's tracked "
-        "source that the same brief requires"
+        "reads as forbidding the scratch venv and `pip-audit` that the same brief requires"
     )
     # The one call that would reach this lane's own quarry and is deliberately off the list. A
     # mirror clone fetches what a ref names; what this lane is after is what no ref names, so the

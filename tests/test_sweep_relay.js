@@ -804,8 +804,8 @@ test("the supply-chain lane is told what it may read on the GitHub side, and to 
   );
   // This lane is the one whose GitHub-side list bounds a minority of what it does, so the
   // rendered prompt has to say which of its bullets the list is not about. Without it, "the
-  // only calls you may make" reads as cancelling the scratch venv, `pip-audit` and the reads
-  // of issuebot's tracked source that its other three bullets require.
+  // only calls you may make" reads as cancelling the scratch venv and `pip-audit` that its
+  // other bullets require.
   assert.ok(
     flat.includes("That bounds what you send to GitHub, and nothing else in this lane"),
     "supply-chain: the bound does not say what it is not about, so it reads as cancelling " +
