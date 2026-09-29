@@ -867,7 +867,9 @@ and did not record is what it is there to catch.`
 //
 // What this list does not bound is the rest of the lane, which is most of it: the scratch venv
 // and `pip-audit`, the advisory lookups its web tool makes, and the reads of issuebot's
-// *tracked* source in the checkout on this host are not calls to GitHub. Those bullets carry
+// *tracked* source in the checkout on this host are not reads of the swept repository's GitHub
+// surface -- which is the accurate form, since one of those lookups resolves a GHSA id at
+// `github.com/advisories` and so does reach the host. Those bullets carry
 // their own rules, and the bound says so rather than leaving an agent to decide whether
 // "the only calls you may make" cancelled them.
 const SUPPLY_CHAIN_READ_CALLS = [

@@ -1025,23 +1025,16 @@ MUTATIONS: tuple[Mutation, ...] = (
         # anyone who can read a public repository -- while satisfying the post-run audit's
         # per-lane question, which asks only whether a call is one the lane's brief names. It is
         # `public/outsiders`' `variables` defect (#95) one level up from where that one was.
+        #
+        # **This is the control that witnesses the shape check**, which it did not until the
+        # check was moved ahead of the equality assertion in that test. A second control was
+        # written first, mutating this module's copy of the list instead, on the theory that the
+        # change somebody makes moves both; `Mutation` has one `path`, so it edited the test
+        # alone and failed on the same equality assertion from the other side, proving nothing
+        # the sibling did not. It is deleted rather than kept green: with the order fixed, this
+        # one fails at the regex and the shape check has a witness.
         before="  'gh api -X GET repos/{owner}/{repo}/activity',\n",
         after="  'gh api -X GET',\n",
-        caught_by=(_SUPPLY_CHAIN_BOUND,),
-    ),
-    Mutation(
-        key="sweep-supply-chain-api-entry-loses-its-path-with-the-pin",
-        widening=True,
-        area=SWEEP,
-        rule="the shape check bites when the list and the test's copy of it move together",
-        path=CONTEXT_TESTS,
-        # The control above widens the workflow alone, and the pre-existing equality against
-        # this module's own copy of the list is what turns it red -- so the shape check never
-        # runs and nothing proves it bites. The change somebody actually makes moves both, which
-        # is what this mutates: with the module's copy widened too, equality passes and the
-        # regex is the only thing left between this lane and every endpoint GitHub serves.
-        before='    "gh api -X GET repos/{owner}/{repo}/activity",\n',
-        after='    "gh api -X GET",\n',
         caught_by=(_SUPPLY_CHAIN_BOUND,),
     ),
     Mutation(

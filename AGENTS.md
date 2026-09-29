@@ -300,7 +300,9 @@ What the repository does control is the text itself:
   way; for three of them their own entries bound what the bare call adds, and
   `public/outsiders` is the one where that is not so. It is also the one bound
   that says what it is *not* about, since most of that lane is a scratch venv
-  and an advisory lookup rather than a call to GitHub, and the one that closes
+  and an advisory lookup rather than a read of the swept repository's GitHub
+  surface -- the accurate form, since a GHSA id resolves on that host -- and the
+  one that closes
   the *web* route to the surfaces it keeps off its list, since that lane holds
   `WebFetch` with no allow-list of its own. A list per lane, because a bound is a block of text and a lane
   that interpolates another's name acquires the whole of that lane's reach.

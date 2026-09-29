@@ -1699,6 +1699,21 @@ def test_the_supply_chain_lane_bounds_and_records_its_github_side_read() -> None
     briefs = _sweep_briefs(source)
 
     calls = _const_body_list(source, "SUPPLY_CHAIN_READ_CALLS")
+    # The shape first and the allow-list second, which is the opposite of the other two lanes'
+    # tests and is deliberate. Equality against this module's copy answers "is the list still
+    # the list"; the shape answers "may an entry be written bare", and it is the second that
+    # the widening somebody actually makes gets past -- a bare `gh api -X GET` arrives with
+    # this module's copy edited to match it, because that is what making the suite green looks
+    # like. Checked first, the shape is what the control mutating the workflow turns red, so
+    # something in `tests/test_negative_controls.py` witnesses it rather than only the equality.
+    for call in calls:
+        if not call.startswith("gh api"):
+            continue
+        assert re.fullmatch(r"gh api -X GET repos/\{owner\}/\{repo\}/[\w{}/.-]+", call), (
+            f"`unowned/supply-chain`'s entry {call!r} does not name the path it may ask for, "
+            f"against the repository the sweep resolves. `gh api` reaches every endpoint GitHub "
+            f"serves, and this lane has no other `gh` entry to bound it"
+        )
     assert calls == SUPPLY_CHAIN_READ_CALLS, (
         f"the reads `unowned/supply-chain` may make are {calls}, not {SUPPLY_CHAIN_READ_CALLS}. "
         f"Widening that list is a decision: say in the same change what an injected instruction "
@@ -1748,22 +1763,8 @@ def test_the_supply_chain_lane_bounds_and_records_its_github_side_read() -> None
         "one no ref names, which a clone does not fetch"
     )
 
-    # And the same question one level down, which is where `public/outsiders`' `variables` entry
-    # was answered (#95) and where the first draft of this list got it wrong. `gh api` is this
-    # lane's only `gh` entry and it reaches every endpoint GitHub serves, so an entry reading
-    # `gh api -X GET` with nothing after it is an allow-list of one call and a way to every
-    # surface in the sweep. Naming the two or three worth worrying about as forbidden is the
-    # shape AGENTS.md rules out -- "the key somebody actually adds will be a fourth" -- so what
-    # is pinned is that each `gh api` entry says which path it may ask for.
-    for call in calls:
-        if not call.startswith("gh api"):
-            continue
-        assert re.fullmatch(r"gh api -X GET repos/\{owner\}/\{repo\}/[\w{}/.-]+", call), (
-            f"`unowned/supply-chain`'s entry {call!r} does not name the path it may ask for, "
-            f"against the repository the sweep resolves. `gh api` reaches every endpoint GitHub "
-            f"serves, and this lane has no other `gh` entry to bound it"
-        )
-    # And the bound says why, because an agent reading a path-scoped entry has to know it is the
+    # And the bound says why the entries are path-scoped, because an agent reading one has to
+    # know it is the
     # rule rather than an example -- the reach it closes is everything not named.
     assert "names its path" in flat_bound, (
         "`unowned/supply-chain`'s bound does not say that its `gh api` entries name their path "
