@@ -509,13 +509,26 @@ const DISCLOSURE_READ_CALLS = [
   "git clone --mirror",
 ];
 
+// Since #102 this lane's `gh api` entries name their paths too, and for the reason #96 gave
+// one lane earlier: nothing else on this list grants an Actions variable's value, so a bare
+// `gh api -X GET` here left the closure of `repos/{owner}/{repo}/actions/variables` to a
+// sentence in the bound naming it -- a deny-list one level down, which never named the
+// per-environment endpoint that serves the same value.
 const OUTSIDERS_READ_CALLS = [
   "gh repo view",
-  "gh api -X GET",
   "gh ruleset list",
   "gh ruleset view",
   "gh secret list",
   "gh variable list --json name",
+  "gh api -X GET repos/{owner}/{repo}",
+  "gh api -X GET repos/{owner}/{repo}/actions/permissions",
+  "gh api -X GET repos/{owner}/{repo}/actions/permissions/workflow",
+  "gh api -X GET repos/{owner}/{repo}/branches/{branch}/protection",
+  "gh api -X GET repos/{owner}/{repo}/collaborators",
+  "gh api -X GET repos/{owner}/{repo}/keys",
+  "gh api -X GET repos/{owner}/{repo}/hooks",
+  "gh api -X GET repos/{owner}/{repo}/private-vulnerability-reporting",
+  "gh api -X GET repos/{owner}/{repo}/contents/{path}",
   "git clone --depth 1",
 ];
 
@@ -723,10 +736,23 @@ test("the public set's two GitHub-side lanes are told what they may read, and to
   );
   assert.ok(
     outsiders.includes("gh variable list --json name") &&
-      outsiders.includes("never the bare") &&
-      outsiders.includes("endpoint through"),
+      outsiders.includes("No path on the list reaches a value"),
     "outsiders: the lane is not told which call enumerates Actions variables without their " +
-      "values, or is not told the other two ways to the same value are closed",
+      "values, or is not told that what closes the endpoints returning one is the list",
+  );
+  // And the rendered prompt carries the rule that makes the list do that, rather than only the
+  // paths: an entry read as a prefix puts `actions/variables` back under `repos/{owner}/{repo}`.
+  assert.ok(
+    outsiders.includes("names the path it may ask for") &&
+      outsiders.includes("a path and not a prefix"),
+    "outsiders: the lane is not told that its `gh api` entries name a path, and a path rather " +
+      "than a prefix of paths",
+  );
+  assert.ok(
+    !/- gh api -X GET\s*$/m.test(
+      calls.find(({ opts }) => opts.label === "scan:outsiders").prompt,
+    ),
+    "outsiders: the rendered list carries a bare `gh api -X GET` entry",
   );
   for (const surface of [
     "repository object",

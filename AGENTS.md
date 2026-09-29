@@ -293,12 +293,21 @@ What the repository does control is the text itself:
   `public` lanes through a bound each (#95), which replaced a closing line of
   prose that forbade five write verbs and so left the sixth, and
   `unowned/supply-chain` through `SUPPLY_CHAIN_READ_BOUND` (#96), whose list is
-  the shortest of the five and the only one whose `gh api` entries name the
+  the shortest of the five and the first whose `gh api` entries name the
   **path** they may ask for: that call reaches every endpoint GitHub serves, so
   a bare `gh api -X GET` beside it is a deny-list of whatever the author thought
-  of, which is what the rule below forbids. The other four are written the older
-  way; for three of them their own entries bound what the bare call adds, and
-  `public/outsiders` is the one where that is not so. It is also the one bound
+  of, which is what the rule below forbids. `OUTSIDERS_READ_BOUND` is written
+  the same way since #102, and that lane is where the shape mattered most:
+  nothing on its list grants an Actions *variable's* value, GitHub serves one to
+  anyone who can read a public repository, and so long as the list carried a
+  bare `gh api -X GET` the closure had to be a sentence naming
+  `actions/variables` — with `environments/{name}/variables` as the endpoint it
+  did not name. Its nine paths are the settings surfaces its own bullets ask
+  for, a variable is enumerated by `gh variable list --json name` and by nothing
+  else, and an entry is a path and not a prefix of paths. The remaining three —
+  the `publication` lanes and `public/disclosure` — are written the older way,
+  and there their own entries bound what the bare call adds. `SUPPLY_CHAIN_READ_BOUND`
+  is still the one bound
   that says what it is *not* about, since most of that lane is a scratch venv
   and an advisory lookup rather than a read of the swept repository's GitHub
   surface -- the accurate form, since a GHSA id resolves on that host -- and the

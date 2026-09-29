@@ -1282,17 +1282,47 @@ DISCLOSURE_READ_CALLS = [
 #: Every GitHub-side read `public/outsiders` may make. It reads repository *state* rather than
 #: text, which is why its list is not the one above: settings, rulesets, collaborators, deploy
 #: keys, webhooks and the names of secrets and variables exist on the GitHub side and in no
-#: checkout. `gh api -X GET` carries most of them, and the three narrower `gh` reads are here so
-#: the lane does not reach for `gh api` where a simpler read exists.
+#: checkout. The three narrower `gh` reads are here so the lane does not reach for `gh api`
+#: where a simpler read exists, and `gh variable list --json name` is the projection that
+#: enumerates variables without their values.
+#:
+#: **The `gh api` entries name their paths (#102), as `unowned/supply-chain`'s do.** This list
+#: carried a bare `gh api -X GET` until then, and the endpoint that entry must not reach --
+#: `repos/{owner}/{repo}/actions/variables`, whose values GitHub serves to anyone who can read a
+#: public repository -- was closed by a sentence in the bound naming it. That is the deny-list
+#: one level down that AGENTS.md's rule for how a pin is written rules out, and the endpoint the
+#: sentence did not name is `repos/{owner}/{repo}/environments/{name}/variables`, which serves an
+#: *environment* variable's value by the same rule. With the paths on the list the closure is
+#: what the list does not contain. An entry is a path and not a prefix of paths, which is what
+#: keeps `repos/{owner}/{repo}` from putting every endpoint beneath it back on; the bound says so
+#: and `test_the_public_sets_github_side_lanes_bound_and_record_their_reads` requires it to.
 OUTSIDERS_READ_CALLS = [
     "gh repo view",
-    "gh api -X GET",
     "gh ruleset list",
     "gh ruleset view",
     "gh secret list",
     "gh variable list --json name",
+    "gh api -X GET repos/{owner}/{repo}",
+    "gh api -X GET repos/{owner}/{repo}/actions/permissions",
+    "gh api -X GET repos/{owner}/{repo}/actions/permissions/workflow",
+    "gh api -X GET repos/{owner}/{repo}/branches/{branch}/protection",
+    "gh api -X GET repos/{owner}/{repo}/collaborators",
+    "gh api -X GET repos/{owner}/{repo}/keys",
+    "gh api -X GET repos/{owner}/{repo}/hooks",
+    "gh api -X GET repos/{owner}/{repo}/private-vulnerability-reporting",
+    "gh api -X GET repos/{owner}/{repo}/contents/{path}",
     "git clone --depth 1",
 ]
+
+#: The endpoints that return an Actions variable's *value*, which is what `public/outsiders`'
+#: list may not carry a path to. Stated here rather than derived, because what the lane is kept
+#: off is the property `gh variable list --json name` exists to give it: a secret's value is
+#: served to nobody, a variable's to anyone who can read a public repository. The second entry
+#: is the one the by-name closure this replaced never named.
+VARIABLE_VALUE_PATHS = (
+    "repos/{owner}/{repo}/actions/variables",
+    "repos/{owner}/{repo}/environments/{name}/variables",
+)
 
 #: Every GitHub-side read `unowned/supply-chain` may make (#96). **The `gh api` entries name
 #: their path, which no other lane's do**, and that is the same rule as `gh api`'s method one
@@ -1494,6 +1524,31 @@ def test_the_public_sets_github_side_lanes_bound_and_record_their_reads() -> Non
          "public/outsiders"),
     ):
         calls = _const_body_list(source, calls_const)
+        # `outsiders`' `gh api` entries name their paths (#102), and the shape is checked ahead
+        # of the equality for the reason the supply-chain test gives: a bare `gh api -X GET`
+        # arrives with this module's copy edited to match it, because that is what making the
+        # suite green looks like, so it is the shape that has to be what a control turns red.
+        # `disclosure`'s entry is bare on purpose -- `gh issue view` and `gh run view --log` are
+        # on its own list, so the bare call adds little to a reach it already has -- which is why
+        # this runs for one lane and not both.
+        if lane == "public/outsiders":
+            for call in calls:
+                if not call.startswith("gh api"):
+                    continue
+                assert re.fullmatch(
+                    r"gh api -X GET repos/\{owner\}/\{repo\}(/[\w{}/.-]+)?", call
+                ), (
+                    f"`public/outsiders`' entry {call!r} does not name the path it may ask for, "
+                    f"against the repository the sweep resolves. `gh api` reaches every endpoint "
+                    f"GitHub serves, and nothing else on this list grants a variable's value for "
+                    f"the bare spelling to be measured against"
+                )
+            for path in VARIABLE_VALUE_PATHS:
+                assert not any(call.endswith(path) for call in calls), (
+                    f"`public/outsiders`' list carries a path to {path!r}, which returns every "
+                    f"Actions variable's value beside its name. The lane enumerates them with "
+                    f"{VARIABLE_LISTING_PROJECTION!r} and by nothing else"
+                )
         assert calls == stated, (
             f"the reads {lane} may make are {calls}, not {stated}. Widening that list is a "
             f"decision: say in the same change what an injected instruction could reach with "
@@ -1613,24 +1668,42 @@ def test_the_public_sets_github_side_lanes_bound_and_record_their_reads() -> Non
         "`public/outsiders`' bound names a second repository without closing the list at two"
     )
     # A secret's value is served to nobody; a variable's is served to anyone who can read a
-    # public repository. So the projection on the list is not the whole of it: the bound has to
-    # close the two other ways to the same value, because `gh api -X GET` is on the list too and
-    # the endpoint returns values to it. And the prohibition is on the *fetch*, not on what ends
-    # up in a finding -- a value the lane fetched is in its context and in this run's transcripts
-    # whatever it wrote down.
+    # public repository. So the projection on the list is the only way this lane enumerates them,
+    # and what closes the endpoints that return a value is that no path on the list reaches one
+    # (#102) -- rather than the sentence naming `actions/variables` that stood there while the
+    # list carried a bare `gh api -X GET`, which is a deny-list one level down and never named
+    # the per-environment endpoint. The prohibition is on the *fetch*, not on what ends up in a
+    # finding: a value the lane fetched is in its context and in this run's transcripts whatever
+    # it wrote down.
     assert VARIABLE_LISTING_PROJECTION in flat_outsiders, (
         f"`public/outsiders`' bound does not name {VARIABLE_LISTING_PROJECTION!r} as how it "
         f"enumerates Actions variables"
     )
-    for way_round in ("never the bare", "endpoint through"):
-        assert way_round in flat_outsiders, (
-            f"`public/outsiders`' bound names a projection for listing variables without "
-            f"closing the other way to the same value ({way_round!r} is missing): `gh api "
-            f"-X GET` is on its list, and that endpoint returns every value"
-        )
     assert "never fetch at all" in flat_outsiders, (
         "`public/outsiders`' bound makes the variable rule one about what the lane records. A "
         "value it fetched is in its context and in this run's transcripts whatever it wrote"
+    )
+    # And the bound says why the entries are path-scoped, because an agent reading one has to
+    # know it is the rule rather than an example -- what it closes is everything not named.
+    assert "names the path it may ask for" in flat_outsiders, (
+        "`public/outsiders`' bound does not say that its `gh api` entries name their path on "
+        "purpose, which is what stops the next one being written bare"
+    )
+    assert "a path and not a prefix" in flat_outsiders, (
+        "`public/outsiders`' bound does not say that an entry is a path rather than a prefix. "
+        "`repos/{owner}/{repo}` is on its list, and read as a prefix it puts `actions/variables` "
+        "and every other endpoint beneath it straight back on"
+    )
+    assert r"record in \`coverage\` as unreached, naming the path" in flat_outsiders, (
+        "`public/outsiders`' bound does not say what to do about a path the list does not name, "
+        "which leaves asking for it the obvious thing to do"
+    )
+    # The webhook rule is the one thing here that is about what the lane writes down, and it
+    # says so: there is no projection that returns a hook's events without its URL, so the list
+    # cannot carry this one the way it carries the variable rule.
+    assert "no projection that withholds the URL" in flat_outsiders, (
+        "`public/outsiders`' bound asks the lane to record a webhook's host and events without "
+        "saying why that rule is about what it writes down when the variable rule is not"
     )
 
     # And the operator's copy of each list is the lane's copy. SKILL.md is where the decision is
