@@ -13,7 +13,8 @@ updates:
         patterns: ["*"]
         update-types: [minor, patch]
 
-  # Python dependencies declared in requirements.txt and requirements-dev.txt.
+  # The two hash-locked dependency sets, requirements.txt and requirements-dev.txt. Grouped
+  # so the lock moves as a unit rather than one artefact at a time (#104).
   - package-ecosystem: pip
     directory: /
     schedule:
@@ -23,7 +24,9 @@ updates:
         patterns: ["*"]
         update-types: [minor, patch]
 
-  # The python:3.14-slim base image in Dockerfile.
+  # The base image in Dockerfile, which is pinned by digest (#104). This is what moves that
+  # digest on when the python:3.14-slim tag moves; without it a digest pin is a pin to an
+  # image nobody updates.
   - package-ecosystem: docker
     directory: /
     schedule:

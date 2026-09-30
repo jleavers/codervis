@@ -1,0 +1,9 @@
+# The direct dependencies of a contributor's checkout, by name: the runtime set plus what the
+# tests and the linter need. Versions live in `requirements-dev.txt`, for the reason its
+# runtime counterpart gives.
+
+-r requirements.in
+
+httpx2
+pytest
+ruff

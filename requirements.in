@@ -1,0 +1,14 @@
+# The direct dependencies of the codervis process, by name.
+#
+# Every version decision lives in `requirements.txt`, which is this file fully resolved and
+# fixed by content hash. A range here would be a second place a version is decided and the
+# two would drift, so this file names packages and nothing else. Regenerate the lock with the
+# command in its header after changing this one.
+
+fastapi
+# Imported directly by app/server.py, which subclasses uvicorn's h11 protocol, so it is
+# declared here rather than relied on as uvicorn's own transitive dependency.
+h11
+jinja2
+python-multipart
+uvicorn[standard]
