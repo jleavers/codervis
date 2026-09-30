@@ -399,6 +399,25 @@ is the set of `Host` values `app/main.py` serves. The check is a pure-ASGI
 403. The two settings are widened together and `tests/test_host_allowlist.py`
 pins the behaviour.
 
+**What may run *in* the origin is bounded in a second layer of the same kind (#104).**
+`ContentSecurityPolicy` is pure ASGI for the same two reasons `HostAllowlist` is — a per-route
+dependency misses `/static`, and `BaseHTTPMiddleware` would buffer the SSE stream — and is
+added *after* it, so it is the outer of the two and the host refusal carries the policy as
+well. It names this origin and nothing else: `default-src 'none'`, `'self'` for scripts,
+styles, images and `connect-src`, and `'none'` for `base-uri`, `form-action` and
+`frame-ancestors`, which do not fall back to `default-src`. `connect-src` is the one that
+bounds exfiltration, since `/api/usage` and `/api/stream` are readable from any page that gets
+a script into this origin. The template's one inline block — the initial payload — runs under
+a per-response nonce the layer puts in the ASGI scope, never under `'unsafe-inline'`: that
+would admit an `onerror=` attribute from a future `innerHTML` regression in `app/static/app.js`
+too (#78), which is half of what this policy is for. The four routes FastAPI registers by
+default are off at construction (`docs_url=None`, `redoc_url=None`, `openapi_url=None`),
+because `/docs` and `/redoc` load `swagger-ui-dist@5` and `redoc@2` from a CDN with no
+integrity attribute and nothing here uses them. `tests/test_origin_bound.py` pins the served
+paths, the policy directive by directive, and that every response carries it; do not add a
+source to `CSP_DIRECTIVES` that is not this origin, and do not let a route be added that loads
+something this project does not ship.
+
 **What that publish address is worth is partly the engine's, on a different
 release from the one above (#79).** Before Engine 28.0 a peer on the host's own
 network segment reaches this stack whatever address the port was published on —
@@ -472,6 +491,23 @@ second gateway address. Do not add a host to `DEFAULT_ALLOW` that the live
 clients do not call. If a client ever needs another host, add it to
 `DEFAULT_ALLOW` and to the test that checks the defaults cover the clients' own
 hosts.
+
+## Third-party code arrives by content, not by name
+
+`requirements.in` and `requirements-dev.in` name the packages the app and a contributor's
+checkout need. `requirements.txt` and `requirements-dev.txt` are those resolved in full —
+every package, direct and transitive, pinned to one version and to a `sha256` of the artefact
+— and are what anything installs. The inputs decide **no** version: a range in one would be a
+second place a version is decided, and the two drift the first time Dependabot moves the lock.
+The `Dockerfile` installs with `pip install --require-hashes`, which is what makes the hashes
+enforced rather than decorative, and refuses a package the lock does not name; its base image
+is pinned by digest, so the `pip` and the CA bundle the build uses are fixed too. Regenerate
+both locks together with the command in each one's header — a contributor's venv and the image
+must be the same artefacts, which is what `tests/test_dependency_lock.py` asserts package for
+package, alongside the shape of a lock line and the flags the image may pass to pip. The
+reason is `app/main.py`'s: import-time code in this process holds both bearer tokens and can
+read both mounted home trees, so a version range is a standing invitation for whoever
+compromises a publishing account inside it (#104).
 
 ## Load-bearing assumption: every live endpoint is undocumented
 

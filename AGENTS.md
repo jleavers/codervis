@@ -40,9 +40,16 @@ directories; it must not call upstream quota endpoints or read host tokens.
   (`_payload_json()`) that `/api/usage`, the SSE frames and the template's
   initial payload all share. It owns the `Host` allow-list
   (`DASHBOARD_ALLOWED_HOSTS`) that decides which clients the dashboard answers
-  at all, too. Keep that check wrapped around the whole app, and pure ASGI:
+  at all, too, and beside it the `ContentSecurityPolicy` layer that decides what
+  may run once one is answered (#104). Keep both checks wrapped around the whole
+  app, and pure ASGI:
   per-route checks miss `/static`, and `BaseHTTPMiddleware` would buffer the SSE
-  stream. The boundary does no I/O: it reads the last snapshot each refresher
+  stream. The policy names this origin and nothing else, and the template's one
+  inline block runs under a per-response nonce rather than `'unsafe-inline'`,
+  which would also admit an event-handler attribute from a future `innerHTML`
+  regression (#78). The four routes FastAPI registers by default stay off
+  (`docs_url=None`, `redoc_url=None`, `openapi_url=None`): `/docs` and `/redoc`
+  load a CDN bundle with no integrity attribute, and nothing here uses them. The boundary does no I/O: it reads the last snapshot each refresher
   published. Never call a quota client or an activity reader from a request
   handler — the refresher's cadence is the only thing that bounds how often a
   credential is read or a token is sent upstream.
@@ -173,6 +180,12 @@ directories; it must not call upstream quota endpoints or read host tokens.
   passed the whole suite. Its fixtures are parseable credential files and
   planted links out of the tree, so a regression changes behaviour.
   `tests/test_activity_gate.py` pins the gate's own refusals.
+  `tests/test_origin_bound.py` pins what may run in the dashboard's origin: the
+  paths the app registers, the policy directive by directive, and that every
+  response carries it. `tests/test_dependency_lock.py` pins the other half of
+  the same invariant at build time -- what a line in a lock may be, that the two
+  locks agree package for package, and that the image installs with
+  `--require-hashes` from a base image named by digest.
   `tests/test_payload_contract.py` is the payload contract: it runs both live
   clients through one matrix of transport faults, hostile response bodies and
   hostile credential files, and asserts the payload always matches the schema
@@ -395,6 +408,15 @@ What the repository does control is the text itself:
   older engine does to their own deployment instead — that is advice to them,
   never a change to make here, and dropping the option from this repository is
   the thing this rule forbids.
+- Preserve the content bound on third-party code (#104). `requirements.in` and
+  `requirements-dev.in` name packages and decide no version; `requirements.txt`
+  and `requirements-dev.txt` are those resolved in full and fixed by `sha256`,
+  and are what anything installs. Regenerate them together, with the command in
+  each lock's header, and keep `pip install --require-hashes` and the base
+  image's digest in the `Dockerfile`. Nothing the dashboard serves may load
+  code from another origin, and no source but this one belongs in
+  `CSP_DIRECTIVES`: a CDN entry there is the docs routes coming back by another
+  door.
 - Do not add token refresh or OAuth flow logic here; the host CLIs own that.
 - Do not multiply live utilization values by 100. The live APIs are expected
   to already be on a 0-100 scale.

@@ -93,6 +93,17 @@ built carries the bearer token. The same rule covers the log.
 provably cannot take one.** The knobs are the "Read budgets" table in `README.md`, and a new
 one goes there, in `.env.example` and in `docker-compose.yml`.
 
+**Dependencies are fixed by content, and one place decides a version.** `requirements.in`
+and `requirements-dev.in` name the packages; `requirements.txt` and `requirements-dev.txt`
+are those resolved in full, every package pinned to one version and to a `sha256` of the
+artefact, and are what anything actually installs. A range in an input would be a second place
+a version is decided, so the inputs carry names and nothing else. To add or drop a package,
+edit the input and regenerate both locks with the command written in each lock's header —
+they are regenerated together, because a contributor's venv and the image have to be the same
+set of artefacts. The image installs with `pip install --require-hashes`, which refuses a
+lock that has lost a hash and refuses a package the lock does not name, so an incomplete
+regeneration fails the Docker build rather than resolving something fresh.
+
 **The image in the README is generated, not screenshotted by hand.** It is captured from the
 real app serving fabricated data, so nobody's plan tier, usage or activity ends up in a public
 file. If a change moves the layout or the colour ramp, regenerate it:
