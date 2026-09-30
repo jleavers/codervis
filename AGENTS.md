@@ -278,7 +278,13 @@ What the repository does control is the text itself:
   (#80). The sweep's dedupe pass no longer lists the tracker: the launching
   session fetches it, filtered to author associations `OWNER`, `MEMBER` and
   `COLLABORATOR`, and `maintainerAuthored()` in the workflow re-checks every
-  item and carries its author into the fence. Some lanes still read the GitHub
+  item and carries its author into the fence. An association is a relationship
+  to the repository and not an author, though: an automation account that works
+  the tracker is a `COLLABORATOR` too, and writes whatever the session running
+  under it was steered to. So the items of the accounts the operator names as
+  agents (`args.agentAccounts`), and of any `[bot]` login, arrive marked
+  `writtenBy: agent`, and a `duplicate` that rests on those alone is recorded as
+  `related` by the script, not left to the stage. Some lanes still read the GitHub
   side whole, and which ones is `GITHUB_SIDE_BY_DESIGN` in
   `tests/test_agent_tooling_context.py`, where the argument for each is written
   down beside it — what a stranger wrote, for the `publication` lanes and
@@ -328,10 +334,13 @@ What the repository does control is the text itself:
   Read the membership from the allow-list rather than from a count restated
   here: #91 is what happened when the workflow gained
   lanes and none of the four statements of that list did.
-  This repository's issue forms are the rule facing outward: no field a
-  stranger fills in is named, or rendered, as an executable validation section,
-  because an agent working this tracker reads a section of that name as steps
-  to run.
+  This repository's issue forms never ask a reporter for an executable section:
+  no field is named, or rendered, as a validation section, because an agent
+  working this tracker reads a section of that name as steps to run. That is a
+  courtesy to honest reporters and not a bound. A blank issue, or a `POST` to the
+  issues API, reaches the tracker with any body at all, headings included, so
+  nothing that reads the tracker may take a section's presence or absence as a
+  statement about who wrote it or what it is safe to run.
 - **Text one agent hands another is that same text, one step further on.** The
   sweep's findings quote the code, commands and tracker prose they are about,
   because its evidence rule requires them to, so an imperative somebody wrote

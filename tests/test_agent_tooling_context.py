@@ -1009,6 +1009,46 @@ def test_no_sweep_stage_goes_and_reads_the_tracker() -> None:
         "`unknown` is a valid GitHub login, so a deleted author would read as a real account"
     )
 
+    # An association is a relationship, not an author: the account an issuebot deployment
+    # posts as is a COLLABORATOR, so what a steered session under it files passes the filter
+    # above. The permitted shape, stated here rather than read back out of the script: an item
+    # is agent-written exactly when its author is a `[bot]` login or one the operator named in
+    # `args.agentAccounts`, compared case-insensitively as GitHub compares logins. Every relayed
+    # item says which it is, and nothing an agent account wrote is relayed as a maintainer's.
+    agent_test = source[source.index("const writtenByAgent = ") :]
+    agent_test = agent_test[: agent_test.index("\n}\n")]
+    assert agent_test.splitlines()[1:] == [
+        "  const name = String(login || '').toLowerCase()",
+        "  return name.endsWith('[bot]') || AGENT_ACCOUNTS.includes(name)",
+    ], (
+        "writtenByAgent() is not the permitted shape -- a `[bot]` login or a named agent "
+        "account, case-insensitively -- so an automation account's items can reach the dedupe "
+        f"pass as a maintainer's word: {agent_test!r}"
+    )
+    assert ".map((login) => String(login).trim().toLowerCase())" in source, (
+        "the named agent accounts are not lowercased, so `Jleavers-Bot` in the list would not "
+        "match the `jleavers-bot` GitHub reports, and that account's items would pass as a "
+        "maintainer's"
+    )
+    assert "writtenBy: writtenByAgent(item.author) ? 'agent' : 'maintainer'," in filterer, (
+        "a relayed tracker item does not say whether an agent account wrote it, so the dedupe "
+        "pass cannot tell a steered session's 'already handled' from a maintainer's"
+    )
+    # And the rule the dedupe pass is given is the script's, not only the prompt's: a verdict
+    # is data this script can check. A `duplicate` whose every cited item an agent account
+    # wrote is recorded as `related`, and the report is told so before anything else it says.
+    assert "numbers.length > 0 && numbers.every((number) => agentWritten.has(number))" in source, (
+        "a duplicate resting only on agent-written items is not caught after the dedupe pass, "
+        "so a steered session's follow-up issue can make a genuine cluster read as filed"
+    )
+    assert "return { ...verdict, status: 'related' }" in source, (
+        "a duplicate resting only on agent-written items is caught but not downgraded"
+    )
+    assert "  dedupe: verdicts," in source and "heldBackNote + dedupe.report_markdown" in source, (
+        "the run returns the dedupe pass's own verdicts and report rather than the checked ones, "
+        "so the downgrade happens and nothing downstream sees it"
+    )
+
     # The cap bounds records; this bounds bytes. One issue body can be 65,536 characters, so
     # 300 capped records is still a prompt of any size -- and the same text crosses the
     # launching session's own context on the way. Both halves are pinned, since either alone
@@ -1085,10 +1125,12 @@ def test_no_sweep_stage_goes_and_reads_the_tracker() -> None:
         "document to run in one shell"
     )
 
-    # And it asks for an order, because `TRACKER_CAP` keeps the front of the list. `/issues`
-    # defaults to newest-first, which would have cut exactly the oldest issues -- the "reported
-    # and fixed, or reported and forgotten" material the dedupe prompt says matters most. An
-    # order left to a default is a decision nobody made.
+    # And it asks for an order, because past `TRACKER_CAP` the workflow keeps both ends of the
+    # list and drops the middle, and "the oldest half" is only that if the list is in date
+    # order. `/issues` defaults to newest-first, which would have made the half kept as oldest
+    # the newest instead -- dropping the "reported and fixed, or reported and forgotten"
+    # material the dedupe prompt says matters most. An order left to a default is a decision
+    # nobody made.
     assert "-f sort=created -f direction=asc" in listing, (
         "the phase 0 tracker command does not ask for an order, so which items the workflow's "
         "cap keeps is GitHub's newest-first default -- which drops the oldest issues, the ones "
@@ -1116,6 +1158,12 @@ def test_no_issue_form_asks_a_stranger_for_an_executable_section() -> None:
     as a fenced shell block, and an automated agent working this tracker reads a section of that
     name as steps to run -- which is what the body of this repository's own issue workflow says
     it does.
+
+    What this pins is what the project *asks for*, and nothing wider. A blank issue or a `POST`
+    to the issues API reaches the tracker with any body at all, `### Validation` included, so a
+    green run here says nothing about what an agent reading the tracker can be handed. That is
+    bounded, where it is, by who wrote the text (`test_no_sweep_stage_goes_and_reads_the_tracker`
+    for the sweep), never by the forms.
     """
     assert ISSUE_FORMS, "no issue forms found; has .github/ISSUE_TEMPLATE moved?"
     for form in ISSUE_FORMS:

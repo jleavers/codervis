@@ -48,6 +48,10 @@ the only way to run them was a shell that could equally run `gh issue close` —
 listings returned was issue bodies with no author, from a tracker any GitHub account can write
 to. The listing is now the launching session's to fetch and filter to maintainer-authored
 items, and the workflow relays it to the stage through the fence like every other hand-off.
+An association is not an author, though: an automation account that works the tracker is a
+`COLLABORATOR` too. So what the accounts named in `args.agentAccounts`, and any `[bot]` login,
+wrote arrives marked as agent output, and a `duplicate` resting on that alone is recorded as
+`related` by the script.
 
 That is the dedupe pass and not the whole sweep. Five lanes read the GitHub side unfiltered,
 for three reasons worth not blurring together. The `publication` lanes of the `gaps` and
