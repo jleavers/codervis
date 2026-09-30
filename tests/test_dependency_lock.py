@@ -21,13 +21,19 @@ dependency the file does not name, and the `Dockerfile` line below is where it r
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+
+#: `cwd` decides which repository the one git call below reads, so nothing in the environment
+#: may: an exported `GIT_DIR` or `GIT_WORK_TREE` would point it at another checkout.
+_GIT_ENV = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
 
 #: The four requirement files this repository has, and the relation between them: an input
 #: names packages, its lock fixes them. A fifth file is a second place a version is decided.
@@ -108,10 +114,28 @@ def dockerfile_lines() -> list[str]:
 # ─── the files ───────────────────────────────────────────────────────────────
 
 
+def tracked_requirement_files() -> set[str]:
+    """The requirement files a clone gets.
+
+    `git ls-files` rather than a glob, for the reason the other file checks in this suite read
+    it: a developer's scratch `requirements-local.txt` is not something this repository ships,
+    and failing on one would be a pin that bites the wrong person.
+    """
+    listed = subprocess.run(
+        ["git", "ls-files", "-z", "requirements*"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+        env=_GIT_ENV,
+    ).stdout
+    return {name for name in listed.split("\0") if name}
+
+
 def test_the_repository_has_exactly_these_requirement_files() -> None:
     """A fifth would be a set nothing installs with hashes required."""
-    found = {path.name for path in ROOT.glob("requirements*")}
-    assert found == set(INPUTS) | LOCKS
+    assert tracked_requirement_files() == set(INPUTS) | LOCKS
 
 
 @pytest.mark.parametrize("source", sorted(INPUTS))

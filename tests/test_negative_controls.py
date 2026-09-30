@@ -234,6 +234,9 @@ _LOCK_LINE_SHAPES = (
 _LOCK_INPUT_DECIDES_NOTHING = (
     f"{LOCK_TESTS}::test_an_input_names_packages_and_decides_no_version"
 )
+_LOCK_FILES_SHIPPED = (
+    f"{LOCK_TESTS}::test_the_repository_has_exactly_these_requirement_files"
+)
 _LOCK_HASHES_REQUIRED = f"{LOCK_TESTS}::test_the_image_installs_with_hashes_required"
 _LOCK_BASE_BY_CONTENT = f"{LOCK_TESTS}::test_the_image_names_its_base_by_content"
 
@@ -1815,6 +1818,17 @@ MUTATIONS: tuple[Mutation, ...] = (
         before="-slim@sha256:",
         after="-slim  # sha256:",
         caught_by=(_LOCK_BASE_BY_CONTENT,),
+    ),
+    Mutation(
+        key="lock-a-fifth-requirement-file",
+        widening=True,
+        area=DEPENDENCY_LOCK,
+        rule="the repository ships two inputs and two locks: a fifth file is a set nothing"
+        " installs with hashes required",
+        path="requirements-extra.txt",
+        after="requests>=2\n",
+        track=True,
+        caught_by=(_LOCK_FILES_SHIPPED,),
     ),
     Mutation(
         key="lock-input-decides-a-version-too",
