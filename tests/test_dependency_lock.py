@@ -578,10 +578,17 @@ PROBE_LOCK = INPUTS["requirements.in"]
 #: Every case is one command naming `PROBE_LOCK`, so that what varies is only the syntax in
 #: front of the verb -- and a different installer in each, so that a cut that worked for one
 #: token length only would show up here.
+#:
+#: These pin the cut from **both** sides, which is why the last three carry their syntax's
+#: closing half on the token that names the lock. A cut too narrow loses the *verb*, which is
+#: #110. A cut too wide loses the *lock*: "take whatever follows the last quote in the token"
+#: reads `("requirements.txt")` as `)`, `commands()` drops it as empty, and an install with no
+#: target it can name is no install at all -- the same silence, from the opposite mistake.
 COMMAND_SPELLINGS = (
     ("bare", "pip install -r {lock}", "pip install"),
     ("string at the line's start", '"pip3 install -r {lock}"', "pip3 install"),
     ("assignment", 'after="uv run --with-requirements {lock}"', "uv run"),
+    ("quoted target", 'pip install -r ("{lock}")', "pip install"),
     ("assignment and call", 'after=("pipenv install -r {lock}")', "pipenv install"),
     ("list of raw strings", 'command=[r"""poetry add -r {lock}"""]', "poetry add"),
     ("nested call", 'run(shlex.split("uv add -r {lock}"))', "uv add"),
@@ -589,12 +596,11 @@ COMMAND_SPELLINGS = (
     ("keyword after the verb", 'run("pip download -r {lock}", check=True)', "pip download"),
 )
 
-#: Lines that name a lock and are *not* a command, which the cut must not turn into one.
-#: `PYTHON_STRING_OPENS_A_COMMAND` requires syntax immediately before the quote for this reason:
-#: a rule that cut at any quote would eat an apostrophe out of a word along with the rest of the
-#: token -- a lock's own name among it -- and so lose an install the scan is meant to find.
-#: Widening this scan at the price of narrowing it is the shape of defect the file is written
-#: against, so the two directions are pinned side by side.
+#: Prose that names a lock and is not a command at all. The weaker of the two directions and
+#: stated as what it is: none of these carries an installer, so what it pins is that the scan
+#: does not *invent* an install out of a sentence -- not that a wider cut would be caught here.
+#: `COMMAND_SPELLINGS` above is what answers for too wide, by naming the lock on a token that
+#: also carries a closing bracket or quote.
 NOT_A_COMMAND = (
     "the {lock}'s hashes are what pip enforces",
     "README's {lock} is the one the image installs",
@@ -626,8 +632,11 @@ def test_an_install_is_found_however_its_command_is_written(line: str, verb: str
 
 @pytest.mark.parametrize("line", NOT_A_COMMAND)
 def test_a_lock_named_in_prose_is_not_an_install(line: str) -> None:
-    """The other direction, beside the one above because the cut that fixes it could pass that
-    one simply by being wider, and pay for it here."""
+    """That a sentence naming a lock is not read as an install. `PYTHON_STRING_OPENS_A_COMMAND`
+    requires syntax immediately before the quote partly so an apostrophe inside a word is left
+    whole, and this is where that is stated -- but the case that makes a *too wide* cut fail is
+    in `COMMAND_SPELLINGS`, not here: these lines name no installer, so they would read as no
+    install however the token was cut."""
     formatted = line.format(lock=PROBE_LOCK)
     assert installs_in(formatted, "probe") == [], formatted
 
