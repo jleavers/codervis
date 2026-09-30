@@ -190,11 +190,12 @@ COMMAND_SEPARATORS = ("&&", "||", ";", "|")
 #: the tokens: `test_a_lock_named_in_prose_is_not_an_install` cannot see it, because a line with
 #: no installer in it answers `[]` however the token was cut.
 #:
-#: The prefix is `{0,2}` and not `*` because that is what a string prefix can be on the image's
-#: own interpreter -- `r`, `b`, `u`, `f`, `t` (PEP 750, new in the 3.14 the `Dockerfile` pins) and
-#: the two-letter combinations of them, and nothing longer. Unbounded, it also matched a *word*
-#: built only from those letters, so ``Ruff's`` cut to `s`: the apostrophe rule above was false
-#: for it, and a run of prefix letters is not a prefix.
+#: The prefix is `{0,2}` and not `*` because two is as long as a string prefix gets: `r`, `b`,
+#: `u`, `f` and `t` -- the last of those PEP 750's, so it needs the 3.14 the `Dockerfile` pins --
+#: in at most two letters. Which *pairs* Python actually accepts is not checked, since `bf"…"` is
+#: not a command either way; the bound is on the length, and that is what does the work. Left
+#: unbounded, the class also matched a *word* built only from those letters, so ``Ruff's`` cut to
+#: `s`: the apostrophe rule above was false for it, and a run of prefix letters is not a prefix.
 #:
 #: `-` is deliberately in neither class, because a token starting `-` is an *option* and cutting
 #: into one would lose it. Two shapes go unread as a result, both noted rather than fixed here
@@ -607,9 +608,11 @@ PROBE_LOCK = INPUTS["requirements.in"]
 #: rather than derived from the tree, so that this says what the scan is *for* rather than what
 #: it currently happens to find: #110 was a docstring claiming one of these and a tree that
 #: contained no instance of it, so the scan was narrower than it read and nothing went red.
-#: Every case is one command naming `PROBE_LOCK`, so that what varies is only the syntax in
-#: front of the verb -- and a different installer in each, so that a cut that worked for one
-#: token length only would show up here.
+#: Every case is one command naming `PROBE_LOCK`, so that what varies is only the syntax in front
+#: of the verb. The installers are spread across `INSTALLERS` rather than held constant, and every
+#: verb length that list has -- two tokens, three and four -- appears, so that a cut which happened
+#: to work for one length only would show up here. They repeat, since there are more spellings than
+#: installers, and which case carries which is not load-bearing.
 #:
 #: These pin the cut from **both** sides. A cut too narrow loses the *verb*, which is #110. A cut
 #: too wide loses the *lock*: "take whatever follows the last quote in the token" reads
@@ -636,13 +639,17 @@ COMMAND_SPELLINGS = (
     ("set or dict literal", '{{"pipenv install -r {lock}"}}', "pipenv install"),
     # A subscripted assignment: the chain has to cross the `]` to reach the literal.
     ("subscripted assignment", 'steps[0]="poetry add -r {lock}"', "poetry add"),
+    # The longest verb `INSTALLERS` names, so every length in that list is exercised here. It also
+    # holds a shorter entry inside it -- `pip install` at offset 2 -- and the scan must still
+    # report the longest match from the earliest offset rather than the one it meets first.
+    ("module invocation", 'after="python -m pip install -r {lock}"', "python -m pip install"),
 )
 
-#: Prose that names a lock and is not a command at all. The weaker of the two directions and
-#: stated as what it is: none of these carries an installer, so what it pins is that the scan
-#: does not *invent* an install out of a sentence -- not that a wider cut would be caught here.
-#: `COMMAND_SPELLINGS` above is what answers for too wide, by naming the lock on a token that
-#: also carries a closing bracket or quote.
+#: Prose that names a lock and is not a command at all. The weakest of the three directions and
+#: stated as what it is: none of these carries an installer, so what it pins is that the scan does
+#: not *invent* an install out of a sentence -- not that a wider cut would be caught here.
+#: `COMMAND_SPELLINGS` above is what answers for too wide, by naming the lock on a token that also
+#: carries a closing bracket or quote, and `TOKENS_LEFT_WHOLE` below for the apostrophe rule.
 NOT_A_COMMAND = (
     "the {lock}'s hashes are what pip enforces",
     "README's {lock} is the one the image installs",
