@@ -1391,6 +1391,12 @@ def _request(path: str = "/") -> Request:
             "client": ("127.0.0.1", 1234),
             "server": ("127.0.0.1", 8765),
             "app": main.app,
+            # The scope a request really arrives in carries what the layers wrapped around
+            # the app put there, and `index()` reads one of them: the nonce that admits the
+            # page's one inline block under the Content-Security-Policy (#104). This builds
+            # the scope rather than going through the app, so it supplies it here. The layer
+            # that really produces it is pinned in `tests/test_origin_bound.py`.
+            main.CSP_NONCE_SCOPE_KEY: "nonce-for-a-synthetic-scope",
         }
     )
 
