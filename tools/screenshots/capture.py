@@ -10,10 +10,15 @@ at an empty temporary directory as well, so even the module-level clients constr
 import are looking at nothing. Every percentage, plan name, reset time and activity time is
 invented in ``STAGES`` below.
 
-Playwright and Pillow are ephemeral here -- ``uv run --with playwright --with pillow`` -- so
-neither joins the project's dependencies for the sake of a picture. The file must stay small
-enough to belong in a repository: ``--width`` and ``--colours`` are the two dials if a redesign
-pushes it over. See ``README.md`` beside this file for the whole procedure.
+Playwright and Pillow stay out of the project's dependencies for the sake of a picture: they
+are named by ``requirements-screenshots.in`` and pinned by ``requirements-screenshots.txt``,
+which this tool's own venv installs with hashes required, and neither is in the image or in a
+contributor's venv. They used to be taken by bare name on that command line (#108). The three
+archives ``playwright install chromium`` fetches -- Chromium, FFmpeg and the headless shell the
+``launch()`` below actually runs -- are what is still not fixed by content here, and
+``README.md`` beside this file says why. That file is also the whole procedure. The image must
+stay small enough to belong in a repository: ``--width`` and ``--colours`` are the two dials if
+a redesign pushes it over.
 """
 
 from __future__ import annotations

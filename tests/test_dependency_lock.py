@@ -1,4 +1,7 @@
-"""Third-party code reaches the build by content hash, not by name and version range (#104).
+"""Third-party code reaches this project by content hash, not by name and version range.
+
+It is #104 for the build and a contributor's venv, and #108 for the one path that was out of
+that issue's scope.
 
 `requirements.txt` used to pin five packages and let pip resolve the other seventeen afresh on
 every uncached build, with no hashes and no upper bound on `starlette`; `requirements-dev.txt`
@@ -14,9 +17,22 @@ somewhere in the file, or for the absence of one bad flag, would pass over the n
 somebody adds -- which is what `AGENTS.md` means by naming what a file may carry rather than
 what it may not.
 
+#108 is the same argument one step further out, and it is why this file now reads "this
+project" rather than "the build". The screenshot tool's `playwright` and `pillow` were taken by
+bare name from a command a maintainer runs as themselves, on the host that holds both live
+tokens and with nothing bounding where the import-time code of either can connect. That is a
+rarer command and a friendlier principal than `docker compose up --build`, and an identical
+shape, so it is a third input and a third lock rather than an exemption -- and every rule below
+is written over `INPUTS` and `LOCKS`, so it arrived already covered.
+
 What is *not* pinned here, because it cannot be witnessed without an index: that each lock is
 complete. `pip install --require-hashes` is what establishes that, by refusing to install a
 dependency the file does not name, and the `Dockerfile` line below is where it runs.
+
+What is not pinned here at all, and is not an oversight: the three browser archives
+`playwright install chromium` downloads after that lock is installed. Nothing upstream
+publishes a digest for them, so there is no hash to require; `tools/screenshots/README.md` says
+so in as many words rather than letting the silence read as coverage.
 """
 
 from __future__ import annotations
@@ -36,9 +52,20 @@ ROOT = Path(__file__).resolve().parents[1]
 #: may: an exported `GIT_DIR` or `GIT_WORK_TREE` would point it at another checkout.
 _GIT_ENV = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
 
-#: The four requirement files this repository has, and the relation between them: an input
-#: names packages, its lock fixes them. A fifth file is a second place a version is decided.
-INPUTS = {"requirements.in": "requirements.txt", "requirements-dev.in": "requirements-dev.txt"}
+#: The six requirement files this repository has, and the relation between them: an input
+#: names packages, its lock fixes them. A seventh file is a second place a version is decided.
+#:
+#: Three pairs, not two, since #108: `requirements-screenshots.in` names what
+#: `tools/screenshots/capture.py` needs. That set was the last third-party code here taken by
+#: bare name -- `uv run --with playwright --with pillow`, resolved afresh on every invocation,
+#: on the host that holds both live tokens -- and #104 left it out of scope rather than fixing
+#: it. It is a lock like the other two now, and every rule in this file reaches it because each
+#: one is written over `INPUTS` and `LOCKS` rather than over two names.
+INPUTS = {
+    "requirements.in": "requirements.txt",
+    "requirements-dev.in": "requirements-dev.txt",
+    "requirements-screenshots.in": "requirements-screenshots.txt",
+}
 LOCKS = frozenset(INPUTS.values())
 
 #: The flags the image's install may pass, and no others. `--require-hashes` is the one that
@@ -49,9 +76,11 @@ PERMITTED_PIP_ARGUMENTS = ("install", "--no-cache-dir", "--require-hashes", "-r"
 #: Every tracked file whose installs of a lock must require hashes. Named here rather than
 #: discovered, so that a *new* file telling somebody to install a lock is a failure until it is
 #: added on purpose: the flag being on the image's install alone was the gap, not the image.
+#: `tools/screenshots/README.md` joined this list in #108, by acquiring a lock to install.
 INSTALL_SITES = frozenset(
     {
         "Dockerfile",
+        "tools/screenshots/README.md",
         ".github/workflows/ci.yml",
         "README.md",
         "CONTRIBUTING.md",
@@ -64,19 +93,18 @@ INSTALL_SITES = frozenset(
 #: An exemption rather than a silent miss: the scan below finds these, so dropping one from this
 #: list turns the pin red rather than quietly widening it.
 #:
-#: - `tools/screenshots/` installs the runtime lock through `uv run --with-requirements`, and in
-#:   the same command takes `playwright` and `pillow` by bare name. That is #108, filed rather
-#:   than fixed here, and README's Security notes name it as the exception; it is no part of the
-#:   image or of the test set.
 #: - The archived plans under `docs/superpowers/plans/archive/` are the record of work that is
 #:   over, which `tests/test_agent_tooling_context.py` is what keeps true. Rewriting a finished
 #:   plan's command would falsify the record rather than fix anything anyone runs.
+#:
+#: `tools/screenshots/README.md` was the third entry until #108 and is now in `INSTALL_SITES`
+#: above, which is the whole of what that issue asked for on this side: the exemption was never
+#: "this install is safe", it was "the packages it takes have nowhere to be pinned yet".
 #:
 #: Exempt from the *flag* is not invisible: `EXPECTED_UNFLAGGED_INSTALLS` below counts what each
 #: of these carries, so one more cannot arrive unremarked.
 EXEMPT_INSTALL_SITES = frozenset(
     {
-        "tools/screenshots/README.md",
         "docs/superpowers/plans/archive/2026-06-08-agy-1.0.6-compatibility.md",
         "docs/superpowers/plans/archive/2026-06-08-browser-widget-toggles.md",
     }
@@ -93,7 +121,6 @@ MUTATION_SOURCE = "tests/test_negative_controls.py"
 #: A count rather than a pattern, because none of these is a command this project asks anyone to
 #: run -- what matters is that one cannot arrive quietly.
 EXPECTED_UNFLAGGED_INSTALLS = {
-    "tools/screenshots/README.md": 1,
     "docs/superpowers/plans/archive/2026-06-08-agy-1.0.6-compatibility.md": 5,
     "docs/superpowers/plans/archive/2026-06-08-browser-widget-toggles.md": 5,
     MUTATION_SOURCE: 2,
@@ -214,21 +241,40 @@ def dockerfile_lines() -> list[str]:
 # ─── the files ───────────────────────────────────────────────────────────────
 
 
+#: What a requirement file is called, wherever in the tree it sits. The *basename* is matched
+#: and the whole tracked tree is searched, which is the part #108 changed: this read
+#: `name.startswith("requirements")` against repository-root paths, and said in a comment that a
+#: nested `tools/x/requirements.txt` was not one of this repository's requirement files. That
+#: was true when it was written and it was still a blind spot -- the one set of third-party code
+#: this project had not pinned was the one belonging to a subdirectory, and the file that would
+#: have pinned it is exactly the file this function would not have found. So the allow-list
+#: below now has something to be an allow-list over: a file *named* like a requirement file,
+#: anywhere in a clone, is either one of the six named there or a failure. Named like one is the
+#: width of it, and worth being exact about: a `tools/x/deps.txt`, or a `pyproject.toml` with a
+#: dependency table, would ship an unpinned set that neither this check nor the install scan
+#: below would see. Both are a convention this repository does not use, so what stands behind
+#: them is review -- which is why this comment says so rather than implying the check is wider.
+REQUIREMENT_FILE = re.compile(r"^requirements[A-Za-z0-9._-]*\.(in|txt)$")
+
+
 def tracked_requirement_files() -> set[str]:
-    """The requirement files a clone gets.
+    """The requirement files a clone gets, from anywhere in it.
 
     `git ls-files` rather than a glob, for the reason the other file checks in this suite read
     it: a developer's scratch `requirements-local.txt` is not something this repository ships,
     and failing on one would be a pin that bites the wrong person.
     """
-    # `startswith`, which is what the `requirements*` pathspec this replaced matched: a
-    # nested `tools/x/requirements.txt` was not one of this repository's requirement files
-    # then and is not now.
-    return {name for name in tracked_files() if name.startswith("requirements")}
+    return {
+        name for name in tracked_files() if REQUIREMENT_FILE.match(PurePosixPath(name).name)
+    }
 
 
 def test_the_repository_has_exactly_these_requirement_files() -> None:
-    """A fifth would be a set nothing installs with hashes required."""
+    """A seventh would be a set nothing installs with hashes required.
+
+    Exactly, in both directions: an unnamed file fails, and so does a named one that has gone
+    missing, since "the lock was deleted" and "the lock is fine" must not be the same result.
+    """
     assert tracked_requirement_files() == set(INPUTS) | LOCKS
 
 
@@ -242,9 +288,15 @@ def test_an_input_names_packages_and_decides_no_version(source: str) -> None:
     assert asked_for(source), f"{source} names no package"
 
 
-def test_the_dev_input_builds_on_the_runtime_one() -> None:
-    """So a contributor runs the code the image runs, rather than a second resolution of it."""
-    text = (ROOT / "requirements-dev.in").read_text(encoding="utf-8")
+@pytest.mark.parametrize("source", ["requirements-dev.in", "requirements-screenshots.in"])
+def test_every_other_input_builds_on_the_runtime_one(source: str) -> None:
+    """So a contributor, and the tool that takes the README's picture, run the code the image
+    runs rather than a second resolution of it.
+
+    The screenshot tool is in here because `capture.py` imports `app.main` and serves it: a
+    picture taken against a different `starlette` is a picture of a different dashboard.
+    """
+    text = (ROOT / source).read_text(encoding="utf-8")
     assert "-r requirements.in" in text
 
 
@@ -297,19 +349,22 @@ def test_a_lock_is_resolved_past_what_its_input_names(source: str, lock: str) ->
     assert set(locked_packages(lock)) > asked_for(source)
 
 
-def test_the_dev_lock_agrees_with_the_runtime_lock_package_for_package() -> None:
-    """What the tests run against is what the image runs, artefact for artefact.
+@pytest.mark.parametrize("lock", ["requirements-dev.txt", "requirements-screenshots.txt"])
+def test_every_other_lock_agrees_with_the_runtime_lock_package_for_package(lock: str) -> None:
+    """What the tests run against, and what the README's picture is taken against, is what the
+    image runs -- artefact for artefact.
 
     Two independent resolutions would let CI pass against one `starlette` while the image
-    installs another, which is the drift #20 is about arriving by a different route.
+    installs another, which is the drift #20 is about arriving by a different route. Holding the
+    third lock to it too is why its own header passes `--constraint requirements.txt`: a fresh
+    resolve of the same input took a newer `fastapi` than the image has, which is precisely the
+    drift, arriving through the one lock nobody would have thought to compare.
     """
     runtime = locked_packages("requirements.txt")
-    development = locked_packages("requirements-dev.txt")
+    other = locked_packages(lock)
     for name, pin in runtime.items():
-        assert name in development, f"{name} is in the image and not in a contributor's venv"
-        assert development[name] == pin, (
-            f"{name} differs between the two locks: {development[name]} vs {pin}"
-        )
+        assert name in other, f"{name} is in the image and not in {lock}"
+        assert other[name] == pin, f"{name} differs from the image: {other[name]} vs {pin}"
 
 
 # ─── the image ───────────────────────────────────────────────────────────────
@@ -513,8 +568,8 @@ def test_every_file_named_here_still_installs_a_lock() -> None:
 def test_no_unhashed_install_is_added_to_a_file_outside_the_bound() -> None:
     """The exemptions are whole-file, so this is what keeps them from being a hiding place.
 
-    `tools/screenshots/` and the archived plans are not held to the flag, and
-    `tests/test_negative_controls.py` carries de-flagged installs as mutation data on purpose.
+    The archived plans are not held to the flag, and `tests/test_negative_controls.py` carries
+    de-flagged installs as mutation data on purpose.
     None of them may grow one unnoticed: the counts are stated, so adding an install is a line a
     reviewer reads rather than nothing at all.
     """
@@ -541,15 +596,38 @@ def test_the_image_names_its_base_by_content() -> None:
 # ─── what keeps it current ───────────────────────────────────────────────────
 
 
+def _watched() -> set[tuple[str, str]]:
+    configuration = yaml.safe_load((ROOT / ".github" / "dependabot.yml").read_text())
+    return {
+        (update["package-ecosystem"], update["directory"]) for update in configuration["updates"]
+    }
+
+
 def test_dependabot_follows_both_the_lock_and_the_base_image() -> None:
     """A pin nobody moves becomes an old artefact with a known hash, which is its own problem.
 
-    `pip` covers both locks because they sit in the directory it watches; `docker` is what
+    `pip` covers the locks because they sit in the directory it watches; `docker` is what
     moves the digest above when the tag does.
     """
-    configuration = yaml.safe_load((ROOT / ".github" / "dependabot.yml").read_text())
-    watched = {
-        (update["package-ecosystem"], update["directory"]) for update in configuration["updates"]
-    }
+    watched = _watched()
     assert ("pip", "/") in watched
     assert ("docker", "/") in watched
+
+
+def test_dependabot_watches_the_directory_every_lock_actually_sits_in() -> None:
+    """Every lock, not "the locks" as a figure of speech.
+
+    Dependabot's pip updater reads the requirement files of the directories it is told about
+    and no others, so a lock is followed because of where it sits. Asserting `("pip", "/")`
+    alone was enough while all of them were at the root and says nothing once one is not --
+    and a lock nobody updates is #104's own argument running backwards: an artefact pinned by
+    content, with a known vulnerability, that every install is now guaranteed to fetch.
+    """
+    watched = {directory for ecosystem, directory in _watched() if ecosystem == "pip"}
+    for lock in sorted(LOCKS):
+        parent = PurePosixPath(lock).parent
+        directory = "/" if parent == PurePosixPath(".") else f"/{parent}"
+        assert directory in watched, (
+            f"{lock} sits in {directory}, which Dependabot's pip updater does not watch. "
+            "Add a directory entry for it."
+        )

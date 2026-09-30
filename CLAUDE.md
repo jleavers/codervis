@@ -498,20 +498,29 @@ hosts.
 
 ## Third-party code arrives by content, not by name
 
-`requirements.in` and `requirements-dev.in` name the packages the app and a contributor's
-checkout need. `requirements.txt` and `requirements-dev.txt` are those resolved in full —
+`requirements.in`, `requirements-dev.in` and `requirements-screenshots.in` name the packages
+the app, a contributor's checkout and the screenshot tool need. `requirements.txt`,
+`requirements-dev.txt` and `requirements-screenshots.txt` are those resolved in full —
 every package, direct and transitive, pinned to one version and to a `sha256` of the artefact
 — and are what anything installs. The inputs decide **no** version: a range in one would be a
 second place a version is decided, and the two drift the first time Dependabot moves the lock.
 The `Dockerfile` installs with `pip install --require-hashes`, which is what makes the hashes
 enforced rather than decorative, and refuses a package the lock does not name; its base image
 is pinned by digest, so the `pip` and the CA bundle the build uses are fixed too. Regenerate
-both locks together with the command in each one's header — a contributor's venv and the
-image must be the same artefacts, which `tests/test_dependency_lock.py` asserts package for
-package, alongside the shape of a lock line and the flags the image may pass to pip. The
-reason is `app/main.py`'s: import-time code in this process holds both bearer tokens and can
-read both mounted home trees, so a version range is a standing invitation for whoever
+**all three** locks together with the command in each one's header, and the runtime one first:
+the screenshot lock's header carries `--constraint requirements.txt`, because resolved on its
+own it drifts off the image. A contributor's venv, the image and the tool that takes the
+README's picture must be the same artefacts, which `tests/test_dependency_lock.py` asserts
+package for package, alongside the shape of a lock line and the flags the image may pass to
+pip. The reason is `app/main.py`'s: import-time code in this process holds both bearer tokens
+and can read both mounted home trees, so a version range is a standing invitation for whoever
 compromises a publishing account inside it (#104).
+
+The screenshot tool was outside that until #108, taking `playwright` and `pillow` by bare name
+from a command a maintainer runs as themselves on the host that holds both live tokens. One
+artefact is still not fixed by content and cannot be from here: the browser builds
+`playwright install chromium` downloads. `tools/screenshots/README.md` is where that is set
+out, and it is the only claim in this repository that content hashing does not reach.
 
 ## Load-bearing assumption: every live endpoint is undocumented
 
