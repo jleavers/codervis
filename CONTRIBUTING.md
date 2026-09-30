@@ -14,7 +14,7 @@ container stack and the egress check. On Windows, use WSL.
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
-python -m pip install -r requirements-dev.txt
+python -m pip install --require-hashes -r requirements-dev.txt
 python -m pytest                          # hermetic: no network, no credential reads
 ruff check --select E4,E7,E9,F .          # what the lint job runs
 node --test 'tests/test_*.js'
@@ -102,7 +102,11 @@ edit the input and regenerate both locks with the command written in each lock's
 they are regenerated together, because a contributor's venv and the image have to be the same
 set of artefacts. The image installs with `pip install --require-hashes`, which refuses a
 lock that has lost a hash and refuses a package the lock does not name, so an incomplete
-regeneration fails the Docker build rather than resolving something fresh.
+regeneration fails the Docker build rather than resolving something fresh. The venv and CI
+commands above pass the same flag, so a lock that has lost its hashes altogether fails on
+every path rather than only in the image. The locks are compiled `--universal` against
+`--python-version 3.13`, which is the floor CI runs and not the target: the image is Python
+3.14, and a universal resolve is what makes one set of artefacts serve both.
 
 **The image in the README is generated, not screenshotted by hand.** It is captured from the
 real app serving fabricated data, so nobody's plan tier, usage or activity ends up in a public

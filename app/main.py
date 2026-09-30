@@ -222,16 +222,21 @@ CSP_DIRECTIVES: tuple[tuple[str, tuple[str, ...]], ...] = (
 #: regression in `app/static/app.js` (#78), and so give up the backstop this policy is.
 CSP_NONCED_DIRECTIVE = "script-src"
 
+# Checked here rather than per response, because this compares two constants that cannot
+# change once the module is loaded, and because *here* is the only place the check can be as
+# loud as it needs to be: `ContentSecurityPolicy` sits outside `ServerErrorMiddleware`, so a
+# raise on the response path leaves uvicorn dropping the connection rather than answering. The
+# quiet version of this mistake is a page that still carries `nonce="..."` on its inline block
+# and a policy with no nonce in it -- the block stops running and nothing says why -- so it
+# refuses to import instead.
+if CSP_NONCED_DIRECTIVE not in dict(CSP_DIRECTIVES):
+    raise RuntimeError(
+        f"{CSP_NONCED_DIRECTIVE!r} takes the nonce but is not a directive of the policy"
+    )
+
 
 def content_security_policy(nonce: str) -> str:
     """The policy header value for one response, with that response's nonce in it."""
-    if CSP_NONCED_DIRECTIVE not in dict(CSP_DIRECTIVES):
-        # Loud, because the quiet version is a page that still carries `nonce="..."` on its
-        # inline block and a policy with no nonce in it: the block stops running, and nothing
-        # says why.
-        raise RuntimeError(
-            f"{CSP_NONCED_DIRECTIVE!r} takes the nonce but is not a directive of the policy"
-        )
     directives = []
     for name, sources in CSP_DIRECTIVES:
         values = list(sources)

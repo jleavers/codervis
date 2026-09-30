@@ -36,7 +36,7 @@ jobs:
           cache-dependency-path: requirements*.txt
 
       - name: Install dependencies
-        run: python -m pip install -r requirements-dev.txt
+        run: python -m pip install --require-hashes -r requirements-dev.txt
 
       # Start with Ruff's correctness rules. Enabling its broader opinionated
       # rule set would require unrelated cleanup of the existing codebase.
@@ -60,7 +60,7 @@ jobs:
           cache-dependency-path: requirements*.txt
 
       - name: Install dependencies
-        run: python -m pip install -r requirements-dev.txt
+        run: python -m pip install --require-hashes -r requirements-dev.txt
 
       # No file list: pytest.ini's testpaths collects all of tests/, so a new
       # test file runs here without anyone having to name it. REQUIRE_DOCKER

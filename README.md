@@ -826,9 +826,9 @@ flags that are useful for quick diagnosis.
   either refuses the option (27.x) or ignores it without saying so (26.x and
   older), and there a host firewall rule that drops new inbound connections
   arriving on that bridge's interface is what closes it.
-- **Every piece of third-party code here is fixed by content, not by name.**
-  `requirements.txt` and `requirements-dev.txt` are the runtime and development
-  sets resolved in full — every package, direct or transitive, pinned to one
+- **Every dependency of the process and of a contributor's checkout is fixed
+  by content, not by name.** `requirements.txt` and `requirements-dev.txt` are
+  the runtime and development sets resolved in full — every package, direct or transitive, pinned to one
   version and to a `sha256` of the artefact — and the image installs with
   `pip install --require-hashes`, which refuses a file that has lost a hash and
   refuses a package the file does not name. The base image is pinned by digest
@@ -837,8 +837,17 @@ flags that are useful for quick diagnosis.
   dashboard serves its own three static files and no others, and there is no
   Swagger or ReDoc page here to load one. Dependabot moves the locks and the
   digest on; regenerate them by hand with the command in each lock's header.
+  The one thing here still taken by bare name is the optional screenshot tool in
+  `tools/screenshots/`, which fetches `playwright` and `pillow` at the moment a
+  maintainer runs it; it is no part of the image or of the test set, and
+  [#108](https://github.com/jleavers/codervis/issues/108) is open for it.
 - **The dashboard's origin carries a Content-Security-Policy**, set on every
-  response, which names this origin and nothing else: `default-src 'none'`,
+  response the app makes -- the `403` for a `Host` it does not serve and the
+  last-resort `500` included, because the layer sits outside every other one.
+  (The server's own protocol-level refusals, the `431`, `408` and `503` in
+  "Read budgets" below, are written before a request reaches the app and carry
+  no policy; they are `text/plain` and close the connection.) It names this
+  origin and nothing else: `default-src 'none'`,
   scripts and styles from `'self'`, `connect-src 'self'` so the payload cannot
   be sent anywhere, and `frame-ancestors 'none'` so the page cannot be framed.
   The one inline script — the initial payload — runs under a per-response
