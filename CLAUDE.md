@@ -556,7 +556,7 @@ curl http://localhost:8765/healthz
 curl http://localhost:8765/api/usage
 
 # Automated tests
-python -m pip install -r requirements-dev.txt
+python -m pip install --require-hashes -r requirements-dev.txt
 python -m pytest
 python -m py_compile app/main.py app/quota.py app/activity_gate.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/refresh.py app/budget.py app/server.py app/egress.py app/ingress.py
 

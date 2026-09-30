@@ -224,11 +224,11 @@ CSP_NONCED_DIRECTIVE = "script-src"
 
 # Checked here rather than per response, because this compares two constants that cannot
 # change once the module is loaded, and because *here* is the only place the check can be as
-# loud as it needs to be: `ContentSecurityPolicy` sits outside `ServerErrorMiddleware`, so a
-# raise on the response path leaves uvicorn dropping the connection rather than answering. The
-# quiet version of this mistake is a page that still carries `nonce="..."` on its inline block
-# and a policy with no nonce in it -- the block stops running and nothing says why -- so it
-# refuses to import instead.
+# loud as it needs to be. On the response path it was worse than useless: the header is built
+# before the app is called, so nothing has started the response, and uvicorn answers a raise
+# there with its own bare `500` -- `text/plain`, written through the raw `send`, and so with no
+# policy on it, since this layer is outside `ServerErrorMiddleware`. Every request would have
+# got that, indefinitely, with nothing saying why. Failing to import is the loud version.
 if CSP_NONCED_DIRECTIVE not in dict(CSP_DIRECTIVES):
     raise RuntimeError(
         f"{CSP_NONCED_DIRECTIVE!r} takes the nonce but is not a directive of the policy"

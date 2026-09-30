@@ -46,6 +46,32 @@ LOCKS = frozenset(INPUTS.values())
 #: beside it is a failure rather than a silent second source of code.
 PERMITTED_PIP_ARGUMENTS = ("install", "--no-cache-dir", "--require-hashes", "-r")
 
+#: Every tracked file that runs or documents an install of a lock. Named here rather than
+#: discovered, so that a *new* file telling somebody to install a lock is a failure until it is
+#: added on purpose: the flag being on the image's install alone was the gap, not the image.
+INSTALL_SITES = frozenset(
+    {
+        "Dockerfile",
+        ".github/workflows/ci.yml",
+        "README.md",
+        "CONTRIBUTING.md",
+        "CLAUDE.md",
+        "AGENTS.md",
+    }
+)
+
+#: The one tracked file whose de-flagged installs are the point: `tests/test_negative_controls.py`
+#: carries, as data, the mutated `Dockerfile` line that drops `--require-hashes`, which is how
+#: the control proves the pin above bites. Scanning it would fail on the very text that keeps
+#: this bound honest.
+MUTATION_SOURCE = "tests/test_negative_controls.py"
+
+#: A `pip install` of a lock on one line, whatever indents or quotes it -- a shell block, a
+#: YAML `run:`, or prose in backticks. `flags` is everything between the verb and the file.
+PIP_INSTALL = re.compile(
+    r"pip install(?P<flags>[^`\n]*?)-r (?P<target>requirements[A-Za-z0-9._-]*\.txt)"
+)
+
 #: `name:tag@sha256:...`. The tag is kept for a reader and for Dependabot to follow; the
 #: digest is what the engine actually resolves.
 BASE_IMAGE = re.compile(r"^FROM (?P<name>[a-z0-9._/-]+):(?P<tag>[\w.-]+)@sha256:[0-9a-f]{64}$")
@@ -244,6 +270,58 @@ def test_the_image_installs_with_hashes_required() -> None:
         "the image's install passes something this file does not name. Add it here on "
         f"purpose: {arguments[:-1]}"
     )
+
+
+def installs_of_a_lock() -> dict[str, list[str]]:
+    """Every `pip install` of a lock in the tracked tree, by the file it sits in.
+
+    The whole tree rather than `INSTALL_SITES`, because the point of the list is to be
+    compared against what is really there.
+    """
+    listed = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+        env=_GIT_ENV,
+    ).stdout
+    found: dict[str, list[str]] = {}
+    for name in (entry for entry in listed.split("\0") if entry):
+        if name == MUTATION_SOURCE:
+            continue
+        try:
+            text = (ROOT / name).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        flags = [match.group("flags") for match in PIP_INSTALL.finditer(text)]
+        if flags:
+            found[name] = flags
+    return found
+
+
+def test_every_documented_install_of_a_lock_requires_hashes() -> None:
+    """The image's install is the enforcing one, and it is not the only one anybody runs.
+
+    `CONTRIBUTING.md`, `README.md`, `CLAUDE.md` and `AGENTS.md` each tell a contributor to
+    install the dev lock on the host that holds both live tokens, and CI installs it twice. pip
+    turns hash checking on by itself as soon as one requirement carries a `--hash`, so what the
+    flag adds on those paths is the case where a lock has lost its hashes *altogether* -- which
+    is exactly the regeneration mistake worth catching, and it would otherwise fail only in the
+    image.
+    """
+    for name, occurrences in sorted(installs_of_a_lock().items()):
+        for flags in occurrences:
+            assert "--require-hashes" in flags, (
+                f"{name} installs a lock without --require-hashes: pip install{flags}-r ..."
+            )
+
+
+def test_the_files_that_install_a_lock_are_the_ones_named_here() -> None:
+    """So a new one is a decision. A file that tells somebody to install a lock without the
+    flag is the same defect as the image losing it, one step further from the build."""
+    assert set(installs_of_a_lock()) == INSTALL_SITES
 
 
 def test_the_image_names_its_base_by_content() -> None:

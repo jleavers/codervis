@@ -657,7 +657,7 @@ docker compose down
 Install development dependencies, then run the suite:
 
 ```bash
-python -m pip install -r requirements-dev.txt
+python -m pip install --require-hashes -r requirements-dev.txt
 python -m pytest
 python -m py_compile app/main.py app/quota.py app/activity_gate.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/refresh.py app/budget.py app/server.py app/egress.py app/ingress.py
 ```
@@ -826,10 +826,11 @@ flags that are useful for quick diagnosis.
   either refuses the option (27.x) or ignores it without saying so (26.x and
   older), and there a host firewall rule that drops new inbound connections
   arriving on that bridge's interface is what closes it.
-- **Every dependency of the process and of a contributor's checkout is fixed
-  by content, not by name.** `requirements.txt` and `requirements-dev.txt` are
-  the runtime and development sets resolved in full — every package, direct or transitive, pinned to one
-  version and to a `sha256` of the artefact — and the image installs with
+- **Every dependency the process installs, and every one a contributor's venv
+  installs, is fixed by content rather than by name.** `requirements.txt` and
+  `requirements-dev.txt` are the runtime and development sets resolved in full
+  — every package, direct or transitive, pinned to one version and to a
+  `sha256` of the artefact — and every documented install of them passes
   `pip install --require-hashes`, which refuses a file that has lost a hash and
   refuses a package the file does not name. The base image is pinned by digest
   rather than by the `python:3.14-slim` tag, so the `pip` and the CA bundle the
@@ -844,10 +845,11 @@ flags that are useful for quick diagnosis.
 - **The dashboard's origin carries a Content-Security-Policy**, set on every
   response the app makes — the `403` for a `Host` it does not serve and the
   last-resort `500` included, because the layer sits outside every other one.
-  (The `431`, `408` and `503` in the next bullet are the exception, and not a
-  gap: the server writes those itself, before a request reaches the app, and
-  they are `text/plain` responses that close the connection.) It names this
-  origin and nothing else: `default-src 'none'`, scripts and styles from
+  (What carries no policy is the handful of refusals the *server* writes before
+  a request ever reaches the app: the `431`, `408` and `503` of the next bullet,
+  and uvicorn's own `400` for a head it cannot parse. None is a gap — each is a
+  `text/plain` response that closes the connection.) It names this origin and
+  nothing else: `default-src 'none'`, scripts and styles from
   `'self'`, `connect-src 'self'` so the payload cannot be sent anywhere, and
   `frame-ancestors 'none'` so the page cannot be framed.
   The one inline script — the initial payload — runs under a per-response

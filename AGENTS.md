@@ -26,7 +26,8 @@ python -m py_compile app/main.py app/quota.py app/activity_gate.py app/claude_ac
 docker compose exec codervis python -m app.egress check
 ```
 
-Install test dependencies with `python -m pip install -r requirements-dev.txt`.
+Install test dependencies with
+`python -m pip install --require-hashes -r requirements-dev.txt`.
 The pytest suite stubs live quota clients and uses temporary credential/activity
 directories; it must not call upstream quota endpoints or read host tokens.
 

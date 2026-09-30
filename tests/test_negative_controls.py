@@ -239,6 +239,12 @@ _LOCK_FILES_SHIPPED = (
 )
 _LOCK_HASHES_REQUIRED = f"{LOCK_TESTS}::test_the_image_installs_with_hashes_required"
 _LOCK_BASE_BY_CONTENT = f"{LOCK_TESTS}::test_the_image_names_its_base_by_content"
+_LOCK_EVERY_INSTALL_REQUIRES_HASHES = (
+    f"{LOCK_TESTS}::test_every_documented_install_of_a_lock_requires_hashes"
+)
+_LOCK_INSTALL_SITES_NAMED = (
+    f"{LOCK_TESTS}::test_the_files_that_install_a_lock_are_the_ones_named_here"
+)
 
 _ORIGIN_POLICY_STATED = f"{ORIGIN_TESTS}::test_the_policy_is_the_one_stated_here"
 _ORIGIN_SOURCES = (
@@ -1808,6 +1814,36 @@ MUTATIONS: tuple[Mutation, ...] = (
         before="RUN pip install --no-cache-dir --require-hashes -r requirements.txt",
         after="RUN pip install --no-cache-dir -r requirements.txt",
         caught_by=(_LOCK_HASHES_REQUIRED,),
+    ),
+    Mutation(
+        key="lock-hashes-not-required-by-ci",
+        widening=True,
+        area=DEPENDENCY_LOCK,
+        rule="every documented install of a lock requires hashes, not the image's alone: a"
+        " contributor and CI install the dev lock on the host that holds both tokens",
+        path=".github/workflows/ci.yml",
+        # The two jobs' install steps are identical, so the anchor carries the comment that
+        # follows the lint job's: a `before` matching both would fail as ambiguous.
+        before=(
+            "run: python -m pip install --require-hashes -r requirements-dev.txt\n"
+            "\n      # Start with Ruff's correctness rules."
+        ),
+        after=(
+            "run: python -m pip install -r requirements-dev.txt\n"
+            "\n      # Start with Ruff's correctness rules."
+        ),
+        caught_by=(_LOCK_EVERY_INSTALL_REQUIRES_HASHES,),
+    ),
+    Mutation(
+        key="lock-an-unnamed-file-installs-a-lock",
+        widening=True,
+        area=DEPENDENCY_LOCK,
+        rule="the files that install a lock are the ones named in the pin: a new document"
+        " telling somebody to install one is a decision, not a discovery",
+        path="docs/install.md",
+        after="python -m pip install --require-hashes -r requirements-dev.txt\n",
+        track=True,
+        caught_by=(_LOCK_INSTALL_SITES_NAMED,),
     ),
     Mutation(
         key="lock-base-image-back-to-a-tag",
