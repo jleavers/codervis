@@ -657,7 +657,7 @@ docker compose down
 Install development dependencies, then run the suite:
 
 ```bash
-python -m pip install -r requirements-dev.txt
+python -m pip install --require-hashes -r requirements-dev.txt
 python -m pytest
 python -m py_compile app/main.py app/quota.py app/activity_gate.py app/claude_activity.py app/codex_quota.py app/codex_activity.py app/refresh.py app/budget.py app/server.py app/egress.py app/ingress.py
 ```
@@ -725,8 +725,10 @@ browser-disabled cards are dimmed.
 │       └── app.js          # Gauge rendering, DOM updates, and SSE handling
 ├── Dockerfile
 ├── docker-compose.yml
-├── requirements.txt
-├── requirements-dev.txt
+├── requirements.in       # The packages the app needs, by name
+├── requirements.txt      # Those resolved in full and fixed by content hash
+├── requirements-dev.in   # The above plus what the tests and the linter need
+├── requirements-dev.txt  # Those resolved in full and fixed by content hash
 ├── pytest.ini
 ├── tests/
 ├── tools/screenshots/   # Regenerates the README's image from fabricated data
@@ -824,6 +826,36 @@ flags that are useful for quick diagnosis.
   either refuses the option (27.x) or ignores it without saying so (26.x and
   older), and there a host firewall rule that drops new inbound connections
   arriving on that bridge's interface is what closes it.
+- **Every dependency the process installs, and every one a contributor's venv
+  installs, is fixed by content rather than by name.** `requirements.txt` and
+  `requirements-dev.txt` are the runtime and development sets resolved in full
+  — every package, direct or transitive, pinned to one version and to a
+  `sha256` of the artefact — and the three installs that put one of them into an
+  environment, the image's, CI's and a contributor's venv, each pass
+  `pip install --require-hashes`, which refuses a file that has lost a hash and
+  refuses a package the file does not name. The base image is pinned by digest
+  rather than by the `python:3.14-slim` tag, so the `pip` and the CA bundle the
+  build uses are fixed too. Nothing is fetched from a CDN at page load: the
+  dashboard serves its own three static files and no others, and there is no
+  Swagger or ReDoc page here to load one. Dependabot moves the locks and the
+  digest on; regenerate them by hand with the command in each lock's header.
+  The one thing here still taken by bare name is the optional screenshot tool in
+  `tools/screenshots/`, which fetches `playwright` and `pillow` at the moment a
+  maintainer runs it; it is no part of the image or of the test set, and
+  [#108](https://github.com/jleavers/codervis/issues/108) is open for it.
+- **The dashboard's origin carries a Content-Security-Policy**, set on every
+  response the app makes — the `403` for a `Host` it does not serve and the
+  last-resort `500` included, because the layer sits outside every other one.
+  (What carries no policy is the handful of refusals the *server* writes before
+  a request ever reaches the app: the `431`, `408` and `503` of the next bullet,
+  and uvicorn's own `400` for a head it cannot parse. None is a gap — each is a
+  `text/plain` response that closes the connection.) It names this origin and
+  nothing else: `default-src 'none'`, scripts and styles from
+  `'self'`, `connect-src 'self'` so the payload cannot be sent anywhere, and
+  `frame-ancestors 'none'` so the page cannot be framed.
+  The one inline script — the initial payload — runs under a per-response
+  nonce rather than `'unsafe-inline'`, so an event-handler attribute injected
+  into the page would not run.
 - Whoever reaches the dashboard is bounded in what they can cost, by the server
   that bears the cost and not only by the relay in front of it. The dashboard's
   own process (`app/server.py`, which is what the image launches) refuses a

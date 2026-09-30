@@ -6,6 +6,7 @@ import logging
 import math
 import os
 import re
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -173,6 +174,139 @@ class HostAllowlist:
 ALLOWED_HOSTS = parse_allowed_hosts(os.environ.get(ALLOWED_HOSTS_ENV))
 
 
+# ─── The dashboard's origin ──────────────────────────────────────────────────
+#
+# What may run at `http://localhost:8765` is the app's own three static files and one inline
+# block, and a policy that says so is what makes that true of the *browser* rather than only
+# of the templates. Until #104 nothing said it: the origin sets no policy, so a script from
+# anywhere would have run in it, with `/api/usage` and `/api/stream` -- usage, plan tier,
+# `last_activity` -- readable from a page that loads one and sendable anywhere.
+
+#: The generated nonce lives here for the one handler that renders an inline block. A key
+#: with a package prefix, because the ASGI scope is shared with every other layer.
+CSP_NONCE_SCOPE_KEY = "codervis.csp_nonce"
+
+#: 128 bits from the CSPRNG, per response. `token_urlsafe` emits `[A-Za-z0-9_-]`, which is
+#: inside CSP's `base64-value` grammar, so nothing here needs quoting or escaping.
+CSP_NONCE_BYTES = 16
+
+#: The policy, as the directives it is made of. Every source is the app's own origin or
+#: nothing: no third party is named, so there is no CDN entry to go stale into a permission.
+#:
+#: `default-src 'none'` covers what is not listed -- fonts, media, objects, frames, workers,
+#: manifests -- but three of these do not fall back to it and so are stated outright:
+#: `base-uri`, which an injected `<base>` would otherwise move every relative URL with;
+#: `form-action`, which no page here uses; and `frame-ancestors`, which is what says this
+#: dashboard may not be framed, in CSP's own vocabulary rather than `X-Frame-Options`'.
+#:
+#: `connect-src 'self'` is the one that bounds exfiltration: `/api/stream` is an `EventSource`
+#: to this origin, and nothing else may be dialled from the page.
+#:
+#: `style-src 'self'` is enough although `app.js` writes custom properties through
+#: `element.style.setProperty()`: CSP governs inline `<style>` and `style=` attributes, not
+#: the CSSOM.
+CSP_DIRECTIVES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("default-src", ("'none'",)),
+    ("script-src", ("'self'",)),
+    ("style-src", ("'self'",)),
+    ("img-src", ("'self'",)),
+    ("connect-src", ("'self'",)),
+    ("base-uri", ("'none'",)),
+    ("form-action", ("'none'",)),
+    ("frame-ancestors", ("'none'",)),
+)
+
+#: The one directive the per-response nonce is added to. `index.html` carries a single inline
+#: block, the initial payload, and a nonce is what admits that block without `'unsafe-inline'`
+#: -- which would also admit an `onerror=` attribute smuggled through a future `innerHTML`
+#: regression in `app/static/app.js` (#78), and so give up the backstop this policy is.
+CSP_NONCED_DIRECTIVE = "script-src"
+
+# Checked here rather than per response, because this compares two constants that cannot
+# change once the module is loaded, and because *here* is the only place the check can be as
+# loud as it needs to be. On the response path it was worse than useless: the header is built
+# before the app is called, so nothing has started the response, and uvicorn answers a raise
+# there with its own bare `500` -- `text/plain`, written through the raw `send`, and so with no
+# policy on it, since this layer is outside `ServerErrorMiddleware`. Every request would have
+# got that, indefinitely, with nothing saying why. Failing to import is the loud version.
+if CSP_NONCED_DIRECTIVE not in dict(CSP_DIRECTIVES):
+    raise RuntimeError(
+        f"{CSP_NONCED_DIRECTIVE!r} takes the nonce but is not a directive of the policy"
+    )
+
+
+def content_security_policy(nonce: str) -> str:
+    """The policy header value for one response, with that response's nonce in it."""
+    directives = []
+    for name, sources in CSP_DIRECTIVES:
+        values = list(sources)
+        if name == CSP_NONCED_DIRECTIVE:
+            values.append(f"'nonce-{nonce}'")
+        directives.append(" ".join([name, *values]))
+    return "; ".join(directives)
+
+
+class ContentSecurityPolicy:
+    """Puts the policy on every response this origin makes, and the nonce in the scope.
+
+    Pure ASGI and wrapped around the whole application, for the two reasons `HostAllowlist`
+    above is: a per-route dependency would miss `/static`, where the scripts actually are,
+    and `BaseHTTPMiddleware` would buffer the SSE response in `stream()` and come between it
+    and its client. It touches `http.response.start` and nothing else, so a streaming body
+    passes through it unchanged.
+
+    It sits outside every other layer, `HostAllowlist`'s refusal included -- see
+    `PolicyAroundEverything` below for why that takes a subclass rather than
+    `add_middleware`. What bounds the origin should not depend on which layer answered.
+    """
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        nonce = secrets.token_urlsafe(CSP_NONCE_BYTES)
+        scope[CSP_NONCE_SCOPE_KEY] = nonce
+        header = content_security_policy(nonce).encode("latin-1")
+
+        async def send_with_policy(message) -> None:
+            if message["type"] == "http.response.start":
+                # Replaced rather than appended: two policies are intersected by the browser,
+                # so a second one from anywhere else could only narrow this and would make
+                # what is in force depend on which layer spoke last.
+                headers = [
+                    (name, value)
+                    for name, value in message.get("headers", [])
+                    if name.lower() != b"content-security-policy"
+                ]
+                headers.append((b"content-security-policy", header))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_with_policy)
+
+
+class PolicyAroundEverything(FastAPI):
+    """Builds the app with `ContentSecurityPolicy` outside every other layer.
+
+    `add_middleware` would be the obvious way and is the wrong one, because a layer added that
+    way goes into `user_middleware`, which both Starlette and FastAPI place *inside*
+    `ServerErrorMiddleware` -- and that layer answers an unhandled exception through the raw
+    `send` it was given, not through the wrapped one. So the last-resort `500` would have been
+    the one response this origin makes that carried no policy, and "every response" would have
+    been a claim wider than the check, which is the shape this repository has been caught by
+    before. Overriding where the stack is built is the only place that can be said.
+
+    `HostAllowlist` stays an `add_middleware` layer: it is inside this one on purpose, so its
+    `403` carries the policy like anything else.
+    """
+
+    def build_middleware_stack(self):
+        return ContentSecurityPolicy(super().build_middleware_stack())
+
+
 def _enabled(name: str) -> bool:
     return os.environ.get(name, "true").strip().lower() not in (
         "0",
@@ -268,7 +402,18 @@ async def lifespan(app: FastAPI):
             source.stop()
 
 
-app = FastAPI(title="Codervis", lifespan=lifespan)
+# The schema and its two documentation pages are off, not merely unused (#104). FastAPI
+# registers `/openapi.json`, `/docs`, `/docs/oauth2-redirect` and `/redoc` by default, and the
+# two HTML ones load `swagger-ui-dist@5` and `redoc@2` from a CDN with no integrity attribute
+# -- third party code, in this origin, that nothing here asks for. Passing `None` is what
+# unregisters them; there is no separate switch.
+app = PolicyAroundEverything(
+    title="Codervis",
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 # Once, around everything: added here rather than per route so that a route added later is
 # behind it by default.
@@ -714,6 +859,11 @@ async def index(request: Request) -> HTMLResponse:
             "data": json.loads(payload_json),
             "payload_json": _payload_script_json(payload_json),
             "refresh_seconds": REFRESH_SECONDS,
+            # Indexed, not `.get()`: the nonce is put there by the layer wrapped around the
+            # whole app, so its absence means that layer has been taken off and the inline
+            # block below would silently stop running under the policy. A 500 here is the
+            # loud version of that, and a test pins the layer so it cannot arrive by accident.
+            "csp_nonce": request.scope[CSP_NONCE_SCOPE_KEY],
         },
     )
 

@@ -119,8 +119,9 @@ async def _body_reader(scope: dict, receive, send) -> None:
 async def _websocket(scope: dict, receive, send) -> None:
     """Accepts an upgrade and holds it open for longer than any deadline here.
 
-    `requirements.txt` pins `uvicorn[standard]`, so the image has a WebSocket library and this
-    branch of uvicorn's `handle_events` is live whether or not the dashboard routes to it.
+    `requirements.in` asks for `uvicorn[standard]` and `requirements.txt` locks `websockets`
+    along with the rest of that extra, so the image has a WebSocket library and this branch of
+    uvicorn's `handle_events` is live whether or not the dashboard routes to it.
     """
     if scope["type"] != "websocket":
         await _stub(scope, receive, send)
