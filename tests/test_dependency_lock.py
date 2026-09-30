@@ -185,13 +185,18 @@ COMMAND_SEPARATORS = ("&&", "||", ";", "|")
 #: the token with it -- a lock's own name among it -- and so narrow this scan in exchange for
 #: widening it; `test_a_lock_named_in_prose_is_not_an_install` is where that is stated.
 #:
+#: The prefix is `{0,2}` and not `*` because that is what a Python string prefix can be -- `r`,
+#: `b`, `u`, `f` and the two-letter combinations of them, and nothing longer. Unbounded, it also
+#: matched a *word* built only from those letters, so ``Ruff's`` cut to `s`: the apostrophe rule
+#: above was false for it, and a run of prefix letters is not a prefix.
+#:
 #: `-` is deliberately in neither class, because a token starting `-` is an *option* and cutting
 #: into one would lose it. Two shapes go unread as a result, both noted rather than fixed here
 #: (#113): a quoted option value (`--requirement="…"`, `-r'…'`), which `named_target()` hands
 #: back with the quote still on so the lock is not recognised, and a glue chain containing a `-`
 #: (`{"pre-install":"pip install …`). Neither is the miss #110 is about, and neither is covered.
 PYTHON_STRING_OPENS_A_COMMAND = re.compile(
-    r"""^(?:[\w.,+=(\[{:'"]*[,+=(\[{:])?(?i:[rbuf])*(?P<command>['"]{1,3}.+)$"""
+    r"""^(?:[\w.,+=(\[{:'"]*[,+=(\[{:])?(?i:[rbuf]){0,2}(?P<command>['"]{1,3}.+)$"""
 )
 
 #: What comes off the ends of a token. Brackets and braces sit here beside the quotes because
@@ -627,6 +632,22 @@ NOT_A_COMMAND = (
     "don't regenerate {lock} on its own",
 )
 
+#: Words the cut must hand back whole, as `(line, the token that must survive in it)`. Asserted on
+#: the tokens rather than on the installs, because that is the level the mistake lives at: none of
+#: these lines names an installer, so `installs_in()` answers `[]` however badly the token is cut
+#: and `NOT_A_COMMAND` above cannot see the difference.
+#:
+#: `Ruff's` is the one that was wrong. The string prefix was `*` rather than `{0,2}`, and `Ruff`
+#: is built only from prefix letters, so the pattern read it as `Ruff` + `'` + `s` and cut the
+#: token to `s`. `.github/workflows/ci.yml` really does say "Start with Ruff's correctness rules",
+#: so this is a token in the tree and not an invented one.
+TOKENS_LEFT_WHOLE = (
+    ("Start with Ruff's correctness rules", "Ruff's"),
+    ("don't regenerate it", "don't"),
+    ("README's own copy", "README's"),
+    ("the {lock}'s hashes", "{lock}'s"),
+)
+
 
 @pytest.mark.parametrize(
     ("line", "verb"),
@@ -659,6 +680,19 @@ def test_a_lock_named_in_prose_is_not_an_install(line: str) -> None:
     install however the token was cut."""
     formatted = line.format(lock=PROBE_LOCK)
     assert installs_in(formatted, "probe") == [], formatted
+
+
+@pytest.mark.parametrize(("line", "token"), TOKENS_LEFT_WHOLE)
+def test_a_word_holding_an_apostrophe_is_not_cut_at_it(line: str, token: str) -> None:
+    """A quote that is punctuation inside a word is not a literal opening a command, and cutting
+    there costs the rest of the token -- which is a lock's own name often enough to matter. The
+    only reason this is a test rather than a remark is `Ruff's`: a word built from nothing but
+    string-prefix letters was read as a prefix and cut, so the rule had an exception in the tree
+    while the comment claiming it did not."""
+    tokens = [word for command in commands(line.format(lock=PROBE_LOCK)) for word in command]
+    assert token.format(lock=PROBE_LOCK) in tokens, (
+        f"{line!r} was cut into {tokens}, losing {token!r}"
+    )
 
 
 def test_every_documented_install_of_a_lock_requires_hashes() -> None:
