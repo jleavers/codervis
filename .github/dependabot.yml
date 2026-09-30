@@ -13,8 +13,12 @@ updates:
         patterns: ["*"]
         update-types: [minor, patch]
 
-  # The two hash-locked dependency sets, requirements.txt and requirements-dev.txt. Grouped
-  # so the lock moves as a unit rather than one artefact at a time (#104).
+  # The three hash-locked dependency sets in this directory: requirements.txt,
+  # requirements-dev.txt and requirements-screenshots.txt (#108). Grouped so the locks move
+  # as a unit rather than one artefact at a time (#104). The pip updater reads the requirement
+  # files of the directories it is told about and no others, so a lock that moves out of this
+  # one needs an entry of its own -- tests/test_dependency_lock.py fails if one ever does
+  # without getting it.
   - package-ecosystem: pip
     directory: /
     schedule:

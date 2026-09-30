@@ -1,0 +1,22 @@
+# The direct dependencies of `tools/screenshots/capture.py`, by name. Versions live in
+# `requirements-screenshots.txt`, for the reason its two counterparts give.
+#
+# The runtime set is here because the capture serves the real app: `capture.py` imports
+# `app.main` and runs it under uvicorn, so this tool needs every artefact the image has, and
+# needs it to be the *same* artefact -- a picture taken against a different `starlette` is a
+# picture of a different dashboard. `tests/test_dependency_lock.py` holds all three locks to
+# that.
+#
+# `playwright` and `pillow` were the last third-party code this repository took by bare name
+# (#108). They were left out of #104 because this command is rarer than a build and a
+# maintainer rather than a stranger runs it -- but it runs on the host that holds both live
+# tokens, as that person, with nothing bounding where it can connect, so a malicious release
+# of either is import-time code there. They are fixed by content now like everything else.
+#
+# What this file cannot fix is the Chromium build `playwright install` downloads afterwards.
+# `tools/screenshots/README.md` says what that leaves open and why.
+
+-r requirements.in
+
+pillow
+playwright

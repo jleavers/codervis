@@ -245,6 +245,12 @@ _LOCK_EVERY_INSTALL_REQUIRES_HASHES = (
 _LOCK_INSTALL_SITES_NAMED = (
     f"{LOCK_TESTS}::test_no_file_installs_a_lock_unless_it_is_named_here"
 )
+_LOCK_EVERY_LOCK_AGREES = (
+    f"{LOCK_TESTS}::test_every_other_lock_agrees_with_the_runtime_lock_package_for_package"
+)
+_LOCK_DEPENDABOT_DIRECTORIES = (
+    f"{LOCK_TESTS}::test_dependabot_watches_the_directory_every_lock_actually_sits_in"
+)
 
 _ORIGIN_POLICY_STATED = f"{ORIGIN_TESTS}::test_the_policy_is_the_one_stated_here"
 _ORIGIN_SOURCES = (
@@ -1892,6 +1898,62 @@ MUTATIONS: tuple[Mutation, ...] = (
         before="\nfastapi\n",
         after="\nfastapi>=0.140\n",
         caught_by=(f"{_LOCK_INPUT_DECIDES_NOTHING}[requirements.in]",),
+    ),
+    Mutation(
+        key="lock-the-screenshot-tool-back-to-bare-names",
+        widening=True,
+        area=DEPENDENCY_LOCK,
+        rule="the screenshot tool installs its lock with hashes required, rather than naming"
+        " playwright and pillow for the index to resolve afresh on the host that holds both"
+        " live tokens",
+        path="tools/screenshots/README.md",
+        # The literal command this file carried before #108, which is the regression worth
+        # catching: it still installs a real lock, so what fails is the flag and the bare
+        # names beside it rather than a broken file.
+        before="python -m pip install --require-hashes -r requirements-screenshots.txt",
+        after="uv run --with-requirements requirements.txt --with playwright --with pillow",
+        caught_by=(_LOCK_EVERY_INSTALL_REQUIRES_HASHES,),
+    ),
+    Mutation(
+        key="lock-a-requirement-file-in-a-subdirectory",
+        widening=True,
+        area=DEPENDENCY_LOCK,
+        rule="a requirement file anywhere in a clone is one of the six named in the pin: the"
+        " allow-list is over the tree, not over the repository root",
+        # The control for what #108 changed about discovery. Until then the scan matched
+        # repository-root paths with `startswith`, so this file -- a set of third-party code
+        # nothing installs with hashes required -- was invisible to the pin that exists to
+        # find exactly that. It is placed beside the screenshot tool because that is where a
+        # seventh requirement file would really be written.
+        path="tools/screenshots/requirements.txt",
+        after="playwright\n",
+        track=True,
+        caught_by=(_LOCK_FILES_SHIPPED,),
+    ),
+    Mutation(
+        key="lock-a-second-lock-resolved-on-its-own",
+        widening=True,
+        area=DEPENDENCY_LOCK,
+        rule="every lock agrees with the runtime lock package for package: one set of"
+        " artefacts serves the image, a contributor's venv and the README's picture",
+        # A version, not a deletion: an independent resolve of the screenshot input really
+        # does take a newer `fastapi` than the image has, so this is the drift as it arrives
+        # rather than an invented one.
+        path="requirements-screenshots.txt",
+        before="fastapi==0.141.1",
+        after="fastapi==0.142.2",
+        caught_by=(f"{_LOCK_EVERY_LOCK_AGREES}[requirements-screenshots.txt]",),
+    ),
+    Mutation(
+        key="lock-dependabot-stops-watching-a-lock",
+        widening=True,
+        area=DEPENDENCY_LOCK,
+        rule="Dependabot watches the directory every lock actually sits in, so a lock pinned"
+        " by content is still a lock somebody moves",
+        path=".github/dependabot.yml",
+        before="  - package-ecosystem: pip\n    directory: /\n",
+        after="  - package-ecosystem: pip\n    directory: /app\n",
+        caught_by=(_LOCK_DEPENDABOT_DIRECTORIES,),
     ),
     # ------------------------------------------------------------- the dashboard's origin
     Mutation(

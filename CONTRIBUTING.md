@@ -93,14 +93,18 @@ built carries the bearer token. The same rule covers the log.
 provably cannot take one.** The knobs are the "Read budgets" table in `README.md`, and a new
 one goes there, in `.env.example` and in `docker-compose.yml`.
 
-**Dependencies are fixed by content, and one place decides a version.** `requirements.in`
-and `requirements-dev.in` name the packages; `requirements.txt` and `requirements-dev.txt`
+**Dependencies are fixed by content, and one place decides a version.** `requirements.in`,
+`requirements-dev.in` and `requirements-screenshots.in` name the packages; `requirements.txt`,
+`requirements-dev.txt` and `requirements-screenshots.txt`
 are those resolved in full, every package pinned to one version and to a `sha256` of the
 artefact, and are what anything actually installs. A range in an input would be a second place
 a version is decided, so the inputs carry names and nothing else. To add or drop a package,
-edit the input and regenerate both locks with the command written in each lock's header —
-they are regenerated together, because a contributor's venv and the image have to be the same
-set of artefacts. The image installs with `pip install --require-hashes`, which refuses a
+edit the input and regenerate all three locks with the command written in each lock's header —
+they are regenerated together, because a contributor's venv, the image and the tool that takes
+the README's picture have to be the same set of artefacts. The screenshot lock's header passes
+`--constraint requirements.txt` for that reason: resolved on its own it drifts off the image,
+and `tests/test_dependency_lock.py` holds all three to agreeing package for package.
+The image installs with `pip install --require-hashes`, which refuses a
 lock that has lost a hash and refuses a package the lock does not name, so an incomplete
 regeneration fails the Docker build rather than resolving something fresh. The same flag is on
 each of the other installs this repository spells out -- the venv above, CI's two jobs, and the
@@ -110,17 +114,22 @@ part the flag adds outside the image: pip turns hash checking on by itself as so
 requirement carries a `--hash`, so a lock that has lost *one* hash already fails without it.
 `tests/test_dependency_lock.py` scans the tracked tree for installs of a lock, requires the
 flag and allows no other option beside it -- a second `--index-url` is a second source of
-code, hashes or not -- and fails if a file it does not name installs one. Two tracked places are
-exempt there, each named with its reason: `tools/screenshots/`, which is #108, and the archived
-plans under `docs/superpowers/plans/archive/`, which are a record of finished work rather than
-instructions anybody follows. The locks are compiled `--universal` against
+code, hashes or not -- and fails if a file it does not name installs one. One tracked place is
+exempt there, with its reason: the archived plans under `docs/superpowers/plans/archive/`,
+which are a record of finished work rather than instructions anybody follows.
+`tools/screenshots/` was the other until #108 gave it a lock to install. That same scan is
+what decides a requirement file is one of the six this repository ships, and it looks at the
+whole tree rather than the root, so a seventh in a subdirectory fails rather than going
+unnoticed. The locks are compiled `--universal` against
 `--python-version 3.13`, which is the floor CI runs and not the target: the image is Python
 3.14, and a universal resolve is what makes one set of artefacts serve both.
 
 **The image in the README is generated, not screenshotted by hand.** It is captured from the
 real app serving fabricated data, so nobody's plan tier, usage or activity ends up in a public
 file. If a change moves the layout or the colour ramp, regenerate it:
-[`tools/screenshots/README.md`](tools/screenshots/README.md).
+[`tools/screenshots/README.md`](tools/screenshots/README.md). That file is also where the one
+artefact this repository does not fix by content is written down -- the browser build
+`playwright install` downloads, for which nothing upstream publishes a digest.
 
 ## Reporting a security issue
 

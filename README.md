@@ -729,6 +729,8 @@ browser-disabled cards are dimmed.
 ├── requirements.txt      # Those resolved in full and fixed by content hash
 ├── requirements-dev.in   # The above plus what the tests and the linter need
 ├── requirements-dev.txt  # Those resolved in full and fixed by content hash
+├── requirements-screenshots.in   # The runtime set plus playwright and pillow, by name
+├── requirements-screenshots.txt  # Those resolved in full and fixed by content hash
 ├── pytest.ini
 ├── tests/
 ├── tools/screenshots/   # Regenerates the README's image from fabricated data
@@ -827,22 +829,32 @@ flags that are useful for quick diagnosis.
   older), and there a host firewall rule that drops new inbound connections
   arriving on that bridge's interface is what closes it.
 - **Every dependency the process installs, and every one a contributor's venv
-  installs, is fixed by content rather than by name.** `requirements.txt` and
-  `requirements-dev.txt` are the runtime and development sets resolved in full
+  installs, is fixed by content rather than by name.** `requirements.txt`,
+  `requirements-dev.txt` and `requirements-screenshots.txt` are the runtime,
+  development and screenshot-tool sets resolved in full
   — every package, direct or transitive, pinned to one version and to a
-  `sha256` of the artefact — and the three installs that put one of them into an
-  environment, the image's, CI's and a contributor's venv, each pass
-  `pip install --require-hashes`, which refuses a file that has lost a hash and
-  refuses a package the file does not name. The base image is pinned by digest
+  `sha256` of the artefact — and every install that puts one of them into an
+  environment, the image's, CI's, a contributor's venv and the screenshot tool's,
+  passes `pip install --require-hashes`, which refuses a file that has lost a hash
+  and refuses a package the file does not name. The three locks agree package for
+  package, so those environments are one set of artefacts and not three
+  resolutions of it. The base image is pinned by digest
   rather than by the `python:3.14-slim` tag, so the `pip` and the CA bundle the
   build uses are fixed too. Nothing is fetched from a CDN at page load: the
   dashboard serves its own three static files and no others, and there is no
   Swagger or ReDoc page here to load one. Dependabot moves the locks and the
   digest on; regenerate them by hand with the command in each lock's header.
-  The one thing here still taken by bare name is the optional screenshot tool in
-  `tools/screenshots/`, which fetches `playwright` and `pillow` at the moment a
-  maintainer runs it; it is no part of the image or of the test set, and
-  [#108](https://github.com/jleavers/codervis/issues/108) is open for it.
+  The optional screenshot tool in `tools/screenshots/` has a lock of its own,
+  `requirements-screenshots.txt`, and installs it the same way — which it did not
+  until [#108](https://github.com/jleavers/codervis/issues/108), when it still
+  fetched `playwright` and `pillow` by bare name. It is no part of the image or of
+  the test set either way. **One artefact here is not fixed by content**, and it
+  is the Chromium build `playwright install` downloads for that tool: nothing
+  upstream publishes a digest for it, so there is no hash to require. Which build
+  is asked for *is* fixed, by the pinned `playwright` wheel; what arrives is
+  backed by TLS to Playwright's CDN and nothing else.
+  [`tools/screenshots/README.md`](tools/screenshots/README.md) sets that out, and
+  it is the one step in this repository that no part of the dashboard needs.
 - **The dashboard's origin carries a Content-Security-Policy**, set on every
   response the app makes — the `403` for a `Host` it does not serve and the
   last-resort `500` included, because the layer sits outside every other one.
