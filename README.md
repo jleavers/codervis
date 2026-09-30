@@ -830,9 +830,10 @@ flags that are useful for quick diagnosis.
   installs, is fixed by content rather than by name.** `requirements.txt` and
   `requirements-dev.txt` are the runtime and development sets resolved in full
   — every package, direct or transitive, pinned to one version and to a
-  `sha256` of the artefact — and every install this project asks anyone to run
-  passes `pip install --require-hashes`, which refuses a file that has lost a
-  hash and refuses a package the file does not name. The base image is pinned by digest
+  `sha256` of the artefact — and the three installs that put one of them into an
+  environment, the image's, CI's and a contributor's venv, each pass
+  `pip install --require-hashes`, which refuses a file that has lost a hash and
+  refuses a package the file does not name. The base image is pinned by digest
   rather than by the `python:3.14-slim` tag, so the `pip` and the CA bundle the
   build uses are fixed too. Nothing is fetched from a CDN at page load: the
   dashboard serves its own three static files and no others, and there is no
