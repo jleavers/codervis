@@ -71,6 +71,9 @@ INSTALL_SITES = frozenset(
 #: - The archived plans under `docs/superpowers/plans/archive/` are the record of work that is
 #:   over, which `tests/test_agent_tooling_context.py` is what keeps true. Rewriting a finished
 #:   plan's command would falsify the record rather than fix anything anyone runs.
+#:
+#: Exempt from the *flag* is not invisible: `EXPECTED_UNFLAGGED_INSTALLS` below counts what each
+#: of these carries, so one more cannot arrive unremarked.
 EXEMPT_INSTALL_SITES = frozenset(
     {
         "tools/screenshots/README.md",
@@ -80,10 +83,21 @@ EXEMPT_INSTALL_SITES = frozenset(
 )
 
 #: `tests/test_negative_controls.py` carries de-flagged installs as mutation *data* -- that is
-#: how the controls prove these pins bite. Rather than skipping the file, which would hide any
-#: install text added to it, the scan expects exactly these and fails on a fourth.
+#: how the controls prove these pins bite -- so it is not held to the flag either.
 MUTATION_SOURCE = "tests/test_negative_controls.py"
-EXPECTED_MUTATION_INSTALLS = 2
+
+#: How many installs of a lock each file outside `INSTALL_SITES` carries *without* the flag.
+#: The exemptions above are whole-file, which on its own would let a genuinely dangerous install
+#: be added to an exempt file and seen by nothing. This is what stops that: a new unhashed
+#: install anywhere here fails until somebody changes a number and says why in the same change.
+#: A count rather than a pattern, because none of these is a command this project asks anyone to
+#: run -- what matters is that one cannot arrive quietly.
+EXPECTED_UNFLAGGED_INSTALLS = {
+    "tools/screenshots/README.md": 1,
+    "docs/superpowers/plans/archive/2026-06-08-agy-1.0.6-compatibility.md": 5,
+    "docs/superpowers/plans/archive/2026-06-08-browser-widget-toggles.md": 5,
+    MUTATION_SOURCE: 2,
+}
 
 #: How an install of a lock may be *written*. Named forms rather than one pattern, because the
 #: pin is exactly as wide as this list: `pip3`, `--requirement`, `-rfile` and `uv run
@@ -92,14 +106,27 @@ EXPECTED_MUTATION_INSTALLS = 2
 INSTALLERS = (
     ("pip", "install"),
     ("pip3", "install"),
+    ("pip", "download"),
     ("python", "-m", "pip", "install"),
     ("python3", "-m", "pip", "install"),
     ("uv", "pip", "install"),
     ("uv", "run"),
+    ("uv", "add"),
+    ("pipenv", "install"),
+    ("poetry", "add"),
 )
+#: A `python3.13 -m pip install` needs no entry of its own: the scan looks for an installer at
+#: *every* token offset, so the `("pip", "install")` inside it matches.
 
 #: The options that name a requirements file, in any of the spellings above.
 REQUIREMENT_OPTIONS = ("-r", "--requirement", "--with-requirements")
+
+#: What ends one command and begins the next. Without these, a hashed install chained by `&&` to
+#: an unhashed one reads as a single command, and the flag on the first is credited to the
+#: second. That is not hypothetical: it passed this pin's first draft with an unhashed install of
+#: the dev lock documented in `README.md`. The lock names are left out of this comment on
+#: purpose -- the scan reads this file too, and a real one here would be a finding about itself.
+COMMAND_SEPARATORS = ("&&", "||", ";", "|")
 
 #: The options an install of a lock may carry, and no others -- the point `PERMITTED_PIP_ARGUMENTS`
 #: makes for the image, made once more for every documented install. `--require-hashes` is
@@ -326,21 +353,33 @@ def tracked_files() -> list[str]:
 
 
 def commands(text: str) -> list[list[str]]:
-    """The text as token lists, one per logical line.
+    """The text as token lists, one per *command* rather than one per line.
 
     Backslash continuations are joined first, because a lock is routinely named on the line
     after the installer. A literal ``\\n`` is joined too, so that a command written inside a
     Python string -- which is how `tests/test_negative_controls.py` carries one -- tokenises as
-    the command it is. Backticks, quotes and sentence punctuation come off each token in one
-    pass rather than in sequence, since `AGENTS.md` ends an install in ``.txt`.`` and the
-    controls end one in ``.txt",``.
+    the command it is. Each line is then cut at `COMMAND_SEPARATORS`, so two installs chained on
+    one line are two commands and neither is credited with the other's options.
+
+    Backticks, quotes and sentence punctuation come off each token in one pass rather than in
+    sequence, since `AGENTS.md` ends an install in ``.txt`.`` and the controls end one in
+    ``.txt",``. Separators are replaced *before* that, because stripping would eat a bare ``;``
+    entirely and the cut would be lost.
     """
     joined = text.replace("\\\n", " ").replace("\\n", " ")
-    lines = []
+    found: list[list[str]] = []
     for line in joined.splitlines():
-        tokens = [token.strip("`\"'.,;:()") for token in line.split()]
-        lines.append([token for token in tokens if token])
-    return lines
+        for separator in COMMAND_SEPARATORS:
+            line = line.replace(separator, " \0 ")
+        command: list[str] = []
+        for token in line.split():
+            if token == "\0":
+                found.append(command)
+                command = []
+            elif stripped := token.strip("`\"'.,;:()"):
+                command.append(stripped)
+        found.append(command)
+    return [command for command in found if command]
 
 
 def named_target(tokens: list[str], index: int) -> tuple[str | None, int]:
@@ -364,34 +403,39 @@ def named_target(tokens: list[str], index: int) -> tuple[str | None, int]:
 
 
 def installs_in(text: str, path: str) -> list[Install]:
-    """Every install of a lock in one file."""
+    """Every install of a lock in one file, taking one command at a time."""
     found = []
     for tokens in commands(text):
-        for start in range(len(tokens)):
+        verb = None
+        start = 0
+        for offset in range(len(tokens)):
             verb = next(
-                (form for form in INSTALLERS if tuple(tokens[start : start + len(form)]) == form),
+                (form for form in INSTALLERS if tuple(tokens[offset : offset + len(form)]) == form),
                 None,
             )
-            if verb is None:
+            if verb is not None:
+                start = offset
+                break
+        if verb is None:
+            continue
+        rest = tokens[start + len(verb) :]
+        options: set[str] = set()
+        targets = []
+        index = 0
+        while index < len(rest):
+            target, step = named_target(rest, index)
+            if target is not None:
+                targets.append(target)
+                index = step
                 continue
-            rest = tokens[start + len(verb) :]
-            options, index = set(), 0
-            targets = []
-            while index < len(rest):
-                target, step = named_target(rest, index)
-                if target is not None:
-                    targets.append(target)
-                    index = step
-                    continue
-                if rest[index].startswith("-"):
-                    options.add(rest[index].split("=", 1)[0])
-                index += 1
-            for target in targets:
-                if target in LOCKS:
-                    found.append(
-                        Install(path, target, frozenset(options), " ".join(verb) + " ...")
-                    )
-            break
+            if rest[index].startswith("-"):
+                options.add(rest[index].split("=", 1)[0])
+            index += 1
+        found.extend(
+            Install(path, target, frozenset(options), " ".join(verb))
+            for target in targets
+            if target in LOCKS
+        )
     return found
 
 
@@ -466,15 +510,22 @@ def test_every_file_named_here_still_installs_a_lock() -> None:
     )
 
 
-def test_the_controls_carry_exactly_the_de_flagged_installs_they_need() -> None:
-    """`tests/test_negative_controls.py` holds installs without the flag as mutation data. That
-    is the point, so it is not held to the flag -- but it is counted, so install text added to
-    it is visible rather than hidden behind a skipped file."""
-    installs = installs_of_a_lock().get(MUTATION_SOURCE, [])
-    without = [install for install in installs if "--require-hashes" not in install.options]
-    assert len(without) == EXPECTED_MUTATION_INSTALLS, (
-        f"{MUTATION_SOURCE} carries {len(without)} de-flagged installs of a lock, not "
-        f"{EXPECTED_MUTATION_INSTALLS}. If a control was added, say so here."
+def test_no_unhashed_install_is_added_to_a_file_outside_the_bound() -> None:
+    """The exemptions are whole-file, so this is what keeps them from being a hiding place.
+
+    `tools/screenshots/` and the archived plans are not held to the flag, and
+    `tests/test_negative_controls.py` carries de-flagged installs as mutation data on purpose.
+    None of them may grow one unnoticed: the counts are stated, so adding an install is a line a
+    reviewer reads rather than nothing at all.
+    """
+    unflagged = {
+        name: sum(1 for install in installs if "--require-hashes" not in install.options)
+        for name, installs in installs_of_a_lock().items()
+        if name not in INSTALL_SITES
+    }
+    assert unflagged == EXPECTED_UNFLAGGED_INSTALLS, (
+        "the unhashed installs outside the bound are not the ones recorded here. If you added "
+        f"one, say why in EXPECTED_UNFLAGGED_INSTALLS: {unflagged}"
     )
 
 
