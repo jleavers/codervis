@@ -427,7 +427,9 @@ pyyaml==6.0.3 \
     --hash=sha256:f7057c9a337546edc7973c0d3ba84ddcdf0daa14533c2065749c9075001090e6 \
     --hash=sha256:fa160448684b4e94d80416c0fa4aac48967a969efe22931448d853ada8baf926 \
     --hash=sha256:fc09d0aa354569bc501d4e787133afc08552722d3ab34836a80547331bb5d4a0
-    # via uvicorn
+    # via
+    #   -r requirements-dev.in
+    #   uvicorn
 ruff==0.16.9 \
     --hash=sha256:0e1dbc2073624dee6618d41d0098690a7244654af746704b64759e12b6b6b385 \
     --hash=sha256:12b625c6cfba78d285d9f48eda5f053374f1e53cb10ef17342a383750db99161 \

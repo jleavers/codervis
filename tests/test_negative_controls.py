@@ -253,6 +253,8 @@ _ORIGIN_NONCE_FRESH = f"{ORIGIN_TESTS}::test_no_two_responses_share_a_nonce"
 _ORIGIN_EVERY_RESPONSE = (
     f"{ORIGIN_TESTS}::test_every_response_this_origin_makes_carries_the_policy"
 )
+_ORIGIN_ERROR_LAYER = f"{ORIGIN_TESTS}::test_the_last_resort_500_carries_the_policy_too"
+_ORIGIN_OUTERMOST = f"{ORIGIN_TESTS}::test_the_policy_layer_is_outside_every_other_layer"
 
 _LOOPBACK_DEFAULT_NAMES = (
     f"{HOST_TESTS}::test_the_default_is_exactly_these_three_loopback_names"
@@ -1883,6 +1885,29 @@ MUTATIONS: tuple[Mutation, ...] = (
         before="        nonce = secrets.token_urlsafe(CSP_NONCE_BYTES)",
         after='        nonce = "codervis"',
         caught_by=(_ORIGIN_NONCE_FRESH,),
+    ),
+    Mutation(
+        key="origin-policy-skipped-for-the-response-no-route-wrote",
+        widening=True,
+        area=ORIGIN,
+        rule="every response carries the policy, the error layer's last-resort 500 included",
+        # The shape `add_middleware` would have had: every happy path covered, and the one
+        # response no route writes left bare. Six paths answering correctly is exactly what
+        # this control exists to stop being mistaken for "every response".
+        path="app/main.py",
+        before='            if message["type"] == "http.response.start":',
+        after='            if message["type"] == "http.response.start" and message["status"] < 500:',
+        caught_by=(_ORIGIN_ERROR_LAYER,),
+    ),
+    Mutation(
+        key="origin-policy-layer-back-inside-the-error-layer",
+        widening=True,
+        area=ORIGIN,
+        rule="the policy layer is built outside every other layer, not added to user_middleware",
+        path="app/main.py",
+        before="        return ContentSecurityPolicy(super().build_middleware_stack())",
+        after="        return super().build_middleware_stack()",
+        caught_by=(_ORIGIN_OUTERMOST, _ORIGIN_EVERY_RESPONSE, _ORIGIN_ERROR_LAYER),
     ),
     Mutation(
         key="origin-policy-not-set-on-a-response",

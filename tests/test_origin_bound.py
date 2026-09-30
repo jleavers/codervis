@@ -15,6 +15,8 @@ over the next origin somebody adds -- which is the shape `AGENTS.md` forbids and
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import os
 import re
 
@@ -174,11 +176,98 @@ def test_each_directive_carries_exactly_the_sources_stated_here(path: str) -> No
             assert served == sources
 
 
-def test_the_policy_layer_wraps_the_whole_app_and_is_outside_the_host_check() -> None:
+def test_the_policy_layer_is_outside_every_other_layer() -> None:
     """Pure ASGI and around everything, for the reasons `HostAllowlist` is: a per-route
-    dependency would miss `/static`, and `BaseHTTPMiddleware` would buffer the SSE stream."""
-    stack = [layer.cls for layer in main.app.user_middleware]
-    assert stack == [main.ContentSecurityPolicy, main.HostAllowlist]
+    dependency would miss `/static`, and `BaseHTTPMiddleware` would buffer the SSE stream.
+
+    Outside `ServerErrorMiddleware` too, which `add_middleware` cannot do: a layer added that
+    way goes into `user_middleware`, and both Starlette and FastAPI build that *inside* the
+    error layer, which answers an unhandled exception through the raw `send`. So the built
+    stack is what is asserted here, not the list `add_middleware` appends to.
+    """
+    assert isinstance(main.app, main.PolicyAroundEverything)
+    assert type(main.app.build_middleware_stack()) is main.ContentSecurityPolicy
+    # `HostAllowlist` is inside it on purpose, which is why its 403 carries the policy.
+    assert [layer.cls for layer in main.app.user_middleware] == [main.HostAllowlist]
+
+
+def test_the_last_resort_500_carries_the_policy_too() -> None:
+    """The response no route writes, and the one `add_middleware` would have missed.
+
+    Built here rather than by adding a raising route to `main.app`, which would put a path on
+    it that `test_the_app_registers_exactly_the_paths_named_here` rightly refuses. What is
+    asserted is the mechanism -- the class `main.app` is an instance of, per the test above.
+    """
+    app = main.PolicyAroundEverything()
+
+    @app.get("/raises")
+    async def raises() -> None:
+        raise RuntimeError("deliberate, so the error layer writes the response")
+
+    response = TestClient(app, raise_server_exceptions=False).get("/raises")
+
+    assert response.status_code == 500
+    assert set(policy_of(response)) == {name for name, _ in POLICY}
+
+
+class _Delivered(Exception):
+    """Raised to stop driving the app once its first body chunk has been sent."""
+
+
+def _first_event(path: str) -> dict:
+    """The `http.response.start` the app sends for one request, driven as a server would.
+
+    `/api/stream` is not in `PATHS` and is not asked for through `TestClient`, for the reason
+    `tests/test_host_allowlist.py` gives: the client reads a body to the end, and this body
+    never ends, so a regression would wedge the run rather than fail it.
+    """
+
+    async def receive() -> dict:
+        nonlocal asked
+        if not asked:
+            asked = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        # Never a disconnect: the client is still reading, which is the case under test.
+        await asyncio.Event().wait()
+
+    async def send(message: dict) -> None:
+        messages.append(message)
+        if message["type"] == "http.response.body" and message.get("body"):
+            raise _Delivered
+
+    async def drive() -> None:
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": "2.1"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": b"",
+            "root_path": "",
+            "headers": [(b"host", b"127.0.0.1:8765")],
+            "client": ("127.0.0.1", 1234),
+            "server": ("127.0.0.1", 8000),
+        }
+        with contextlib.suppress(_Delivered):
+            await main.app(scope, receive, send)
+
+    asked = False
+    messages: list[dict] = []
+    asyncio.run(asyncio.wait_for(drive(), timeout=10))
+    return next(message for message in messages if message["type"] == "http.response.start")
+
+
+def test_the_stream_carries_the_policy_on_its_own_response() -> None:
+    """The one response that is never finished, and so the one a buffering layer would eat."""
+    start = _first_event("/api/stream")
+
+    headers = {name.lower(): value for name, value in start["headers"]}
+    assert start["status"] == 200
+    assert headers[b"content-type"].startswith(b"text/event-stream")
+    directives = {part.split()[0] for part in headers[b"content-security-policy"].decode().split(";")}
+    assert directives == {name for name, _ in POLICY}
 
 
 def test_a_streaming_response_is_not_buffered_by_the_layer() -> None:
@@ -187,8 +276,6 @@ def test_a_streaming_response_is_not_buffered_by_the_layer() -> None:
     `/api/stream` never ends, so this asks the layer directly rather than through a client:
     the body messages it passed on must be the ones it was given, one at a time.
     """
-    import asyncio
-
     sent: list[dict] = []
 
     async def streaming_app(scope, receive, send) -> None:
@@ -214,8 +301,6 @@ def test_a_streaming_response_is_not_buffered_by_the_layer() -> None:
 def test_a_policy_an_inner_layer_set_is_replaced_and_not_added_to() -> None:
     """Two policy headers are intersected by the browser, so what is in force would depend on
     which layer spoke last. One header, always this one."""
-    import asyncio
-
     sent: list[dict] = []
 
     async def opinionated_app(scope, receive, send) -> None:

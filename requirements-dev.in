@@ -7,3 +7,9 @@
 httpx2
 pytest
 ruff
+
+# Imported directly by `tests/test_compose_topology.py` and `tests/test_dependency_lock.py`,
+# so it is asked for here rather than relied on as a transitive of `uvicorn[standard]`: an
+# extra that stopped pulling it in would take two test modules with it, which is the shape of
+# a version decided nowhere.
+pyyaml

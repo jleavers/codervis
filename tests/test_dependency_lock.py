@@ -25,6 +25,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 import yaml
@@ -73,24 +74,34 @@ def lock_lines(lock: str) -> list[str]:
     return (ROOT / lock).read_text(encoding="utf-8").splitlines()
 
 
-def locked_packages(lock: str) -> dict[str, tuple[str, tuple[str, ...]]]:
-    """`{name: (version, hashes)}` for one lock, read by walking its lines in order."""
-    packages: dict[str, tuple[str, tuple[str, ...]]] = {}
+class Pin(NamedTuple):
+    """One locked requirement. The marker is part of the pin, not decoration: a package under
+    `sys_platform != 'win32'` in one lock and unconditional in the other is a different
+    *set* on the same machine, which a version-and-hash comparison passes over."""
+
+    version: str
+    marker: str | None
+    hashes: tuple[str, ...]
+
+
+def locked_packages(lock: str) -> dict[str, Pin]:
+    """`{name: Pin}` for one lock, read by walking its lines in order."""
+    packages: dict[str, Pin] = {}
     current: str | None = None
     hashes: list[str] = []
     for line in lock_lines(lock):
         match = LOCKED.match(line)
         if match:
             if current is not None:
-                packages[current] = (packages[current][0], tuple(hashes))
+                packages[current] = packages[current]._replace(hashes=tuple(hashes))
             current = canonical(match.group("name"))
             assert current not in packages, f"{current} is pinned twice in {lock}"
-            packages[current] = (match.group("version"), ())
+            packages[current] = Pin(match.group("version"), match.group("marker"), ())
             hashes = []
         elif HASH.match(line.strip()) and current is not None:
             hashes.append(line.strip().removeprefix("--hash=").removesuffix(" \\"))
     if current is not None:
-        packages[current] = (packages[current][0], tuple(hashes))
+        packages[current] = packages[current]._replace(hashes=tuple(hashes))
     return packages
 
 
@@ -180,9 +191,11 @@ def test_every_line_of_a_lock_is_one_of_the_shapes_named_here(lock: str) -> None
 def test_every_requirement_in_a_lock_is_fixed_by_content(lock: str) -> None:
     packages = locked_packages(lock)
     assert packages, f"{lock} locks nothing"
-    for name, (version, hashes) in packages.items():
-        assert version, f"{lock} pins {name} to nothing"
-        assert hashes, f"{lock} pins {name}=={version} with no hash, so pip would take any file"
+    for name, pin in packages.items():
+        assert pin.version, f"{lock} pins {name} to nothing"
+        assert pin.hashes, (
+            f"{lock} pins {name}=={pin.version} with no hash, so pip would take any file"
+        )
 
 
 @pytest.mark.parametrize("source,lock", sorted(INPUTS.items()))
@@ -211,7 +224,9 @@ def test_the_dev_lock_agrees_with_the_runtime_lock_package_for_package() -> None
     development = locked_packages("requirements-dev.txt")
     for name, pin in runtime.items():
         assert name in development, f"{name} is in the image and not in a contributor's venv"
-        assert development[name] == pin, f"{name} differs between the two locks: {development[name]} vs {pin}"
+        assert development[name] == pin, (
+            f"{name} differs between the two locks: {development[name]} vs {pin}"
+        )
 
 
 # ─── the image ───────────────────────────────────────────────────────────────

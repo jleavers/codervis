@@ -400,15 +400,19 @@ is the set of `Host` values `app/main.py` serves. The check is a pure-ASGI
 pins the behaviour.
 
 **What may run *in* the origin is bounded in a second layer of the same kind (#104).**
-`ContentSecurityPolicy` is pure ASGI for the same two reasons `HostAllowlist` is — a per-route
-dependency misses `/static`, and `BaseHTTPMiddleware` would buffer the SSE stream — and is
-added *after* it, so it is the outer of the two and the host refusal carries the policy as
-well. It names this origin and nothing else: `default-src 'none'`, `'self'` for scripts,
-styles, images and `connect-src`, and `'none'` for `base-uri`, `form-action` and
+`ContentSecurityPolicy` is pure ASGI for the same two reasons `HostAllowlist` is —
+a per-route dependency misses `/static`, and `BaseHTTPMiddleware` would buffer the SSE
+stream. It is placed outside **every** other layer, `HostAllowlist`'s `403` and Starlette's
+own last-resort `500` included, and that takes overriding where the stack is built
+(`PolicyAroundEverything`) rather than `add_middleware`: a layer added that way goes into
+`user_middleware`, which both Starlette and FastAPI build *inside* `ServerErrorMiddleware`,
+and that layer answers through the raw `send`. "Every response" would then have been a claim
+wider than the check. It names this origin and nothing else: `default-src 'none'`, `'self'`
+for scripts, styles, images and `connect-src`, and `'none'` for `base-uri`, `form-action` and
 `frame-ancestors`, which do not fall back to `default-src`. `connect-src` is the one that
 bounds exfiltration, since `/api/usage` and `/api/stream` are readable from any page that gets
-a script into this origin. The template's one inline block — the initial payload — runs under
-a per-response nonce the layer puts in the ASGI scope, never under `'unsafe-inline'`: that
+a script into this origin. The template's one inline block — the initial payload — runs
+under a per-response nonce the layer puts in the ASGI scope, never `'unsafe-inline'`: that
 would admit an `onerror=` attribute from a future `innerHTML` regression in `app/static/app.js`
 too (#78), which is half of what this policy is for. The four routes FastAPI registers by
 default are off at construction (`docs_url=None`, `redoc_url=None`, `openapi_url=None`),
@@ -502,8 +506,8 @@ second place a version is decided, and the two drift the first time Dependabot m
 The `Dockerfile` installs with `pip install --require-hashes`, which is what makes the hashes
 enforced rather than decorative, and refuses a package the lock does not name; its base image
 is pinned by digest, so the `pip` and the CA bundle the build uses are fixed too. Regenerate
-both locks together with the command in each one's header — a contributor's venv and the image
-must be the same artefacts, which is what `tests/test_dependency_lock.py` asserts package for
+both locks together with the command in each one's header — a contributor's venv and the
+image must be the same artefacts, which `tests/test_dependency_lock.py` asserts package for
 package, alongside the shape of a lock line and the flags the image may pass to pip. The
 reason is `app/main.py`'s: import-time code in this process holds both bearer tokens and can
 read both mounted home trees, so a version range is a standing invitation for whoever

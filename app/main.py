@@ -225,6 +225,13 @@ CSP_NONCED_DIRECTIVE = "script-src"
 
 def content_security_policy(nonce: str) -> str:
     """The policy header value for one response, with that response's nonce in it."""
+    if CSP_NONCED_DIRECTIVE not in dict(CSP_DIRECTIVES):
+        # Loud, because the quiet version is a page that still carries `nonce="..."` on its
+        # inline block and a policy with no nonce in it: the block stops running, and nothing
+        # says why.
+        raise RuntimeError(
+            f"{CSP_NONCED_DIRECTIVE!r} takes the nonce but is not a directive of the policy"
+        )
     directives = []
     for name, sources in CSP_DIRECTIVES:
         values = list(sources)
@@ -243,8 +250,9 @@ class ContentSecurityPolicy:
     and its client. It touches `http.response.start` and nothing else, so a streaming body
     passes through it unchanged.
 
-    It is the outer of the two, so that a refusal from `HostAllowlist` carries the policy
-    too: what bounds the origin should not depend on which layer answered.
+    It sits outside every other layer, `HostAllowlist`'s refusal included -- see
+    `PolicyAroundEverything` below for why that takes a subclass rather than
+    `add_middleware`. What bounds the origin should not depend on which layer answered.
     """
 
     def __init__(self, app) -> None:
@@ -273,6 +281,25 @@ class ContentSecurityPolicy:
             await send(message)
 
         await self.app(scope, receive, send_with_policy)
+
+
+class PolicyAroundEverything(FastAPI):
+    """Builds the app with `ContentSecurityPolicy` outside every other layer.
+
+    `add_middleware` would be the obvious way and is the wrong one, because a layer added that
+    way goes into `user_middleware`, which both Starlette and FastAPI place *inside*
+    `ServerErrorMiddleware` -- and that layer answers an unhandled exception through the raw
+    `send` it was given, not through the wrapped one. So the last-resort `500` would have been
+    the one response this origin makes that carried no policy, and "every response" would have
+    been a claim wider than the check, which is the shape this repository has been caught by
+    before. Overriding where the stack is built is the only place that can be said.
+
+    `HostAllowlist` stays an `add_middleware` layer: it is inside this one on purpose, so its
+    `403` carries the policy like anything else.
+    """
+
+    def build_middleware_stack(self):
+        return ContentSecurityPolicy(super().build_middleware_stack())
 
 
 def _enabled(name: str) -> bool:
@@ -375,7 +402,7 @@ async def lifespan(app: FastAPI):
 # two HTML ones load `swagger-ui-dist@5` and `redoc@2` from a CDN with no integrity attribute
 # -- third party code, in this origin, that nothing here asks for. Passing `None` is what
 # unregisters them; there is no separate switch.
-app = FastAPI(
+app = PolicyAroundEverything(
     title="Codervis",
     lifespan=lifespan,
     docs_url=None,
@@ -386,9 +413,6 @@ app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 # Once, around everything: added here rather than per route so that a route added later is
 # behind it by default.
 app.add_middleware(HostAllowlist, allowed=ALLOWED_HOSTS)
-# Added after it and therefore outside it, so every response carries the policy -- the host
-# refusal included. `add_middleware` puts the most recently added layer outermost.
-app.add_middleware(ContentSecurityPolicy)
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 

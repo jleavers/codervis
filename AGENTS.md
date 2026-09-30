@@ -42,14 +42,17 @@ directories; it must not call upstream quota endpoints or read host tokens.
   (`DASHBOARD_ALLOWED_HOSTS`) that decides which clients the dashboard answers
   at all, too, and beside it the `ContentSecurityPolicy` layer that decides what
   may run once one is answered (#104). Keep both checks wrapped around the whole
-  app, and pure ASGI:
-  per-route checks miss `/static`, and `BaseHTTPMiddleware` would buffer the SSE
-  stream. The policy names this origin and nothing else, and the template's one
-  inline block runs under a per-response nonce rather than `'unsafe-inline'`,
-  which would also admit an event-handler attribute from a future `innerHTML`
-  regression (#78). The four routes FastAPI registers by default stay off
-  (`docs_url=None`, `redoc_url=None`, `openapi_url=None`): `/docs` and `/redoc`
-  load a CDN bundle with no integrity attribute, and nothing here uses them. The boundary does no I/O: it reads the last snapshot each refresher
+  app, and pure ASGI: per-route checks miss `/static`, and `BaseHTTPMiddleware`
+  would buffer the SSE stream. The policy names this origin and nothing else,
+  and the template's one inline block runs under a per-response nonce rather
+  than `'unsafe-inline'`, which would also admit an event-handler attribute from
+  a future `innerHTML` regression (#78). That layer goes outside every other one
+  (`PolicyAroundEverything`), not through `add_middleware`, which would leave it
+  inside `ServerErrorMiddleware` and the last-resort `500` without a policy. The
+  four routes FastAPI registers by default stay off (`docs_url=None`,
+  `redoc_url=None`, `openapi_url=None`): `/docs` and `/redoc` load a CDN bundle
+  with no integrity attribute, and nothing here uses them.
+  The boundary does no I/O: it reads the last snapshot each refresher
   published. Never call a quota client or an activity reader from a request
   handler — the refresher's cadence is the only thing that bounds how often a
   credential is read or a token is sent upstream.
