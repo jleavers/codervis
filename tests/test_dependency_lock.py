@@ -120,10 +120,17 @@ MUTATION_SOURCE = "tests/test_negative_controls.py"
 #: install anywhere here fails until somebody changes a number and says why in the same change.
 #: A count rather than a pattern, because none of these is a command this project asks anyone to
 #: run -- what matters is that one cannot arrive quietly.
+#:
+#: `MUTATION_SOURCE` went from 2 to 4 in #110, and neither install was added by that change:
+#: both were already in the file and `commands()` could not see either, because each is a
+#: command whose installer verb is the first token of a Python string literal. So the 2 meant
+#: "every unhashed install in that file that happens to have something in front of its verb",
+#: which is not what this table says it counts, and a de-flagged `uv`, `pip3`, `pipenv` or
+#: `poetry` install added there as mutation data would not have moved the number.
 EXPECTED_UNFLAGGED_INSTALLS = {
     "docs/superpowers/plans/archive/2026-06-08-agy-1.0.6-compatibility.md": 5,
     "docs/superpowers/plans/archive/2026-06-08-browser-widget-toggles.md": 5,
-    MUTATION_SOURCE: 2,
+    MUTATION_SOURCE: 4,
 }
 
 #: How an install of a lock may be *written*. Named forms rather than one pattern, because the
@@ -154,6 +161,32 @@ REQUIREMENT_OPTIONS = ("-r", "--requirement", "--with-requirements")
 #: the dev lock documented in `README.md`. The lock names are left out of this comment on
 #: purpose -- the scan reads this file too, and a real one here would be a finding about itself.
 COMMAND_SEPARATORS = ("&&", "||", ";", "|")
+
+#: The Python syntax a command written inside a string literal can be glued to, when the
+#: installer verb is the literal's *first* token: `after="uv run …`, `after=("uv run …`,
+#: `command=[rf'''uv run …`, `run(shlex.split("uv run …`. Stripping quotes off the *ends* of
+#: the token does not reach that quote -- `after="uv` begins with `a`, so the opening quote is
+#: on neither end -- and the scan looks for an installer at every token offset but never
+#: inside one, so the verb went unseen entirely (#110).
+#:
+#: Matched as *glue and then a quote*, so that only syntax can be cut: the character
+#: immediately before the quote must be one of ``= ( [ { , : +``. That is what leaves an
+#: apostrophe inside a word (``README's``, ``don't``) and a lock named in prose
+#: (``requirements-dev.txt's hashes``) alone -- cutting those would narrow this scan in exchange
+#: for widening it. `-` is in neither class for the same reason: an option's own value
+#: (`--with-requirements="…"`) is the option, and `named_target()` is what reads it.
+PYTHON_STRING_OPENS_A_COMMAND = re.compile(
+    r"""^[\w.,+=(\[{:'"]*[,+=(\[{:][rbuf]*(?P<command>['"]{1,3}.+)$""",
+    re.IGNORECASE,
+)
+
+#: What comes off the ends of a token. Brackets and braces sit here beside the quotes because
+#: the syntax the pattern above cuts off the *front* of a command has a closing half on its
+#: last token -- `command=["uv run … requirements.txt"]` ends in ``.txt"]`` -- and leaving that
+#: on would find the verb and lose the lock, which reads as "no install" exactly as the whole
+#: miss did. Measured against the tracked tree: adding them moves no count there today, so this
+#: is the claim in `commands()` being made true rather than a number being changed.
+TOKEN_EDGES = "`\"'.,;:()[]{}"
 
 #: The options an install of a lock may carry, and no others -- the point `PERMITTED_PIP_ARGUMENTS`
 #: makes for the image, made once more for every documented install. `--require-hashes` is
@@ -416,10 +449,20 @@ def commands(text: str) -> list[list[str]]:
     the command it is. Each line is then cut at `COMMAND_SEPARATORS`, so two installs chained on
     one line are two commands and neither is credited with the other's options.
 
-    Backticks, quotes and sentence punctuation come off each token in one pass rather than in
-    sequence, since `AGENTS.md` ends an install in ``.txt`.`` and the controls end one in
-    ``.txt",``. Separators are replaced *before* that, because stripping would eat a bare ``;``
-    entirely and the cut would be lost.
+    `TOKEN_EDGES` then comes off each token in one pass rather than in sequence, since
+    `AGENTS.md` ends an install in ``.txt`.`` and the controls end one in ``.txt",``.
+    Separators are replaced *before* that, because stripping would eat a bare ``;`` entirely
+    and the cut would be lost.
+
+    That pass is ends-only, which left the claim above true of every such command *except* the
+    one whose verb is its string's *first* token: ``after="uv run …`` begins with `a`, so the
+    opening quote was on neither end, the verb stayed glued to the assignment as ``after="uv``,
+    and since an installer is looked for at every token offset but never inside one, the command
+    was seen as no install at all (#110). `PYTHON_STRING_OPENS_A_COMMAND` is what cuts that --
+    the syntax in front of the quote, and only syntax -- before the strip, which then takes the
+    quote itself. So the claim holds whatever assignment or call syntax precedes the literal,
+    which is what it says, rather than only where something else already sat in front of the
+    verb.
     """
     joined = text.replace("\\\n", " ").replace("\\n", " ")
     found: list[list[str]] = []
@@ -431,7 +474,10 @@ def commands(text: str) -> list[list[str]]:
             if token == "\0":
                 found.append(command)
                 command = []
-            elif stripped := token.strip("`\"'.,;:()"):
+                continue
+            if opened := PYTHON_STRING_OPENS_A_COMMAND.match(token):
+                token = opened.group("command")
+            if stripped := token.strip(TOKEN_EDGES):
                 command.append(stripped)
         found.append(command)
     return [command for command in found if command]
@@ -516,6 +562,74 @@ def installs_of_a_lock() -> dict[str, list[Install]]:
             found[name] = installs
     assert not unreadable, f"tracked files that could not be read: {unreadable}"
     return found
+
+
+#: The runtime lock, for the cases below to name. Taken from `INPUTS` rather than written out,
+#: for the reason those cases carry `{lock}` instead of a lock's name: this file is one of the
+#: files the scan reads, so an installer verb spelled here beside a real lock name would be an
+#: install of a lock in a file named in neither list -- a finding about itself. `COMMAND_SEPARATORS`
+#: above leaves the names out of its comment for the same reason.
+PROBE_LOCK = INPUTS["requirements.in"]
+
+#: The spellings `commands()` claims to read, each with the installer it must yield. Stated here
+#: rather than derived from the tree, so that this says what the scan is *for* rather than what
+#: it currently happens to find: #110 was a docstring claiming one of these and a tree that
+#: contained no instance of it, so the scan was narrower than it read and nothing went red.
+#: Every case is one command naming `PROBE_LOCK`, so that what varies is only the syntax in
+#: front of the verb -- and a different installer in each, so that a cut that worked for one
+#: token length only would show up here.
+COMMAND_SPELLINGS = (
+    ("bare", "pip install -r {lock}", "pip install"),
+    ("string at the line's start", '"pip3 install -r {lock}"', "pip3 install"),
+    ("assignment", 'after="uv run --with-requirements {lock}"', "uv run"),
+    ("assignment and call", 'after=("pipenv install -r {lock}")', "pipenv install"),
+    ("list of raw strings", 'command=[r"""poetry add -r {lock}"""]', "poetry add"),
+    ("nested call", 'run(shlex.split("uv add -r {lock}"))', "uv add"),
+    ("dict value", '{{"cmd":"uv pip install -r {lock}"}}', "uv pip install"),
+    ("keyword after the verb", 'run("pip download -r {lock}", check=True)', "pip download"),
+)
+
+#: Lines that name a lock and are *not* a command, which the cut must not turn into one.
+#: `PYTHON_STRING_OPENS_A_COMMAND` requires syntax immediately before the quote for this reason:
+#: a rule that cut at any quote would eat an apostrophe out of a word along with the rest of the
+#: token -- a lock's own name among it -- and so lose an install the scan is meant to find.
+#: Widening this scan at the price of narrowing it is the shape of defect the file is written
+#: against, so the two directions are pinned side by side.
+NOT_A_COMMAND = (
+    "the {lock}'s hashes are what pip enforces",
+    "README's {lock} is the one the image installs",
+    "don't regenerate {lock} on its own",
+)
+
+
+@pytest.mark.parametrize(
+    ("line", "verb"),
+    [(line, verb) for _, line, verb in COMMAND_SPELLINGS],
+    ids=[label for label, _, _ in COMMAND_SPELLINGS],
+)
+def test_an_install_is_found_however_its_command_is_written(line: str, verb: str) -> None:
+    """`commands()` says a command written inside a Python string tokenises as the command it
+    is, and until #110 that held only where something already sat in front of the installer
+    verb: an assignment glued to a verb that *opened* the literal left no entry of `INSTALLERS`
+    matching at any offset, and the command was read as no install at all.
+
+    An allow-list of spellings rather than the one case that was reported, for the reason
+    `PERMITTED_INSTALL_OPTIONS` is an allow-list: the next miss is a spelling nobody has written
+    down yet, and a test that re-checks only the spelling somebody already found says nothing
+    about it.
+    """
+    found = installs_in(line.format(lock=PROBE_LOCK), "probe")
+    assert [(install.text, install.target) for install in found] == [(verb, PROBE_LOCK)], (
+        f"{line!r} did not read as one install of {PROBE_LOCK} by `{verb}`: {found}"
+    )
+
+
+@pytest.mark.parametrize("line", NOT_A_COMMAND)
+def test_a_lock_named_in_prose_is_not_an_install(line: str) -> None:
+    """The other direction, beside the one above because the cut that fixes it could pass that
+    one simply by being wider, and pay for it here."""
+    formatted = line.format(lock=PROBE_LOCK)
+    assert installs_in(formatted, "probe") == [], formatted
 
 
 def test_every_documented_install_of_a_lock_requires_hashes() -> None:
