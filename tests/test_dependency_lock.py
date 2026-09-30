@@ -183,7 +183,9 @@ COMMAND_SEPARATORS = ("&&", "||", ";", "|")
 #: and a lock named in prose (``requirements-dev.txt's hashes``) are left whole, since the
 #: character before such a quote is a letter and not syntax. Cutting there would take the rest of
 #: the token with it -- a lock's own name among it -- and so narrow this scan in exchange for
-#: widening it; `test_a_lock_named_in_prose_is_not_an_install` is where that is stated.
+#: widening it. `test_a_word_holding_an_apostrophe_is_not_cut_at_it` is where that is stated, on
+#: the tokens: `test_a_lock_named_in_prose_is_not_an_install` cannot see it, because a line with
+#: no installer in it answers `[]` however the token was cut.
 #:
 #: The prefix is `{0,2}` and not `*` because that is what a Python string prefix can be -- `r`,
 #: `b`, `u`, `f` and the two-letter combinations of them, and nothing longer. Unbounded, it also
