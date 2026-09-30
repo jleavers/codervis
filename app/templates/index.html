@@ -79,7 +79,7 @@
     </div>
   </main>
 
-  <script>
+  <script nonce="{{ csp_nonce }}">
     // The same strict serialization /api/usage and the SSE frames serve.
     window.__INITIAL_PAYLOAD__ = {{ payload_json | safe }};
   </script>
