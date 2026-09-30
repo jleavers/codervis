@@ -102,14 +102,18 @@ edit the input and regenerate both locks with the command written in each lock's
 they are regenerated together, because a contributor's venv and the image have to be the same
 set of artefacts. The image installs with `pip install --require-hashes`, which refuses a
 lock that has lost a hash and refuses a package the lock does not name, so an incomplete
-regeneration fails the Docker build rather than resolving something fresh. Every documented
-install of a lock passes the same flag -- the venv above, CI's two jobs, and the commands in
-`README.md`, `CLAUDE.md` and `AGENTS.md` -- so a lock that has lost its hashes *altogether*
-fails everywhere rather than only in the image. That last part is the only part the flag adds
-outside the image: pip turns hash checking on by itself as soon as one requirement carries a
-`--hash`, so a lock that has lost *one* hash already fails on every path without it.
-`tests/test_dependency_lock.py` is what keeps the flag on those commands, and what fails if a
-new document adds an install of its own. The locks are compiled `--universal` against
+regeneration fails the Docker build rather than resolving something fresh. The same flag is on
+every install this repository asks anyone to run -- the venv above, CI's two jobs, and the
+commands in `README.md`, `CLAUDE.md` and `AGENTS.md` -- so a lock that has lost its hashes
+*altogether* fails everywhere rather than only in the image. That last part is the only part the
+flag adds outside the image: pip turns hash checking on by itself as soon as one requirement
+carries a `--hash`, so a lock that has lost *one* hash already fails on every path without it.
+`tests/test_dependency_lock.py` scans the tracked tree for installs of a lock, requires the flag
+and allows no other option beside it -- a second `--index-url` is a second source of code,
+hashes or not -- and fails if a file it does not name installs one. Two tracked places are
+exempt there, each named with its reason: `tools/screenshots/`, which is #108, and the archived
+plans under `docs/superpowers/plans/archive/`, which are a record of finished work rather than
+instructions anybody follows. The locks are compiled `--universal` against
 `--python-version 3.13`, which is the floor CI runs and not the target: the image is Python
 3.14, and a universal resolve is what makes one set of artefacts serve both.
 

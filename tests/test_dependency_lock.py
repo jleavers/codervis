@@ -24,7 +24,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import NamedTuple
 
 import pytest
@@ -46,7 +46,7 @@ LOCKS = frozenset(INPUTS.values())
 #: beside it is a failure rather than a silent second source of code.
 PERMITTED_PIP_ARGUMENTS = ("install", "--no-cache-dir", "--require-hashes", "-r")
 
-#: Every tracked file that runs or documents an install of a lock. Named here rather than
+#: Every tracked file whose installs of a lock must require hashes. Named here rather than
 #: discovered, so that a *new* file telling somebody to install a lock is a failure until it is
 #: added on purpose: the flag being on the image's install alone was the gap, not the image.
 INSTALL_SITES = frozenset(
@@ -60,17 +60,53 @@ INSTALL_SITES = frozenset(
     }
 )
 
-#: The one tracked file whose de-flagged installs are the point: `tests/test_negative_controls.py`
-#: carries, as data, the mutated `Dockerfile` line that drops `--require-hashes`, which is how
-#: the control proves the pin above bites. Scanning it would fail on the very text that keeps
-#: this bound honest.
-MUTATION_SOURCE = "tests/test_negative_controls.py"
-
-#: A `pip install` of a lock on one line, whatever indents or quotes it -- a shell block, a
-#: YAML `run:`, or prose in backticks. `flags` is everything between the verb and the file.
-PIP_INSTALL = re.compile(
-    r"pip install(?P<flags>[^`\n]*?)-r (?P<target>requirements[A-Za-z0-9._-]*\.txt)"
+#: Files that install a lock and are *not* held to the flag, each for a reason written here.
+#: An exemption rather than a silent miss: the scan below finds these, so dropping one from this
+#: list turns the pin red rather than quietly widening it.
+#:
+#: - `tools/screenshots/` installs the runtime lock through `uv run --with-requirements`, and in
+#:   the same command takes `playwright` and `pillow` by bare name. That is #108, filed rather
+#:   than fixed here, and README's Security notes name it as the exception; it is no part of the
+#:   image or of the test set.
+#: - The archived plans under `docs/superpowers/plans/archive/` are the record of work that is
+#:   over, which `tests/test_agent_tooling_context.py` is what keeps true. Rewriting a finished
+#:   plan's command would falsify the record rather than fix anything anyone runs.
+EXEMPT_INSTALL_SITES = frozenset(
+    {
+        "tools/screenshots/README.md",
+        "docs/superpowers/plans/archive/2026-06-08-agy-1.0.6-compatibility.md",
+        "docs/superpowers/plans/archive/2026-06-08-browser-widget-toggles.md",
+    }
 )
+
+#: `tests/test_negative_controls.py` carries de-flagged installs as mutation *data* -- that is
+#: how the controls prove these pins bite. Rather than skipping the file, which would hide any
+#: install text added to it, the scan expects exactly these and fails on a fourth.
+MUTATION_SOURCE = "tests/test_negative_controls.py"
+EXPECTED_MUTATION_INSTALLS = 2
+
+#: How an install of a lock may be *written*. Named forms rather than one pattern, because the
+#: pin is exactly as wide as this list: `pip3`, `--requirement`, `-rfile` and `uv run
+#: --with-requirements` each install a lock, and a regex written for `pip install ... -r file`
+#: sees none of them. Keep this list ahead of what the tree contains, not level with it.
+INSTALLERS = (
+    ("pip", "install"),
+    ("pip3", "install"),
+    ("python", "-m", "pip", "install"),
+    ("python3", "-m", "pip", "install"),
+    ("uv", "pip", "install"),
+    ("uv", "run"),
+)
+
+#: The options that name a requirements file, in any of the spellings above.
+REQUIREMENT_OPTIONS = ("-r", "--requirement", "--with-requirements")
+
+#: The options an install of a lock may carry, and no others -- the point `PERMITTED_PIP_ARGUMENTS`
+#: makes for the image, made once more for every documented install. `--require-hashes` is
+#: required on top of this; what the allow-list adds is that `--index-url`, `--extra-index-url`
+#: or `--trusted-host` arriving beside it is a failure, since a documented command that points a
+#: contributor's install at another index is the same defect as losing the hashes.
+PERMITTED_INSTALL_OPTIONS = frozenset({"--require-hashes", "--no-cache-dir"})
 
 #: `name:tag@sha256:...`. The tag is kept for a reader and for Dependabot to follow; the
 #: digest is what the engine actually resolves.
@@ -158,16 +194,10 @@ def tracked_requirement_files() -> set[str]:
     it: a developer's scratch `requirements-local.txt` is not something this repository ships,
     and failing on one would be a pin that bites the wrong person.
     """
-    listed = subprocess.run(
-        ["git", "ls-files", "-z", "requirements*"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=True,
-        env=_GIT_ENV,
-    ).stdout
-    return {name for name in listed.split("\0") if name}
+    # `startswith`, which is what the `requirements*` pathspec this replaced matched: a
+    # nested `tools/x/requirements.txt` was not one of this repository's requirement files
+    # then and is not now.
+    return {name for name in tracked_files() if name.startswith("requirements")}
 
 
 def test_the_repository_has_exactly_these_requirement_files() -> None:
@@ -272,12 +302,17 @@ def test_the_image_installs_with_hashes_required() -> None:
     )
 
 
-def installs_of_a_lock() -> dict[str, list[str]]:
-    """Every `pip install` of a lock in the tracked tree, by the file it sits in.
+class Install(NamedTuple):
+    """One install of a lock found in the tree: where it is, and what it passes."""
 
-    The whole tree rather than `INSTALL_SITES`, because the point of the list is to be
-    compared against what is really there.
-    """
+    path: str
+    target: str
+    options: frozenset[str]
+    text: str
+
+
+def tracked_files() -> list[str]:
+    """Every path `git ls-files` reports, which is what a clone gets."""
     listed = subprocess.run(
         ["git", "ls-files", "-z"],
         cwd=ROOT,
@@ -287,17 +322,100 @@ def installs_of_a_lock() -> dict[str, list[str]]:
         check=True,
         env=_GIT_ENV,
     ).stdout
-    found: dict[str, list[str]] = {}
-    for name in (entry for entry in listed.split("\0") if entry):
-        if name == MUTATION_SOURCE:
-            continue
+    return [entry for entry in listed.split("\0") if entry]
+
+
+def commands(text: str) -> list[list[str]]:
+    """The text as token lists, one per logical line.
+
+    Backslash continuations are joined first, because a lock is routinely named on the line
+    after the installer. A literal ``\\n`` is joined too, so that a command written inside a
+    Python string -- which is how `tests/test_negative_controls.py` carries one -- tokenises as
+    the command it is. Backticks, quotes and sentence punctuation come off each token in one
+    pass rather than in sequence, since `AGENTS.md` ends an install in ``.txt`.`` and the
+    controls end one in ``.txt",``.
+    """
+    joined = text.replace("\\\n", " ").replace("\\n", " ")
+    lines = []
+    for line in joined.splitlines():
+        tokens = [token.strip("`\"'.,;:()") for token in line.split()]
+        lines.append([token for token in tokens if token])
+    return lines
+
+
+def named_target(tokens: list[str], index: int) -> tuple[str | None, int]:
+    """The requirements file the option at `index` names, and the index after its value.
+
+    Handles `-r file`, `-rfile` and `--requirement=file`, and strips any directory, so that
+    `./requirements.txt` and `$PWD/requirements.txt` are the same lock.
+    """
+    token = tokens[index]
+    for option in REQUIREMENT_OPTIONS:
+        if token == option:
+            if index + 1 >= len(tokens):
+                return None, index + 1
+            return PurePosixPath(tokens[index + 1]).name, index + 2
+        if token.startswith(f"{option}="):
+            return PurePosixPath(token[len(option) + 1 :]).name, index + 1
+        # `-rfile`, which pip accepts for a short option.
+        if option.startswith("-") and not option.startswith("--") and token.startswith(option):
+            return PurePosixPath(token[len(option) :]).name, index + 1
+    return None, index + 1
+
+
+def installs_in(text: str, path: str) -> list[Install]:
+    """Every install of a lock in one file."""
+    found = []
+    for tokens in commands(text):
+        for start in range(len(tokens)):
+            verb = next(
+                (form for form in INSTALLERS if tuple(tokens[start : start + len(form)]) == form),
+                None,
+            )
+            if verb is None:
+                continue
+            rest = tokens[start + len(verb) :]
+            options, index = set(), 0
+            targets = []
+            while index < len(rest):
+                target, step = named_target(rest, index)
+                if target is not None:
+                    targets.append(target)
+                    index = step
+                    continue
+                if rest[index].startswith("-"):
+                    options.add(rest[index].split("=", 1)[0])
+                index += 1
+            for target in targets:
+                if target in LOCKS:
+                    found.append(
+                        Install(path, target, frozenset(options), " ".join(verb) + " ...")
+                    )
+            break
+    return found
+
+
+def installs_of_a_lock() -> dict[str, list[Install]]:
+    """Every install of a lock in the tracked tree, by the file it sits in.
+
+    The whole tree rather than `INSTALL_SITES`, because the point of that list is to be compared
+    against what is really there. A file that cannot be decoded as UTF-8 or read at all is
+    reported rather than skipped: "it installs nothing" and "nobody could look" are different
+    answers, and the second one silently narrowed this pin.
+    """
+    found: dict[str, list[Install]] = {}
+    unreadable = []
+    for name in tracked_files():
         try:
             text = (ROOT / name).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        except UnicodeDecodeError:
+            continue  # a binary file installs nothing
+        except OSError as exc:
+            unreadable.append(f"{name}: {exc.__class__.__name__}")
             continue
-        flags = [match.group("flags") for match in PIP_INSTALL.finditer(text)]
-        if flags:
-            found[name] = flags
+        if installs := installs_in(text, name):
+            found[name] = installs
+    assert not unreadable, f"tracked files that could not be read: {unreadable}"
     return found
 
 
@@ -310,18 +428,54 @@ def test_every_documented_install_of_a_lock_requires_hashes() -> None:
     flag adds on those paths is the case where a lock has lost its hashes *altogether* -- which
     is exactly the regeneration mistake worth catching, and it would otherwise fail only in the
     image.
+
+    The options are an allow-list and not a search for one good flag, for the reason
+    `PERMITTED_INSTALL_OPTIONS` gives: `--require-hashes --index-url https://elsewhere/simple`
+    carries the flag and is still a second source of code.
     """
-    for name, occurrences in sorted(installs_of_a_lock().items()):
-        for flags in occurrences:
-            assert "--require-hashes" in flags, (
-                f"{name} installs a lock without --require-hashes: pip install{flags}-r ..."
+    for name, installs in sorted(installs_of_a_lock().items()):
+        if name in EXEMPT_INSTALL_SITES or name == MUTATION_SOURCE:
+            continue
+        for install in installs:
+            assert "--require-hashes" in install.options, (
+                f"{name} installs {install.target} without --require-hashes"
+            )
+            unnamed = install.options - PERMITTED_INSTALL_OPTIONS
+            assert not unnamed, (
+                f"{name}'s install of {install.target} passes {sorted(unnamed)}, which this "
+                "file does not name. Add it here on purpose."
             )
 
 
-def test_the_files_that_install_a_lock_are_the_ones_named_here() -> None:
-    """So a new one is a decision. A file that tells somebody to install a lock without the
-    flag is the same defect as the image losing it, one step further from the build."""
-    assert set(installs_of_a_lock()) == INSTALL_SITES
+def test_no_file_installs_a_lock_unless_it_is_named_here() -> None:
+    """The safety direction. A file nobody listed telling somebody to install a lock is the
+    image losing the flag, one step further from the build."""
+    unnamed = set(installs_of_a_lock()) - INSTALL_SITES - EXEMPT_INSTALL_SITES - {MUTATION_SOURCE}
+    assert not unnamed, (
+        f"these files install a lock and are named in neither list: {sorted(unnamed)}"
+    )
+
+
+def test_every_file_named_here_still_installs_a_lock() -> None:
+    """The bookkeeping direction, kept apart from the one above on purpose: the repair for this
+    failure is to delete a name, and that is also how an unhashed install would go green."""
+    found = set(installs_of_a_lock())
+    assert INSTALL_SITES <= found, f"named but installing nothing: {sorted(INSTALL_SITES - found)}"
+    assert EXEMPT_INSTALL_SITES <= found, (
+        f"exempted but installing nothing -- drop the exemption: {sorted(EXEMPT_INSTALL_SITES - found)}"
+    )
+
+
+def test_the_controls_carry_exactly_the_de_flagged_installs_they_need() -> None:
+    """`tests/test_negative_controls.py` holds installs without the flag as mutation data. That
+    is the point, so it is not held to the flag -- but it is counted, so install text added to
+    it is visible rather than hidden behind a skipped file."""
+    installs = installs_of_a_lock().get(MUTATION_SOURCE, [])
+    without = [install for install in installs if "--require-hashes" not in install.options]
+    assert len(without) == EXPECTED_MUTATION_INSTALLS, (
+        f"{MUTATION_SOURCE} carries {len(without)} de-flagged installs of a lock, not "
+        f"{EXPECTED_MUTATION_INSTALLS}. If a control was added, say so here."
+    )
 
 
 def test_the_image_names_its_base_by_content() -> None:

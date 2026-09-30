@@ -243,7 +243,7 @@ _LOCK_EVERY_INSTALL_REQUIRES_HASHES = (
     f"{LOCK_TESTS}::test_every_documented_install_of_a_lock_requires_hashes"
 )
 _LOCK_INSTALL_SITES_NAMED = (
-    f"{LOCK_TESTS}::test_the_files_that_install_a_lock_are_the_ones_named_here"
+    f"{LOCK_TESTS}::test_no_file_installs_a_lock_unless_it_is_named_here"
 )
 
 _ORIGIN_POLICY_STATED = f"{ORIGIN_TESTS}::test_the_policy_is_the_one_stated_here"
@@ -1831,6 +1831,20 @@ MUTATIONS: tuple[Mutation, ...] = (
         after=(
             "run: python -m pip install -r requirements-dev.txt\n"
             "\n      # Start with Ruff's correctness rules."
+        ),
+        caught_by=(_LOCK_EVERY_INSTALL_REQUIRES_HASHES,),
+    ),
+    Mutation(
+        key="lock-a-documented-install-adds-an-index",
+        widening=True,
+        area=DEPENDENCY_LOCK,
+        rule="an install of a lock passes the options named in the pin and no others: a second"
+        " index beside --require-hashes is a second source of code, hashes or not",
+        path="README.md",
+        before="python -m pip install --require-hashes -r requirements-dev.txt",
+        after=(
+            "python -m pip install --require-hashes"
+            " --index-url https://index.invalid/simple -r requirements-dev.txt"
         ),
         caught_by=(_LOCK_EVERY_INSTALL_REQUIRES_HASHES,),
     ),
