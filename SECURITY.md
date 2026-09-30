@@ -29,9 +29,13 @@ codervis runs beside two long-lived session tokens — `~/.claude/.credentials.j
 
 - **Where a token can go.** The dashboard's container has no route off the host except an
   allow-listing `CONNECT` proxy that admits `claude.ai`, `chatgpt.com` and whatever the
-  operator adds to `EGRESS_ALLOW`, over HTTPS only. A way to make the dashboard send a token
-  anywhere else — a redirect, a host override, a compromised dependency, a route round the
-  proxy — is in scope.
+  operator adds to `EGRESS_ALLOW`, over HTTPS only. That holds on Docker Engine 28.0 or newer,
+  which honours the `gateway_mode_ipv4: isolated` option that keeps the host off the
+  dashboard's network. On an older engine the host keeps an address there that the container
+  can reach, unless the operator adds the host firewall rule that [`README.md`'s "Check the
+  egress bound"](README.md#check-the-egress-bound) gives, and `python -m app.egress check` is
+  what says which a deployment has. A way to make the dashboard send a token anywhere else — a
+  redirect, a host override, a compromised dependency, a route round the proxy — is in scope.
 - **Where a token can be seen.** `source_error` and the log come from a fixed vocabulary
   (`app/degrade.py`), never from an exception's own text, because an exception raised while a
   request is being built carries the bearer. A token, or any part of one, reaching the payload,

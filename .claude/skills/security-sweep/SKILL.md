@@ -147,9 +147,10 @@ process, no path on this host. A third repository is not on the list, and neithe
 of an account's repositories — whoever runs this sweep would be listing their own.
 
 **One entry on that list is not a path, and it is spelled the way it is for the same reason the
-paths are.** A secret's value is served to nobody, but a *variable's* is served to anyone who
-can read a public repository, and the bare `gh variable list` returns it beside the name, as do
-`GET /repos/{owner}/{repo}/actions/variables` and the per-environment endpoints under
+paths are.** A secret's value is served to nobody, but a *variable's* is served to anyone with
+collaborator access to the repository. The public cannot read one, but the lane runs with the
+operator's own credential, which can, so the bare `gh variable list` returns it beside the name,
+as do `GET /repos/{owner}/{repo}/actions/variables` and the per-environment endpoints under
 `environments`. So the entry is `gh variable list --json name`, the projection that cannot
 return one, and no path on the list reaches a value: **that is what closes the rest of them**.
 Until #102 it was a sentence in the bound forbidding `actions/variables` by name, beside a bare
@@ -172,11 +173,12 @@ Until #96 the audit below was not a second check on this lane but the only one.
 **Its `gh api` entries name their path, which was true of no other lane's until #102, and
 that is the part to read twice.** `gh api` reaches every endpoint GitHub serves, so `gh api -X GET` with nothing after
 it is an allow-list of one call and a way to every surface in the sweep — an Actions run log,
-an issue thread, `actions/variables` (whose values GitHub serves to anyone who can read a
-public repository), a webhook's URL, an artifact. Naming two or three of those as forbidden
-instead is the deny-list AGENTS.md's rule for how a pin is written rules out one level down —
-the key somebody adds is the fourth one. **Why the other three lists are not written this way is
-worth reading twice, because the flattering answer is not true of all of them**: it holds for
+an issue thread, `actions/variables` (whose values GitHub serves to collaborators, and the lane
+runs as the operator, who is one), a webhook's URL, an artifact. Naming two or three of those
+as forbidden instead is the deny-list AGENTS.md's rule for how a pin is written rules out one
+level down — the key somebody adds is the fourth one. **Why the other three lists are not
+written this way is worth reading twice, because the flattering answer is not true of all of
+them**: it holds for
 `publication` ×2 and `disclosure`, whose lists already grant `gh issue view` and
 `gh run view --log`, so their bare `gh api -X GET` adds little to a reach they already have. It
 did not hold for `public/outsiders`, whose list granted no variable's value and whose bound
@@ -199,9 +201,9 @@ profile, whose `WebFetch` has no allow-list, and the bound's closing line refuse
 of the swept repository's own GitHub pages — with `github.com/advisories`, where a GHSA id
 resolves, as the one exception and that page rather than the host. And the bound says in as
 many words what it is *not* about,
-which none of the other four has to: most of this lane is a scratch venv, `pip-audit`, advisory
-lookups on the web and reads of issuebot's tracked source in a checkout on this host, and "the
-only calls you may make" would otherwise read as cancelling them. Its `coverage` says how far
+which none of the other four has to: most of this lane is a scratch venv, `pip-audit` and
+advisory lookups on the web, and "the only calls you may make" would otherwise read as
+cancelling them. Its `coverage` says how far
 back the activity events it was served reach, what retention it established, and how many
 pushes, commits and refs it scanned.
 
@@ -445,7 +447,8 @@ checked at `main`** — a closed issue naming the commit or pull request that cl
 you confirmed against the tree. Not "the closed issues": a stranger can close their own, and an
 issue can be closed as won't-fix, as a duplicate, or in error. The sweep that found this
 listed #48 as fixed with no attacker involved at all: it was closed by a stray keyword in a
-commit message ("filed rather than fixed: #48") and stayed open in the code. #48 is open.
+commit message ("filed rather than fixed: #48") and stayed open in the code. It was reopened on
+2026-09-27 and closed the next day by PR #83, which is the change that fixed it.
 
 `toolProfiles: false` launches every stage on the default workflow subagent instead of its
 named profile. The agent registry is read once when a session starts, like the workflow
@@ -512,8 +515,8 @@ out-of-scope, never silence:
 | --- | --- |
 | `front-door` | every route into `codervis:8000` that skips `ingress`'s bounds, `/healthz` under a hung mount, the FastAPI default routes and HEAD/Range on `/static`, and the browser side; may start a throwaway stack |
 | `inside-codervis` | code already running in the dashboard: the allowed hosts as exfiltration sinks (reasoned and stub-tested, never sent to the real services), what the whole-tree mounts hold, and what root with `NET_RAW` adds; may start a throwaway stack |
-| `supply-chain` | CI and Dependabot, advisories across the pip closure and the base image, variable names shared with issuebot, and history GitHub serves by SHA |
-| `assurance` | the gate-level tests (by mutation, on a copy), the unarchived design specs, container logs as agent input, and the sweep's own tooling |
+| `supply-chain` | CI and Dependabot, advisories across the pip closure and the base image, the variable names the compose file takes from the shell, and history GitHub serves by SHA |
+| `assurance` | the gate-level tests (by mutation, on a copy), the design specs (archived since #46), container logs as agent input, and the sweep's own tooling |
 
 The `public` lanes (`args.lanes: "public"`) are for the tree about to be made public, which no
 earlier set asked about: every earlier run swept one operator's deployment of a private

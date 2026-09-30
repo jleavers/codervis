@@ -926,8 +926,9 @@ MUTATIONS: tuple[Mutation, ...] = (
         # `gh api -X GET` with nothing after it is read-only by every other check in the suite
         # and is a way to every endpoint GitHub serves. It satisfies the post-run audit's
         # per-lane question too, which asks only whether a call is one the lane's brief names.
-        # What it reaches here is a variable's value, which GitHub serves to anyone who can read
-        # a public repository and which no other entry on this list grants.
+        # What it reaches here is a variable's value, which GitHub serves to collaborators --
+        # and the lane runs as the operator, who is one -- and which no other entry on this list
+        # grants.
         before="  'gh api -X GET repos/{owner}/{repo}/actions/permissions',\n",
         after="  'gh api -X GET',\n",
         caught_by=(_PUBLIC_LANE_BOUND,),
@@ -986,7 +987,8 @@ MUTATIONS: tuple[Mutation, ...] = (
         # Read-only is not the same property as returns-no-secret, and this is the widening that
         # shows the difference: `gh variable list` is a read by every check above and it prints
         # NAME and VALUE. A secret's value is served to nobody, but a variable's is served to
-        # anyone who can read a public repository, so the bare call puts every one of them in
+        # anyone with collaborator access, which the operator's credential this lane runs with
+        # has, so the bare call puts every one of them in
         # this lane's context and in the run's transcripts -- on the host holding two live
         # tokens -- while reading, to anyone checking the list, like the listing it was meant to
         # be. The closing line this bound replaced said "never fetch a variable's value"; this
@@ -1103,9 +1105,10 @@ MUTATIONS: tuple[Mutation, ...] = (
         # way to every endpoint GitHub serves. This lane has no other `gh` entry for the rest of
         # the list to bound it with, so the bare spelling reaches an Actions run log, an issue
         # thread and `repos/{owner}/{repo}/actions/variables` -- whose values GitHub serves to
-        # anyone who can read a public repository -- while satisfying the post-run audit's
-        # per-lane question, which asks only whether a call is one the lane's brief names. It is
-        # `public/outsiders`' `variables` defect (#95) one level up from where that one was.
+        # collaborators, and the lane runs as the operator, who is one -- while satisfying the
+        # post-run audit's per-lane question, which asks only whether a call is one the lane's
+        # brief names. It is `public/outsiders`' `variables` defect (#95) one level up from where
+        # that one was.
         #
         # **This is the control that witnesses the shape check**, which it did not until the
         # check was moved ahead of the equality assertion in that test. A second control was

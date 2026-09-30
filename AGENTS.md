@@ -248,7 +248,8 @@ What the repository does control is the text itself:
 - **No document carries its own environment prefix or names a fixed path in
   shared `/tmp`.** A fixed name under world-writable `/tmp` is one another
   local principal can create and fill before the command that reads it runs as
-  the operator. The test above fails on one.
+  the operator. The test above fails on a fixed `/tmp` path; an environment
+  prefix has no check, and is a reviewer's to catch.
 - **No document under `docs/superpowers/` reads as pending work.** The reach is
   the whole subtree, not the plans alone: every tracked document there — the
   archived plans and the design specs beside them — says up front, within its
@@ -305,8 +306,9 @@ What the repository does control is the text itself:
   of, which is what the rule below forbids. `OUTSIDERS_READ_BOUND` is written
   the same way since #102, and that lane is where the shape mattered most:
   nothing on its list grants an Actions *variable's* value, GitHub serves one to
-  anyone who can read a public repository, and so long as the list carried a
-  bare `gh api -X GET` the closure had to be a sentence naming
+  anyone with collaborator access, the operator's credential that lane runs with
+  has that access, and so long as the list carried a bare `gh api -X GET` the
+  closure had to be a sentence naming
   `actions/variables` — with `environments/{name}/variables` as the endpoint it
   did not name. Its nine paths are the eight settings surfaces its own bullets
   ask for and the second repository's file contents, a variable is enumerated by

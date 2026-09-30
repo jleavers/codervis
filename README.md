@@ -157,10 +157,9 @@ link out of them.
     have used it in, whatever those files held.
   - `~/.codex/config.toml` — Codex's own configuration, which can carry bearer
     values in the entries you added to it.
-  - the transcripts, session files, shell history and settings the activity
-    readers use (`~/.claude/projects/`, `~/.codex/sessions/`,
-    `archived_sessions/`, `history.jsonl`), and anything else either CLI has
-    written there since.
+  - the transcripts, session files and session history the activity readers
+    use (`~/.claude/projects/`, `~/.codex/sessions/`, `archived_sessions/`,
+    `history.jsonl`), and anything else either CLI has written there since.
 
   They are not narrowed to the seven paths it
   reads inside them ([How it works](#how-it-works)) because each credential
@@ -199,6 +198,15 @@ link out of them.
 - Either or both of, installed and signed in on the host:
   - Claude Code (so `~/.claude/.credentials.json` exists)
   - Codex CLI (so `~/.codex/auth.json` exists)
+
+  **On macOS, Claude Code's file is usually not there.** Claude Code keeps its
+  login in the macOS Keychain, and writes `~/.claude/.credentials.json` only
+  when the Keychain refuses the write ([Claude Code's authentication
+  docs](https://code.claude.com/docs/en/authentication#credential-management)).
+  The container reads that file and cannot reach the Keychain, so on a Mac the
+  Claude card normally reads `unavailable` with `stored credential unavailable
+  or unusable`, and `/healthz` reports `claude_credentials_present: false`. The
+  Claude activity footer still works, because it reads `~/.claude/projects/`.
 
 ## Setup
 
@@ -546,7 +554,8 @@ The 5 seconds is deliberately the generous end of the range. Too long and the
 command is slow, which is what the bound is for; too short and the *proxy's*
 label is lost on a resolver that was merely slow, which fails a deployment that
 is whole. The public-name probe on the last line resolves a name too, and that
-one lookup is still the resolver's own budget rather than the check's.
+lookup is bounded by the check as well, inside the probe's own ten seconds: it
+gets half of them at most, as the public-name line's own paragraph above says.
 
 The two directions are separate bounds, and the on-link line is the one an
 internal network does not settle on its own. `internal: true` withholds the
@@ -741,7 +750,7 @@ browser-disabled cards are dimmed.
 | Chip shows `unavailable` with `provider data is no longer being refreshed` | That source's background refresher has stopped advancing — almost always a read that cannot be interrupted, on a bind mount that has hung (an unreachable network mount, or a disk that is not answering). The last data it fetched is deliberately *not* shown, because it is no longer current. Check that `~/.claude` and `~/.codex` still answer (`ls` them on the host), then restart with `docker compose restart codervis`. `docker compose logs codervis` names the source. |
 | Chip shows `unavailable` with `provider data unavailable` | Either that source has not finished its first refresh yet — expected for the first second or two after a start, and for longer if a source is slower than `STARTUP_REFRESH_WAIT_SECONDS` — or the provider's client failed in a way it declared but did not classify. If it persists past one refresh interval, treat it as the generic form of the rows above: check the credential file and the egress log first, and report it if neither explains it. |
 | Chip shows `unavailable` with `internal error` | A bug in the dashboard rather than in the credential or the endpoint. Please report it. |
-| `claude_credentials_present: false` from `/healthz` | Bind mount didn't pick up the credentials file. Verify `CLAUDE_HOME` points at your real `.claude` directory. |
+| `claude_credentials_present: false` from `/healthz` | Bind mount didn't pick up the credentials file. Verify `CLAUDE_HOME` points at your real `.claude` directory. On macOS the file is usually absent, because Claude Code keeps its login in the Keychain; see [Prerequisites](#prerequisites). |
 | `codex_credentials_present: false` from `/healthz` | Same, for `CODEX_HOME` / `~/.codex/auth.json`. |
 | Browser shows `reconnecting…` | The container restarted; SSE will reconnect on its own. |
 | Every chip reads `unavailable` and `docker compose logs egress` shows a refused host | The host is not on the egress allow-list: a `CLAUDE_AI_HOST`/`CHATGPT_HOST` override without a matching `EGRESS_ALLOW` entry, or the vendor redirected to another host. |
