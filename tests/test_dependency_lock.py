@@ -579,11 +579,12 @@ PROBE_LOCK = INPUTS["requirements.in"]
 #: front of the verb -- and a different installer in each, so that a cut that worked for one
 #: token length only would show up here.
 #:
-#: These pin the cut from **both** sides, which is why the last three carry their syntax's
-#: closing half on the token that names the lock. A cut too narrow loses the *verb*, which is
-#: #110. A cut too wide loses the *lock*: "take whatever follows the last quote in the token"
-#: reads `("requirements.txt")` as `)`, `commands()` drops it as empty, and an install with no
-#: target it can name is no install at all -- the same silence, from the opposite mistake.
+#: These pin the cut from **both** sides. A cut too narrow loses the *verb*, which is #110. A cut
+#: too wide loses the *lock*: "take whatever follows the last quote in the token" reads
+#: `("requirements.txt")` as `)`, `commands()` drops it as empty, and an install with no target it
+#: can name is no install at all -- the same silence, from the opposite mistake. Every case but
+#: `bare` names its lock on a token that carries a closing quote or bracket, so that direction is
+#: pinned throughout rather than in one place; `quoted target` is the one written for it alone.
 COMMAND_SPELLINGS = (
     ("bare", "pip install -r {lock}", "pip install"),
     ("string at the line's start", '"pip3 install -r {lock}"', "pip3 install"),
