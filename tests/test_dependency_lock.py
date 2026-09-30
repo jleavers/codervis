@@ -121,12 +121,14 @@ MUTATION_SOURCE = "tests/test_negative_controls.py"
 #: A count rather than a pattern, because none of these is a command this project asks anyone to
 #: run -- what matters is that one cannot arrive quietly.
 #:
-#: `MUTATION_SOURCE` went from 2 to 4 in #110, and neither install was added by that change:
-#: both were already in the file and `commands()` could not see either, because each is a
-#: command whose installer verb is the first token of a Python string literal. So the 2 meant
-#: "every unhashed install in that file that happens to have something in front of its verb",
-#: which is not what this table says it counts, and a de-flagged `uv`, `pip3`, `pipenv` or
-#: `poetry` install added there as mutation data would not have moved the number.
+#: `MUTATION_SOURCE` went from 2 to 4 in #110, in two steps worth keeping apart.
+#: **2 to 3** is the fix: a `uv run --with-requirements` install was already in the file and
+#: `commands()` could not see it, because its installer verb is the first token of a Python
+#: string literal. So the 2 meant "every unhashed install in that file that happens to have
+#: something in front of its verb", which is not what this table says it counts, and a de-flagged
+#: `uv`, `pip3`, `pipenv` or `poetry` install added there as mutation data would not have moved
+#: the number. **3 to 4** is that change's own widening control, whose `after` carries a
+#: `pipenv install` -- mutation data in this same file, counted like the rest of it.
 EXPECTED_UNFLAGGED_INSTALLS = {
     "docs/superpowers/plans/archive/2026-06-08-agy-1.0.6-compatibility.md": 5,
     "docs/superpowers/plans/archive/2026-06-08-browser-widget-toggles.md": 5,
@@ -169,15 +171,27 @@ COMMAND_SEPARATORS = ("&&", "||", ";", "|")
 #: on neither end -- and the scan looks for an installer at every token offset but never
 #: inside one, so the verb went unseen entirely (#110).
 #:
-#: Matched as *glue and then a quote*, so that only syntax can be cut: the character
-#: immediately before the quote must be one of ``= ( [ { , : +``. That is what leaves an
-#: apostrophe inside a word (``README's``, ``don't``) and a lock named in prose
-#: (``requirements-dev.txt's hashes``) alone -- cutting those would narrow this scan in exchange
-#: for widening it. `-` is in neither class for the same reason: an option's own value
-#: (`--with-requirements="…"`) is the option, and `named_target()` is what reads it.
+#: Matched as *glue and then a quote*, so that only syntax can be cut: what may precede the
+#: quote is a chain of ``= ( [ { , : +`` (and the identifiers and quotes between them), then an
+#: optional string prefix. The chain is greedy, so a token holding several quotes is cut at the
+#: *last* glue-then-quote in it, which is what makes ``{"cmd":"uv run …`` reach the verb rather
+#: than stopping at `cmd`. The chain is also optional, so a literal that opens the token itself
+#: is reached through its prefix: ``f"pip install …`` is one Python string literal opening a
+#: command like any other.
+#:
+#: What the glue requirement buys is that an apostrophe inside a word (``README's``, ``don't``)
+#: and a lock named in prose (``requirements-dev.txt's hashes``) are left whole, since the
+#: character before such a quote is a letter and not syntax. Cutting there would take the rest of
+#: the token with it -- a lock's own name among it -- and so narrow this scan in exchange for
+#: widening it; `test_a_lock_named_in_prose_is_not_an_install` is where that is stated.
+#:
+#: `-` is deliberately in neither class, because a token starting `-` is an *option* and cutting
+#: into one would lose it. Two shapes go unread as a result, both noted rather than fixed here
+#: (#113): a quoted option value (`--requirement="…"`, `-r'…'`), which `named_target()` hands
+#: back with the quote still on so the lock is not recognised, and a glue chain containing a `-`
+#: (`{"pre-install":"pip install …`). Neither is the miss #110 is about, and neither is covered.
 PYTHON_STRING_OPENS_A_COMMAND = re.compile(
-    r"""^[\w.,+=(\[{:'"]*[,+=(\[{:][rbuf]*(?P<command>['"]{1,3}.+)$""",
-    re.IGNORECASE,
+    r"""^(?:[\w.,+=(\[{:'"]*[,+=(\[{:])?(?i:[rbuf])*(?P<command>['"]{1,3}.+)$"""
 )
 
 #: What comes off the ends of a token. Brackets and braces sit here beside the quotes because
@@ -460,9 +474,13 @@ def commands(text: str) -> list[list[str]]:
     and since an installer is looked for at every token offset but never inside one, the command
     was seen as no install at all (#110). `PYTHON_STRING_OPENS_A_COMMAND` is what cuts that --
     the syntax in front of the quote, and only syntax -- before the strip, which then takes the
-    quote itself. So the claim holds whatever assignment or call syntax precedes the literal,
-    which is what it says, rather than only where something else already sat in front of the
-    verb.
+    quote itself.
+
+    So the claim holds where what precedes the literal is a chain of ``= ( [ { , : +`` and an
+    optional string prefix, which is stated as a spelling apiece in `COMMAND_SPELLINGS` rather
+    than left to this paragraph. It is deliberately *not* every way Python can reach a string:
+    that pattern's own comment names the two shapes it does not read and why, because "whatever
+    syntax precedes it" would be the same defect as the claim it replaces -- wider than the code.
     """
     joined = text.replace("\\\n", " ").replace("\\n", " ")
     found: list[list[str]] = []
@@ -588,6 +606,7 @@ PROBE_LOCK = INPUTS["requirements.in"]
 COMMAND_SPELLINGS = (
     ("bare", "pip install -r {lock}", "pip install"),
     ("string at the line's start", '"pip3 install -r {lock}"', "pip3 install"),
+    ("prefixed string, nothing before it", 'f"pip3 install -r {lock}"', "pip3 install"),
     ("assignment", 'after="uv run --with-requirements {lock}"', "uv run"),
     ("quoted target", 'pip install -r ("{lock}")', "pip install"),
     ("assignment and call", 'after=("pipenv install -r {lock}")', "pipenv install"),
