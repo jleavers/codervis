@@ -123,13 +123,14 @@ MUTATION_SOURCE = "tests/test_negative_controls.py"
 #:
 #: `MUTATION_SOURCE` went from 2 to 4 in #110, in two steps worth keeping apart.
 #: **2 to 3** is the fix: a `uv run --with-requirements` install was already in the file and
-#: `commands()` could not see it, because its installer verb is the first token of a Python
-#: string literal. So the 2 meant "every unhashed install in that file that happens to have
-#: something in front of its verb", which is not what this table says it counts, and a de-flagged
-#: install whose verb opened its own string literal would not have moved the number -- whichever
-#: installer it named, `pip install` included. **3 to 4** is that change's own widening control,
-#: whose `after` carries a `pipenv install` -- mutation data in this same file, counted like the
-#: rest of it.
+#: `commands()` could not see it, because its installer verb opened a string literal that was
+#: glued to the assignment in front of it. So the 2 meant "every unhashed install in that file
+#: whose verb the scan could reach", which is not what this table says it counts, and a de-flagged
+#: install written that way -- verb opening a literal with syntax stuck to its front -- would not
+#: have moved the number. A literal that opens its own token is *not* that shape: its quote is on
+#: an end, so it was stripped and counted all along. **3 to 4** is that change's own widening
+#: control, whose `after` carries a `pipenv install` -- mutation data in this same file, counted
+#: like the rest of it.
 EXPECTED_UNFLAGGED_INSTALLS = {
     "docs/superpowers/plans/archive/2026-06-08-agy-1.0.6-compatibility.md": 5,
     "docs/superpowers/plans/archive/2026-06-08-browser-widget-toggles.md": 5,
@@ -172,30 +173,40 @@ COMMAND_SEPARATORS = ("&&", "||", ";", "|")
 #: on neither end -- and the scan looks for an installer at every token offset but never
 #: inside one, so the verb went unseen entirely (#110).
 #:
-#: Matched as *glue and then a quote*, so that only syntax can be cut: the character immediately
-#: before the quote is one of ``= ( [ { , : +``, and what may run ahead of *that* is a chain of
-#: the same characters, their closing halves, and the identifiers and quotes between them, then
-#: an optional string prefix. The chain is greedy, so a token holding several quotes is cut at
-#: the last glue-then-quote its own class can reach -- which is what makes ``{"cmd":"uv run …``
-#: reach the verb rather than stopping at `cmd`, and ``steps[0]="uv run …`` reach it rather than
-#: stopping at `steps[`. What the chain cannot cross is a `-`; see below. The chain is also
-#: optional, so a literal that opens the token itself is reached through its prefix:
-#: ``f"pip install …`` is one Python string literal opening a command like any other.
+#: Matched as *glue and then a quote*, so that only syntax can be cut. What sits immediately
+#: before the quote is one of ``= ( [ { , : +``, or a string prefix directly after one of them
+#: (``after=f"uv run …``); ahead of that glue may run a chain of the same characters, their
+#: closing halves, and the identifiers and quotes between them. The chain is greedy, so a token
+#: holding several quotes is cut at the last glue-then-quote its own class can reach -- which is
+#: what makes ``{"cmd":"uv run …`` reach the verb rather than stopping at `cmd`. What the chain
+#: cannot cross is a `-`; see below.
+#:
+#: The glue is itself optional, so a literal opening the token is reached through its prefix
+#: alone: ``f"pip install …`` is one Python string literal opening a command like any other. A
+#: literal opening the token with *no* prefix needs nothing here -- its quote is on an end, which
+#: is where `TOKEN_EDGES` already reached.
 #:
 #: What the glue requirement buys is that an apostrophe inside a word (``README's``, ``don't``)
 #: and a lock named in prose (``requirements-dev.txt's hashes``) are left whole, since the
-#: character before such a quote is a letter and not syntax. Cutting there would take the rest of
-#: the token with it -- a lock's own name among it -- and so narrow this scan in exchange for
-#: widening it. `test_a_word_holding_an_apostrophe_is_not_cut_at_it` is where that is stated, on
-#: the tokens: `test_a_lock_named_in_prose_is_not_an_install` cannot see it, because a line with
-#: no installer in it answers `[]` however the token was cut.
+#: character before such a quote is an ordinary letter and not syntax. Cutting there would take
+#: the rest of the token with it -- a lock's own name among it -- and so narrow this scan in
+#: exchange for widening it. `test_a_word_holding_an_apostrophe_is_not_cut_at_it` is where that is
+#: stated, on the tokens: `test_a_lock_named_in_prose_is_not_an_install` cannot see it, because a
+#: line with no installer in it answers `[]` however the token was cut.
+#:
+#: That rule has a residue rather than no exception, and it is one or two letters wide: a word made
+#: of nothing but prefix letters is read as a prefix, so ``F's``, ``rb's`` and ``ur's`` still cut to
+#: `s`. `{0,2}` shortened the class from any such run -- ``Ruff's`` was in it -- rather than
+#: emptying it. The only tokens of that shape in the tracked tree are the three examples on this
+#: line, which name no installer and no lock; every other apostrophe the cut reaches belongs to a
+#: real byte or f-string literal, where taking the prefix off is the right answer.
 #:
 #: The prefix is `{0,2}` and not `*` because two is as long as a string prefix gets: `r`, `b`,
 #: `u`, `f` and `t` -- the last of those PEP 750's, so it needs the 3.14 the `Dockerfile` pins --
 #: in at most two letters. Which *pairs* Python actually accepts is not checked, since `bf"…"` is
 #: not a command either way; the bound is on the length, and that is what does the work. Left
-#: unbounded, the class also matched a *word* built only from those letters, so ``Ruff's`` cut to
-#: `s`: the apostrophe rule above was false for it, and a run of prefix letters is not a prefix.
+#: unbounded, the class matched a *word* built only from those letters however long, so ``Ruff's``
+#: cut to `s`: a run of prefix letters is not a prefix, and the residue above is what is left.
 #:
 #: `-` is deliberately in neither class, because a token starting `-` is an *option* and cutting
 #: into one would lose it. Two shapes go unread as a result, both noted rather than fixed here
@@ -203,8 +214,9 @@ COMMAND_SEPARATORS = ("&&", "||", ";", "|")
 #: back with the quote still on so the lock is not recognised, and a glue chain containing a `-`
 #: (`{"pre-install":"pip install …`). Neither is the miss #110 is about, and neither is covered.
 #: A chain containing a closing bracket (`steps[0]="pip install …`) *was* a third of these, for a
-#: different reason -- the chain could not cross the `]` -- and that one is fixed rather than
-#: noted, since a subscripted assignment is assignment syntax like any other.
+#: different reason -- the class held `(`, `[` and `{` but not their closing halves, so the chain
+#: could not cross the `]` and the token did not match at all. Fixed rather than noted, by putting
+#: `)`, `]` and `}` in the chain: a subscripted assignment is assignment syntax like any other.
 PYTHON_STRING_OPENS_A_COMMAND = re.compile(
     r"""^(?:[\w.,+=(\[{:'")\]}]*[,+=(\[{:])?(?i:[rbuft]){0,2}(?P<command>['"]{1,3}.+)$"""
 )
@@ -483,11 +495,16 @@ def commands(text: str) -> list[list[str]]:
     Separators are replaced *before* that, because stripping would eat a bare ``;`` entirely
     and the cut would be lost.
 
-    That pass is ends-only, which left the claim above true of every such command *except* the
-    one whose verb is its string's *first* token: ``after="uv run …`` begins with `a`, so the
-    opening quote was on neither end, the verb stayed glued to the assignment as ``after="uv``,
-    and since an installer is looked for at every token offset but never inside one, the command
-    was seen as no install at all (#110). `PYTHON_STRING_OPENS_A_COMMAND` is what cuts that --
+    That pass is ends-only, which left the claim above true of every such command *except* the one
+    whose literal is glued to syntax in front of it -- not simply the one whose verb opens the
+    literal, since ``"pip3 install …"`` standing alone has its quote on an end and always
+    tokenised fine. ``after="uv run …`` begins with `a`, so the opening quote was on neither end
+    and the verb stayed glued to the assignment as ``after="uv``. An installer is looked for at
+    every token offset but never *inside* one, so nothing matched at offset 0, and what followed
+    depended on the command: where no shorter entry of `INSTALLERS` sits inside it the whole thing
+    read as no install at all, and where one does -- ``after="python -m pip install …`` -- the
+    install was found under the shorter verb instead (#110).
+    `PYTHON_STRING_OPENS_A_COMMAND` is what cuts that --
     the syntax in front of the quote, and only syntax -- before the strip, which then takes the
     quote itself.
 
@@ -605,9 +622,11 @@ def installs_of_a_lock() -> dict[str, list[Install]]:
 PROBE_LOCK = INPUTS["requirements.in"]
 
 #: The spellings `commands()` claims to read, each with the installer it must yield. Stated here
-#: rather than derived from the tree, so that this says what the scan is *for* rather than what
-#: it currently happens to find: #110 was a docstring claiming one of these and a tree that
-#: contained no instance of it, so the scan was narrower than it read and nothing went red.
+#: rather than derived from the tree, so that this says what the scan is *for* rather than what it
+#: currently happens to find. #110 was a docstring claiming one of these and a tree whose one
+#: instance of it the scan could not see: `EXPECTED_UNFLAGGED_INSTALLS` had been measured against
+#: the buggy scan, so the stated count agreed with the bug and nothing went red. A count derived
+#: from behaviour cannot catch behaviour.
 #: Every case is one command naming `PROBE_LOCK`, so that what varies is only the syntax in front
 #: of the verb. The installers are spread across `INSTALLERS` rather than held constant, and every
 #: verb length that list has -- two tokens, three and four -- appears, so that a cut which happened
@@ -640,8 +659,9 @@ COMMAND_SPELLINGS = (
     # A subscripted assignment: the chain has to cross the `]` to reach the literal.
     ("subscripted assignment", 'steps[0]="poetry add -r {lock}"', "poetry add"),
     # The longest verb `INSTALLERS` names, so every length in that list is exercised here. It also
-    # holds a shorter entry inside it -- `pip install` at offset 2 -- and the scan must still
-    # report the longest match from the earliest offset rather than the one it meets first.
+    # holds a shorter entry inside it -- `pip install` at offset 2 -- so it pins which one is
+    # reported: `installs_in()` takes the *earliest* offset, and the four-token entry starts at 0.
+    # This is the shape that was found under the wrong verb before #110 rather than not at all.
     ("module invocation", 'after="python -m pip install -r {lock}"', "python -m pip install"),
 )
 
@@ -679,10 +699,11 @@ TOKENS_LEFT_WHOLE = (
     ids=[label for label, _, _ in COMMAND_SPELLINGS],
 )
 def test_an_install_is_found_however_its_command_is_written(line: str, verb: str) -> None:
-    """`commands()` says a command written inside a Python string tokenises as the command it
-    is, and until #110 that held only where something already sat in front of the installer
-    verb: an assignment glued to a verb that *opened* the literal left no entry of `INSTALLERS`
-    matching at any offset, and the command was read as no install at all.
+    """`commands()` says a command written inside a Python string tokenises as the command it is,
+    and until #110 that held only where the literal was not glued to syntax in front of it. Where
+    it was, nothing matched at offset 0, and the command was read either as no install at all or
+    -- where a shorter entry of `INSTALLERS` sits inside it, as `pip install` does inside
+    ``after="python -m pip install …`` -- as an install by that shorter verb.
 
     An allow-list of spellings rather than the one case that was reported, for the reason
     `PERMITTED_INSTALL_OPTIONS` is an allow-list: the next miss is a spelling nobody has written

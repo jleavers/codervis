@@ -1953,19 +1953,21 @@ MUTATIONS: tuple[Mutation, ...] = (
         area=DEPENDENCY_LOCK,
         rule="the whole-file exemptions are counted rather than invisible, so an unhashed"
         " install cannot arrive in an exempt file unremarked -- in any spelling the scan"
-        " names an installer in, the one whose verb is the first token of a Python string"
-        " included",
+        " names an installer in, the one whose verb opens a string literal glued to the"
+        " syntax in front of it included",
         # An archived plan, because that is an exempt file whose count is stated: the exemption
         # is "rewriting a finished plan's command would falsify the record", never "an install
         # added here is nobody's business". Adding one takes the count from 5 to 6.
         path="docs/superpowers/plans/archive/2026-06-08-browser-widget-toggles.md",
         before="**Tech Stack:** Python 3.14, FastAPI",
         # Written in the spelling the scanner missed until #110, which is what makes this a
-        # widening and not a deletion: the verb opens the string literal, so before the fix
-        # `commands()` yielded `subprocess.run(shlex.split("pipenv` as one token, no entry of
-        # `INSTALLERS` matched at any offset, and this install was counted nowhere. The same
-        # command with anything at all in front of the verb was already counted, which is why
-        # the number this control moves was previously right for the wrong reason.
+        # widening and not a deletion: the verb opens a string literal glued to the call in front
+        # of it, so before the fix `commands()` yielded `subprocess.run(shlex.split("pipenv` as one
+        # token, no entry of `INSTALLERS` matched at any offset, and this install was counted
+        # nowhere. `pipenv install` is chosen because no shorter entry sits inside it -- a
+        # `python -m pip install` written the same way was still found, under the shorter verb --
+        # so this is the shape that went missing altogether, and the reason the number this control
+        # moves was previously right for the wrong reason.
         after=(
             "```python\n"
             'subprocess.run(shlex.split("pipenv install -r requirements-dev.txt"), check=True)\n'
