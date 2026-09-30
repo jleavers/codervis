@@ -842,14 +842,14 @@ flags that are useful for quick diagnosis.
   maintainer runs it; it is no part of the image or of the test set, and
   [#108](https://github.com/jleavers/codervis/issues/108) is open for it.
 - **The dashboard's origin carries a Content-Security-Policy**, set on every
-  response the app makes -- the `403` for a `Host` it does not serve and the
+  response the app makes — the `403` for a `Host` it does not serve and the
   last-resort `500` included, because the layer sits outside every other one.
-  (The server's own protocol-level refusals, the `431`, `408` and `503` in
-  "Read budgets" below, are written before a request reaches the app and carry
-  no policy; they are `text/plain` and close the connection.) It names this
-  origin and nothing else: `default-src 'none'`,
-  scripts and styles from `'self'`, `connect-src 'self'` so the payload cannot
-  be sent anywhere, and `frame-ancestors 'none'` so the page cannot be framed.
+  (The `431`, `408` and `503` in the next bullet are the exception, and not a
+  gap: the server writes those itself, before a request reaches the app, and
+  they are `text/plain` responses that close the connection.) It names this
+  origin and nothing else: `default-src 'none'`, scripts and styles from
+  `'self'`, `connect-src 'self'` so the payload cannot be sent anywhere, and
+  `frame-ancestors 'none'` so the page cannot be framed.
   The one inline script — the initial payload — runs under a per-response
   nonce rather than `'unsafe-inline'`, so an event-handler attribute injected
   into the page would not run.
