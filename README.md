@@ -729,8 +729,8 @@ browser-disabled cards are dimmed.
 ├── requirements.txt      # Those resolved in full and fixed by content hash
 ├── requirements-dev.in   # The above plus what the tests and the linter need
 ├── requirements-dev.txt  # Those resolved in full and fixed by content hash
-├── requirements-screenshots.in   # The runtime set plus playwright and pillow, by name
-├── requirements-screenshots.txt  # Those resolved in full and fixed by content hash
+├── requirements-screenshots.in  # The runtime set plus playwright/pillow, by name
+├── requirements-screenshots.txt # Those resolved in full and fixed by content hash
 ├── pytest.ini
 ├── tests/
 ├── tools/screenshots/   # Regenerates the README's image from fabricated data
@@ -836,9 +836,10 @@ flags that are useful for quick diagnosis.
   `sha256` of the artefact — and every install that puts one of them into an
   environment, the image's, CI's, a contributor's venv and the screenshot tool's,
   passes `pip install --require-hashes`, which refuses a file that has lost a hash
-  and refuses a package the file does not name. The three locks agree package for
-  package, so those environments are one set of artefacts and not three
-  resolutions of it. The base image is pinned by digest
+  and refuses a package the file does not name. The dev and screenshot locks each
+  agree with the runtime lock package for package, so those environments are one
+  set of artefacts rather than three resolutions of it. The base image is pinned
+  by digest
   rather than by the `python:3.14-slim` tag, so the `pip` and the CA bundle the
   build uses are fixed too. Nothing is fetched from a CDN at page load: the
   dashboard serves its own three static files and no others, and there is no
@@ -848,11 +849,12 @@ flags that are useful for quick diagnosis.
   `requirements-screenshots.txt`, and installs it the same way — which it did not
   until [#108](https://github.com/jleavers/codervis/issues/108), when it still
   fetched `playwright` and `pillow` by bare name. It is no part of the image or of
-  the test set either way. **One artefact here is not fixed by content**, and it
-  is the Chromium build `playwright install` downloads for that tool: nothing
-  upstream publishes a digest for it, so there is no hash to require. Which build
-  is asked for *is* fixed, by the pinned `playwright` wheel; what arrives is
-  backed by TLS to Playwright's CDN and nothing else.
+  the test set either way. **What is not fixed by content is the browser**:
+  `playwright install chromium` fetches three archives — Chromium, FFmpeg and the
+  Chrome Headless Shell, which is the one `capture.py` actually launches — and
+  upstream publishes a digest for none of them, so there is no hash to require.
+  Which revisions are asked for *is* fixed, by the pinned `playwright` wheel;
+  what arrives is backed by TLS to Playwright's download hosts and nothing else.
   [`tools/screenshots/README.md`](tools/screenshots/README.md) sets that out, and
   it is the one step in this repository that no part of the dashboard needs.
 - **The dashboard's origin carries a Content-Security-Policy**, set on every

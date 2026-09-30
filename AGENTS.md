@@ -187,9 +187,10 @@ directories; it must not call upstream quota endpoints or read host tokens.
   `tests/test_origin_bound.py` pins what may run in the dashboard's origin: the
   paths the app registers, the policy directive by directive, and that every
   response carries it. `tests/test_dependency_lock.py` pins the other half of
-  the same invariant at build time -- what a line in a lock may be, that the two
-  locks agree package for package, and that the image installs with
-  `--require-hashes` from a base image named by digest.
+  the same invariant at build time -- what a line in a lock may be, that the
+  other locks agree with the runtime one package for package, that a requirement
+  file anywhere in the tracked tree is one of the six named there, and that the
+  image installs with `--require-hashes` from a base image named by digest.
   `tests/test_payload_contract.py` is the payload contract: it runs both live
   clients through one matrix of transport faults, hostile response bodies and
   hostile credential files, and asserts the payload always matches the schema
@@ -412,15 +413,23 @@ What the repository does control is the text itself:
   older engine does to their own deployment instead — that is advice to them,
   never a change to make here, and dropping the option from this repository is
   the thing this rule forbids.
-- Preserve the content bound on third-party code (#104). `requirements.in` and
-  `requirements-dev.in` name packages and decide no version; `requirements.txt`
-  and `requirements-dev.txt` are those resolved in full and fixed by `sha256`,
-  and are what anything installs. Regenerate them together, with the command in
-  each lock's header, and keep `pip install --require-hashes` and the base
-  image's digest in the `Dockerfile`. Nothing the dashboard serves may load
+- Preserve the content bound on third-party code (#104, #108).
+  `requirements.in`, `requirements-dev.in` and `requirements-screenshots.in`
+  name packages and decide no version; `requirements.txt`,
+  `requirements-dev.txt` and `requirements-screenshots.txt` are those resolved
+  in full and fixed by `sha256`, and are what anything installs. Regenerate them
+  together, with the command in each lock's header and the runtime one first --
+  the screenshot lock's header carries `--constraint requirements.txt`, so that
+  it cannot resolve away from the image -- and keep
+  `pip install --require-hashes` and the base image's digest in the
+  `Dockerfile`. Nothing the dashboard serves may load
   code from another origin, and no source but this one belongs in
   `CSP_DIRECTIVES`: a CDN entry there is the docs routes coming back by another
-  door.
+  door. The one thing here *not* fixed by content is the three browser archives
+  `playwright install chromium` downloads for the screenshot tool: upstream
+  publishes no digest for them, `tools/screenshots/README.md` says so in as many
+  words, and that is a statement to keep accurate rather than a gap to widen
+  quietly.
 - Do not add token refresh or OAuth flow logic here; the host CLIs own that.
 - Do not multiply live utilization values by 100. The live APIs are expected
   to already be on a 0-100 scale.

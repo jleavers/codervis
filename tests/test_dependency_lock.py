@@ -29,9 +29,9 @@ What is *not* pinned here, because it cannot be witnessed without an index: that
 complete. `pip install --require-hashes` is what establishes that, by refusing to install a
 dependency the file does not name, and the `Dockerfile` line below is where it runs.
 
-What is not pinned here at all, and is not an oversight: the browser build
+What is not pinned here at all, and is not an oversight: the three browser archives
 `playwright install chromium` downloads after that lock is installed. Nothing upstream
-publishes a digest for it, so there is no hash to require; `tools/screenshots/README.md` says
+publishes a digest for them, so there is no hash to require; `tools/screenshots/README.md` says
 so in as many words rather than letting the silence read as coverage.
 """
 
@@ -248,8 +248,12 @@ def dockerfile_lines() -> list[str]:
 #: was true when it was written and it was still a blind spot -- the one set of third-party code
 #: this project had not pinned was the one belonging to a subdirectory, and the file that would
 #: have pinned it is exactly the file this function would not have found. So the allow-list
-#: below now has something to be an allow-list over: a requirement file anywhere in a clone is
-#: either one of the six named there or a failure.
+#: below now has something to be an allow-list over: a file *named* like a requirement file,
+#: anywhere in a clone, is either one of the six named there or a failure. Named like one is the
+#: width of it, and worth being exact about: a `tools/x/deps.txt`, or a `pyproject.toml` with a
+#: dependency table, would ship an unpinned set that neither this check nor the install scan
+#: below would see. Both are a convention this repository does not use, so what stands behind
+#: them is review -- which is why this comment says so rather than implying the check is wider.
 REQUIREMENT_FILE = re.compile(r"^requirements[A-Za-z0-9._-]*\.(in|txt)$")
 
 
@@ -621,7 +625,8 @@ def test_dependabot_watches_the_directory_every_lock_actually_sits_in() -> None:
     """
     watched = {directory for ecosystem, directory in _watched() if ecosystem == "pip"}
     for lock in sorted(LOCKS):
-        directory = f"/{PurePosixPath(lock).parent}".replace("/.", "/")
+        parent = PurePosixPath(lock).parent
+        directory = "/" if parent == PurePosixPath(".") else f"/{parent}"
         assert directory in watched, (
             f"{lock} sits in {directory}, which Dependabot's pip updater does not watch. "
             "Add a directory entry for it."

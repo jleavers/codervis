@@ -24,8 +24,10 @@ python -m pip install --require-hashes -r requirements-screenshots.txt
 playwright install chromium
 ```
 
-The last line puts Playwright's browser, about 150 MB, into `~/.cache/ms-playwright`. No root,
-and it is the only step here that is not fixed by content — see below.
+The last line puts Playwright's browser builds, about 150 MB, into `~/.cache/ms-playwright`.
+It needs no root to download them; running Chromium afterwards needs the system libraries it
+links against, which on a bare Linux host is `playwright install --with-deps chromium` and
+*that* does use `apt` as root. It is the only step here not fixed by content — see below.
 
 ## Every time
 
@@ -41,34 +43,48 @@ the panel, and assembles the frames. It prints the size and exits non-zero if th
 are `--width` (900) and `--colours` (64): the panel is flat colour, so it quantises well and
 loses more to resampling than to palette.
 
-## The Chromium build is not fixed by content, and cannot be from here
+## The browser builds are not fixed by content, and cannot be from here
 
-`playwright install chromium` downloads a browser build from `cdn.playwright.dev` over TLS.
-That artefact is **not** verified against a hash, and this repository has no way to make it be:
+`playwright install chromium` is three downloads, not one. `playwright install --dry-run
+chromium` prints them, and against the pinned `playwright==1.63.0` they are:
 
-- **Which build is requested is fixed**, by the pinned `playwright` wheel. Its
-  `driver/package/browsers.json` names the Chromium revision and version, and the wheel's own
-  `--hash=sha256:` is what makes that file the one upstream published. So the download is not
-  "whatever is newest": it is a named revision, and moving it takes a `playwright` bump that
-  Dependabot writes and a reviewer reads.
-- **What arrives is not.** That manifest carries a revision and a version and no digest of any
-  kind, and Playwright's own installer checks none: there is no `--require-hashes` for a
-  browser download, and nothing to give one. What stands behind the bytes is TLS to that CDN
-  and nothing else.
+| Artefact | From |
+| --- | --- |
+| Chrome for Testing (`chromium-<rev>`) | `cdn.playwright.dev` |
+| FFmpeg (`ffmpeg-<rev>`) | `cdn.playwright.dev`, with two named fallback hosts |
+| Chrome Headless Shell (`chromium_headless_shell-<rev>`) | `cdn.playwright.dev` |
+
+The third one is the one that matters most here: `capture.py` calls `pw.chromium.launch()` with
+Playwright's default `headless=True`, and since Playwright 1.49 that executes the headless shell
+rather than Chromium proper. So the binary this tool actually runs is the one easiest to
+overlook. None of the three is verified against a hash, and this repository has no way to make
+one be:
+
+- **Which builds are requested is fixed**, by the pinned `playwright` wheel. Its
+  `driver/package/browsers.json` names the revision and version of each, and the wheel's own
+  `--hash=sha256:` is what makes that file the one upstream published. So the downloads are not
+  "whatever is newest": they are named revisions, and moving them takes a `playwright` bump
+  that Dependabot writes and a reviewer reads.
+- **What arrives is not.** That manifest carries a revision, a version and a title per browser
+  and no digest of any kind, and Playwright's own installer checks none: there is no
+  `--require-hashes` for a browser download, and nothing to give one. What stands behind the
+  bytes is TLS to those hosts and nothing else.
 
 So the blast radius of this step is the same as before #108 — code that runs as the maintainer,
 on the host holding `~/.claude/.credentials.json` and `~/.codex/auth.json`, with no bound on
-where it can connect — and it is narrower only in that it is one artefact from one named
-revision rather than two packages resolved afresh. Two things follow, and both are the reader's
-to weigh rather than something this file can settle:
+where it can connect — and it is narrower only in that the artefacts come from named revisions
+rather than from packages resolved afresh. Two things follow, and both are the reader's to
+weigh rather than something this file can settle:
 
 - This is the one place the "everything by content hash" claim in `README.md`'s Security notes
   does not reach, and it is stated there as such.
-- Whoever wants it closed anyway has one honest option: install the browser once on a machine
-  that is not this one, record the digest of what arrived, and check it by hand on every later
-  machine. Nothing in this repository automates that, because a digest this project recorded
-  itself is a digest this project vouched for, which is a different claim from upstream's.
+- Whoever wants it closed anyway has one honest option: install on a machine that is not this
+  one, record the digest of **each** of the three archives that arrived, and check all of them
+  by hand on every later machine — recording one and running the other two unverified is worse
+  than recording none, because it reads as coverage. Nothing in this repository automates that,
+  because a digest this project recorded itself is a digest this project vouched for, which is
+  a different claim from upstream's.
 
-It is also the one step that can be skipped entirely: the browser is only needed when the image
-is actually being regenerated, which is rare, and `capture.py` is the only thing here that uses
-it.
+It is also the one step that can be skipped entirely: the browsers are only needed when the
+image is actually being regenerated, which is rare, and `capture.py` is the only thing here
+that uses them.

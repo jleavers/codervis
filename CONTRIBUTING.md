@@ -102,8 +102,9 @@ a version is decided, so the inputs carry names and nothing else. To add or drop
 edit the input and regenerate all three locks with the command written in each lock's header —
 they are regenerated together, because a contributor's venv, the image and the tool that takes
 the README's picture have to be the same set of artefacts. The screenshot lock's header passes
-`--constraint requirements.txt` for that reason: resolved on its own it drifts off the image,
-and `tests/test_dependency_lock.py` holds all three to agreeing package for package.
+`--constraint requirements.txt` for that reason: resolved on its own it drifts off the image.
+That makes the order load-bearing — regenerate `requirements.txt` first, since the other two
+are resolved against it — and `tests/test_dependency_lock.py` fails if either has drifted.
 The image installs with `pip install --require-hashes`, which refuses a
 lock that has lost a hash and refuses a package the lock does not name, so an incomplete
 regeneration fails the Docker build rather than resolving something fresh. The same flag is on
@@ -117,10 +118,11 @@ flag and allows no other option beside it -- a second `--index-url` is a second 
 code, hashes or not -- and fails if a file it does not name installs one. One tracked place is
 exempt there, with its reason: the archived plans under `docs/superpowers/plans/archive/`,
 which are a record of finished work rather than instructions anybody follows.
-`tools/screenshots/` was the other until #108 gave it a lock to install. That same scan is
-what decides a requirement file is one of the six this repository ships, and it looks at the
-whole tree rather than the root, so a seventh in a subdirectory fails rather than going
-unnoticed. The locks are compiled `--universal` against
+`tools/screenshots/` was the other until #108 gave it a lock to install. The same `git ls-files`
+listing is what a second check reads to decide that a requirement file is one of the six this
+repository ships, and it now matches the *filename* anywhere in the tree rather than only at
+the root, so a seventh in a subdirectory fails rather than going unnoticed.
+The locks are compiled `--universal` against
 `--python-version 3.13`, which is the floor CI runs and not the target: the image is Python
 3.14, and a universal resolve is what makes one set of artefacts serve both.
 
@@ -128,8 +130,8 @@ unnoticed. The locks are compiled `--universal` against
 real app serving fabricated data, so nobody's plan tier, usage or activity ends up in a public
 file. If a change moves the layout or the colour ramp, regenerate it:
 [`tools/screenshots/README.md`](tools/screenshots/README.md). That file is also where the one
-artefact this repository does not fix by content is written down -- the browser build
-`playwright install` downloads, for which nothing upstream publishes a digest.
+thing this repository does not fix by content is written down -- the three browser archives
+`playwright install chromium` downloads, for which nothing upstream publishes a digest.
 
 ## Reporting a security issue
 

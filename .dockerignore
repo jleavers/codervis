@@ -4,7 +4,11 @@
 # app/__pycache__, i.e. bytecode from whatever the build host last ran.
 **/__pycache__
 **/*.pyc
-.venv
+# Any depth, for the same reason and since #108: `tools/screenshots/.venv` is a venv the
+# screenshot tool's README tells a maintainer to create inside the checkout, and a bare
+# `.venv` matches only the context root, so every build would ship Playwright's bundled
+# driver and browser wrapper to the daemon.
+**/.venv
 .env
 .idea
 .vscode

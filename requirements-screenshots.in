@@ -13,8 +13,8 @@
 # tokens, as that person, with nothing bounding where it can connect, so a malicious release
 # of either is import-time code there. They are fixed by content now like everything else.
 #
-# What this file cannot fix is the Chromium build `playwright install` downloads afterwards.
-# `tools/screenshots/README.md` says what that leaves open and why.
+# What this file cannot fix is the three browser archives `playwright install chromium`
+# downloads afterwards. `tools/screenshots/README.md` says what that leaves open and why.
 
 -r requirements.in
 
