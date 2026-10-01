@@ -134,12 +134,17 @@ MUTATION_SOURCE = "tests/test_negative_controls.py"
 #:
 #: **4 to 6** in #113, and both are that shape again rather than a fix: the two widening controls
 #: that change arrived with carry a `pipenv install` apiece, one naming its lock as a quoted
-#: option value and one reached through a hyphenated dict key. Unlike #110, the widened scan
-#: found no install already in the tree that it had been missing -- measured over the whole
-#: tracked tree, the two plans below stayed at 5 and every other file at what it had. That is
-#: worth stating rather than leaving to a reader to infer from an unchanged number: the blast
-#: radius #113 reported was nil, so the two counts that moved are the controls' own, and a tree
-#: whose numbers did not move is the evidence that nothing was quietly recategorised.
+#: option value and one reached through a hyphenated dict key. So this one entry moved by two
+#: and nothing else here moved at all.
+#:
+#: Unlike #110, the widened scan found no install already in the tree that it had been missing --
+#: the blast radius that issue reported was nil, and it was right. Worth stating rather than left
+#: for a reader to infer from an unchanged number, because an unchanged *count* would not have
+#: shown it: a scan that found the same install under a different verb, or with a different
+#: option set, leaves every number here exactly as it was. What was compared was the whole
+#: install rather than the count -- every tracked file identical in count, target, verb and
+#: options, with `tests/test_negative_controls.py` the one exception and the two controls above
+#: the whole of it.
 EXPECTED_UNFLAGGED_INSTALLS = {
     "docs/superpowers/plans/archive/2026-06-08-agy-1.0.6-compatibility.md": 5,
     "docs/superpowers/plans/archive/2026-06-08-browser-widget-toggles.md": 5,
@@ -224,10 +229,10 @@ COMMAND_SEPARATORS = ("&&", "||", ";", "|")
 #: back a value with no option in front of it -- an install that finds its verb and loses its
 #: lock. A `-` anywhere else in the chain is part of a name -- a dict key, a subscript, and in
 #: this tree most often an HTML or CSS attribute (`aria-label="…`, `[data-state="…`) -- where no
-#: option name can live, and stopping the chain there cost the literal behind it. The lookahead is not a second rule
-#: smuggled in beside the widening: no token beginning `-` could match this pattern before
-#: either -- the chain could not start with one, `-` is not a string prefix, and it is not a
-#: quote -- so it states the old bound exactly and bounds the new reach to it.
+#: option name can live, and stopping the chain there cost the literal behind it. The lookahead
+#: is not a second rule smuggled in beside the widening: no token beginning `-` could match this
+#: pattern before either -- the chain could not start with one, `-` is not a string prefix, and
+#: it is not a quote -- so it states the old bound exactly and bounds the new reach to it.
 #: `test_an_option_token_is_never_cut_into` is where that is pinned, on the tokens.
 #:
 #: A chain containing a closing bracket (`steps[0]="pip install …`) was a third such shape, for a
@@ -243,6 +248,17 @@ COMMAND_SEPARATORS = ("&&", "||", ";", "|")
 #: install …`` is read, since `fmt(verb)(` is identifiers and brackets ending on a `(`.
 PYTHON_STRING_OPENS_A_COMMAND = re.compile(
     r"""^(?!-)(?:[\w.,+=(\[{:'")\]}-]*[,+=(\[{:])?(?i:[rbuft]){0,2}(?P<command>['"]{1,3}.+)$"""
+)
+
+#: The same chain with `-` taken back out of it, which is what this pattern was before #113.
+#: `cut_to_its_command()` falls back to it where crossing a `-` reaches nothing but punctuation,
+#: so that the widening can only ever add a cut. Written out rather than built from the pattern
+#: above, because a pattern assembled from fragments is one nobody can read; what keeps the two
+#: in step is `test_the_narrower_chain_is_this_one_without_its_hyphen`, which states the
+#: difference as the two edits it is -- the character class and the lookahead -- and fails if
+#: either pattern changes without the other.
+CHAIN_WITHOUT_A_HYPHEN = re.compile(
+    r"""^(?:[\w.,+=(\[{:'")\]}]*[,+=(\[{:])?(?i:[rbuft]){0,2}(?P<command>['"]{1,3}.+)$"""
 )
 
 #: What comes off the ends of a token. Brackets and braces sit here beside the quotes because
@@ -505,6 +521,33 @@ def tracked_files() -> list[str]:
     return [entry for entry in listed.split("\0") if entry]
 
 
+def cut_to_its_command(token: str) -> str:
+    """`token` with the Python syntax in front of its command taken off.
+
+    `PYTHON_STRING_OPENS_A_COMMAND` is greedy, so the cut it prefers is the *shortest* command
+    the token can be read as. That is right until the shortest command is all punctuation, which
+    `-` in the glue chain made reachable (#113): the chain can now cross a hyphenated *lock* name
+    to a quote behind it, and a value token ending `",""]` cuts to `""]`. The install then has no
+    target it can name, which is no install at all -- this issue's own defect, from the other
+    side.
+
+    So a cut whose command is all punctuation is not taken, and what happens instead is exactly
+    what happened before #113: the cut the same chain makes *without* `-` in it, which is
+    `CHAIN_WITHOUT_A_HYPHEN`. Falling back to that rather than to a rule of this function's own
+    is the point. Two rules were tried and each lost an install the narrower chain found:
+    "leave the token uncut" loses `pip a="" install …`, where dropping `a=""` is what keeps the
+    two halves of the verb adjacent; "drop the token" loses the lock in
+    `{"k":"pip install -r <lock>"},""`, whose first token is the lock's own name. The old pattern
+    gets both right because it is what was measured, so deferring to it cannot narrow the scan --
+    the widening adds cuts and takes none away.
+    """
+    opened = PYTHON_STRING_OPENS_A_COMMAND.match(token)
+    if opened is not None and opened.group("command").strip(TOKEN_EDGES):
+        return opened.group("command")
+    narrower = CHAIN_WITHOUT_A_HYPHEN.match(token)
+    return token if narrower is None else narrower.group("command")
+
+
 def commands(text: str) -> list[list[str]]:
     """The text as token lists, one per *command* rather than one per line.
 
@@ -533,8 +576,8 @@ def commands(text: str) -> list[list[str]]:
     quote itself.
 
     So the claim holds where what precedes the literal is a chain of ``= ( [ { , : +``, the
-    closing halves of those, identifiers, quotes and ``-``, and an optional string prefix --
-    which is stated as a spelling apiece in `COMMAND_SPELLINGS` rather than left to this
+    closing halves of those, identifiers, dots, quotes and ``-``, and an optional string prefix
+    -- which is stated as a spelling apiece in `COMMAND_SPELLINGS` rather than left to this
     paragraph. It is deliberately *not* every way Python can reach a string, because "whatever
     syntax precedes it" would be the same defect as the claim it replaces -- wider than the code.
     The one character that chain may not begin with is ``-``, and that is a bound and not a gap:
@@ -557,15 +600,7 @@ def commands(text: str) -> list[list[str]]:
                 found.append(command)
                 command = []
                 continue
-            if opened := PYTHON_STRING_OPENS_A_COMMAND.match(token):
-                # A cut that leaves nothing behind has taken the whole token rather than the
-                # syntax in front of a command, so it is not a cut (#113). `-` in the chain is
-                # what made that reachable: the chain can now cross a hyphenated *lock* name to
-                # a glue-then-quote behind it, and `["pip","install","-r","requirements-dev.txt",""]`
-                # cut to `""]`, which strips to nothing -- an install the narrower chain found and
-                # this one would have lost. `LOCK_TOKENS_LEFT_WHOLE` pins that direction.
-                if opened.group("command").strip(TOKEN_EDGES):
-                    token = opened.group("command")
+            token = cut_to_its_command(token)
             if stripped := token.strip(TOKEN_EDGES):
                 command.append(stripped)
         found.append(command)
@@ -754,13 +789,18 @@ COMMAND_SPELLINGS = (
     ("hyphenated subscript", 'd["a-b"]="pipenv install -r {lock}"', "pipenv install"),
     # A shell-quoted basename, which is the shape that decides the order of the two passes in
     # `lock_named()`: the value reaches it as `$DIR"/"<lock>`, with a quote after the separator.
-    ('quoted basename', 'pip install -r "$DIR"/"{lock}"', "pip install"),
+    ("quoted basename", 'pip install -r "$DIR"/"{lock}"', "pip install"),
 )
 
 #: Option tokens the cut must hand back whole, as `(line, the token that must survive in it)`.
 #: The other side of the `-` widening: `(?!-)` is what keeps an option's own name on the front of
 #: its value, and `named_target()` matches on that name, so a token cut here would hand back a
 #: value with no option in front of it and the install would lose its lock.
+#:
+#: Three of the four are the lookahead's to keep, and `-r'…'` is not: that token holds no glue
+#: character for the chain to end on, so nothing could cut it either way. It is here because the
+#: list is the spellings an option is written in rather than the subset one guard answers for --
+#: deleting `(?!-)` reddens the other three, which is the measurement that says which is which.
 #:
 #: Asserted on the tokens for the reason `TOKENS_LEFT_WHOLE` is: a line with no installer in it
 #: reads as no install however badly the token was cut, and the spellings above cannot tell a
@@ -783,25 +823,62 @@ OPTION_TOKENS_LEFT_WHOLE = (
     ),
 )
 
-#: Installs a *wider* cut would lose, as `(line, the installer it must still yield)`. The other
-#: direction of the `-` widening, and the one that is fail-open: `OPTION_TOKENS_LEFT_WHOLE` above
-#: is the option's name, this is the lock's.
+#: Installs the cut must not lose, as `(line, the installer it must still yield)`. Each reads as
+#: an install on the *narrower* chain, so this is the fail-open direction of the widening:
+#: `OPTION_TOKENS_LEFT_WHOLE` above keeps the option's name, this keeps the lock.
 #:
-#: The chain is greedy and ends on the last glue-then-quote it can reach, so crossing a `-` let
-#: it reach *past* a hyphenated lock name to a quote behind it: the value token
-#: `"<lock>",""]` was cut to `""]`, which strips to nothing, and the install had no target left
-#: to name. An install the narrower chain found and the wider one lost. `commands()` refuses a
-#: cut that leaves nothing behind, which is what keeps these.
+#: Two shapes, and `cut_to_its_command()` answers for both.
+#:
+#: **A cut that reaches too far.** The chain is greedy and ends on the last glue-then-quote it
+#: can reach, so crossing a `-` let it reach *past* a hyphenated lock name to a quote behind it:
+#: a value token ending `",""]` cut to `""]`, which strips to nothing, and the install had no
+#: target left to name. Needs a lock whose name carries a `-`, which is why
+#: `COMMAND_SPELLINGS` cannot see it at all -- every case there formats `PROBE_LOCK`, and that
+#: name has no hyphen.
+#:
+#: **A token that is syntax and nothing else.** `a=""` is a keyword argument; cutting it to `""`
+#: and stripping that to nothing is what *removed* it before, keeping `pip` and `install`
+#: adjacent. Taking the shortest substantive cut has to keep that true, or the token sits between
+#: the two halves of the verb and the whole command reads as no install. This is the direction
+#: the first draft of the fix got wrong, by keeping such a token uncut.
 #:
 #: Asserted on the installs and not on the tokens, unlike the two lists above: here the loss
-#: really is visible end to end, because the target is what goes missing rather than a token the
-#: later strip repairs. Stated with the *dev* lock, since a `-` in the lock's own name is what
-#: the shape needs -- which is why `COMMAND_SPELLINGS` cannot see it at all, every case there
-#: formatting `PROBE_LOCK`, whose name has no hyphen.
-INSTALLS_A_WIDER_CUT_WOULD_LOSE = (
-    ('ARGS = ["pip", "install", "-r", "{lock}",""]', "pip install"),
-    ('ARGS = ["pip", "install", "-r", "{lock}","."]', "pip install"),
-    ('pip install -r {{"{lock}":""}}', "pip install"),
+#: really is visible end to end, because what goes missing is the verb or the target rather than
+#: a token the later strip repairs.
+INSTALLS_THE_CUT_MUST_NOT_LOSE = (
+    # A cut that reaches too far. Stated with the dev lock, for the hyphen in its name.
+    ('ARGS = ["pip", "install", "-r", "{dev}",""]', "pip install"),
+    ('ARGS = ["pip", "install", "-r", "{dev}","."]', "pip install"),
+    ('pip install -r {{"{dev}":""}}', "pip install"),
+    # A token that is syntax and nothing else, between the two halves of a verb and after it.
+    ('pip a="" install -r {lock}', "pip install"),
+    ('pip install -r a="" {lock}', "pip install"),
+    ('python -m f"" pip install -r {lock}', "python -m pip install"),
+)
+
+#: Commands the chain does not reach, and must not: the bound `PYTHON_STRING_OPENS_A_COMMAND`'s
+#: own comment states, asserted rather than left to the comment. Each of these *is* an install
+#: written inside a literal, and each is reached through a character the glue chain does not
+#: name -- so each reads as no install, and that is the pattern being the claim rather than a
+#: gap being celebrated. A spelling that ought to be read belongs in `COMMAND_SPELLINGS`, which
+#: is the list that says so; what this one says is that nothing *else* quietly started being
+#: read.
+#:
+#: The second and third are the shapes that say the class is still doing the deciding. A `/` and
+#: a `%` sit in front of the literal and neither is in the chain, so the cut stops short of the
+#: verb and the command reads as nothing -- which is what a reader of the pattern would predict,
+#: and the only reason to assert it is that #113 nearly made it untrue. An earlier draft of
+#: `cut_to_its_command()` chose a cut by scanning the token's quotes itself and validating each
+#: candidate's glue against the pattern. That validation was satisfied by the pattern matching
+#: the prefix *somehow*, which it can by cutting inside the prefix, so every candidate passed
+#: whatever the chain could really cross: the function, not the pattern, was deciding where a
+#: command starts, and `-` in the chain was dead code. These two went red and said so.
+UNREACHED_BY_THE_CHAIN = (
+    # An operator outside the glue class, which the pattern refuses outright.
+    'a*"pip install -r {lock}"',
+    # A character the chain cannot cross, inside a prefix a looser validation would accept.
+    'x="a/b":"pip install -r {lock}"',
+    'x="a%b":"pip install -r {lock}"',
 )
 
 #: Prose that names a lock and is not a command at all. The weakest of the three directions and
@@ -832,12 +909,15 @@ TOKENS_LEFT_WHOLE = (
 )
 
 
+@pytest.mark.parametrize("lock", sorted(LOCKS))
 @pytest.mark.parametrize(
     ("line", "verb"),
     [(line, verb) for _, line, verb in COMMAND_SPELLINGS],
     ids=[label for label, _, _ in COMMAND_SPELLINGS],
 )
-def test_an_install_is_found_however_its_command_is_written(line: str, verb: str) -> None:
+def test_an_install_is_found_however_its_command_is_written(
+    line: str, verb: str, lock: str
+) -> None:
     """`commands()` says a command written inside a Python string tokenises as the command it is,
     and until #110 that held only where the literal was not glued to syntax in front of it. Where
     it was, nothing matched at offset 0, and the command was read either as no install at all or
@@ -848,11 +928,66 @@ def test_an_install_is_found_however_its_command_is_written(line: str, verb: str
     `PERMITTED_INSTALL_OPTIONS` is an allow-list: the next miss is a spelling nobody has written
     down yet, and a test that re-checks only the spelling somebody already found says nothing
     about it.
+
+    Against every lock and not `PROBE_LOCK` alone, which stopped being incidental when `-` went
+    into the glue chain (#113): that name has no hyphen and two of the three locks do, and a
+    hyphen inside the *lock* is a place the chain can now cross, so a cut that works for one name
+    is no longer evidence about the others. The cross-product is cheap and says it directly.
     """
-    found = installs_in(line.format(lock=PROBE_LOCK), "probe")
-    assert [(install.text, install.target) for install in found] == [(verb, PROBE_LOCK)], (
-        f"{line!r} did not read as one install of {PROBE_LOCK} by `{verb}`: {found}"
+    found = installs_in(line.format(lock=lock), "probe")
+    assert [(install.text, install.target) for install in found] == [(verb, lock)], (
+        f"{line!r} did not read as one install of {lock} by `{verb}`: {found}"
     )
+
+
+def test_the_narrower_chain_is_this_one_without_its_hyphen() -> None:
+    """The two patterns differ in exactly the two edits #113 made, and in nothing else.
+
+    `CHAIN_WITHOUT_A_HYPHEN` is the fallback `cut_to_its_command()` defers to, and what makes
+    deferring safe is that it is the pattern as it stood -- so it has to stay that, rather than
+    drift into a second half-maintained chain. The relation is stated here as the edits
+    themselves, which is one line for a reviewer to read when either pattern changes on purpose:
+    take `-` out of the character class and drop the `(?!-)` that bounds it, and the two are the
+    same string.
+
+    Not asserted by reading one pattern out of the other at import, for `AGENTS.md`'s reason: a
+    value a test reads back out of the module it is pinning moves when the module moves and the
+    assertion moves with it.
+    """
+    widened = PYTHON_STRING_OPENS_A_COMMAND.pattern
+    assert widened.startswith("^(?!-)"), widened
+    assert widened.count("}-]*") == 1, widened
+    narrowed = widened.replace("^(?!-)", "^", 1).replace("}-]*", "}]*", 1)
+    assert narrowed == CHAIN_WITHOUT_A_HYPHEN.pattern, (
+        "the two chains have drifted apart. The narrower one is the widened one without `-` in "
+        f"its class and without the lookahead that bounds it:\n  widened:  {widened}\n"
+        f"  expected: {narrowed}\n  actual:   {CHAIN_WITHOUT_A_HYPHEN.pattern}"
+    )
+    # And that the difference is the one that matters, rather than two strings agreeing by luck.
+    hyphenated = f'{{"pre-install":"pip install -r {PROBE_LOCK}"}}'
+    assert installs_in(hyphenated, "probe"), hyphenated
+    token = '{"pre-install":"pip'
+    assert PYTHON_STRING_OPENS_A_COMMAND.match(token).group("command") == '"pip'
+    assert CHAIN_WITHOUT_A_HYPHEN.match(token).group("command") == '"pre-install":"pip'
+
+
+@pytest.mark.parametrize("line", UNREACHED_BY_THE_CHAIN)
+def test_a_command_the_chain_does_not_reach_is_not_read(line: str) -> None:
+    """The glue chain is the statement of which spellings are read, and this is it holding.
+
+    Unlike `NOT_A_COMMAND` below, every one of these really is an install written inside a
+    literal: what stops it is a character the chain does not name. So this is the bound in
+    `PYTHON_STRING_OPENS_A_COMMAND`'s comment asserted instead of merely written, and the
+    direction it matters in is that nothing between the pattern and the token may widen it --
+    which an earlier draft of `cut_to_its_command()` did, by picking a cut itself and validating
+    it loosely enough that the chain's character class decided nothing. Two of these three went
+    red for it.
+
+    A spelling that should be read is added to `COMMAND_SPELLINGS`, on purpose and with the
+    pattern changed to match. Moving one out of this list is how that is done.
+    """
+    formatted = line.format(lock=PROBE_LOCK)
+    assert installs_in(formatted, "probe") == [], formatted
 
 
 @pytest.mark.parametrize("line", NOT_A_COMMAND)
@@ -882,43 +1017,26 @@ def test_a_word_holding_an_apostrophe_is_not_cut_at_it(line: str, token: str) ->
     )
 
 
-@pytest.mark.parametrize(("line", "verb"), INSTALLS_A_WIDER_CUT_WOULD_LOSE)
-def test_an_install_a_wider_cut_would_lose_is_still_found(line: str, verb: str) -> None:
+@pytest.mark.parametrize(("line", "verb"), INSTALLS_THE_CUT_MUST_NOT_LOSE)
+def test_an_install_the_cut_must_not_lose_is_still_found(line: str, verb: str) -> None:
     """The fail-open direction of #113's widening, which the reported defect is the mirror of.
 
-    `-` in the glue chain lets the cut reach past a hyphenated lock name to a quote behind it,
-    and an install with no target it can name is no install at all -- the same silence as a lock
-    behind a quote, from the opposite mistake. `commands()` refuses a cut that leaves nothing
-    behind, and this is where that refusal is stated.
-
-    Each of these reads as an install on the narrower chain, so a widening that dropped one would
-    be a pin that got quieter: measured against the tracked tree the widening loses nothing, and
+    Each of these reads as an install on the *narrower* chain, so a widening that dropped one
+    would be a pin that got quieter -- an install whose verb or whose target the scan can no
+    longer see, which is the same silence as a lock behind a quote and the same defect class the
+    whole file is written against. Measured against the tracked tree the widening loses nothing;
     this is what keeps that true of a tree that grows one of these shapes.
+
+    `cut_to_its_command()`'s own docstring says which shape is which and why the rule is the
+    shortest *substantive* cut rather than the shortest one.
     """
-    hyphenated = INPUTS["requirements-dev.in"]
-    found = installs_in(line.format(lock=hyphenated), "probe")
-    assert [(install.text, install.target) for install in found] == [(verb, hyphenated)], (
-        f"{line!r} did not read as one install of {hyphenated} by `{verb}`: {found}"
-    )
-
-
-@pytest.mark.parametrize("lock", sorted(LOCKS))
-@pytest.mark.parametrize(
-    ("line", "verb"),
-    [(line, verb) for _, line, verb in COMMAND_SPELLINGS],
-    ids=[label for label, _, _ in COMMAND_SPELLINGS],
-)
-def test_every_spelling_reads_every_lock(line: str, verb: str, lock: str) -> None:
-    """Every spelling above, against every lock rather than against `PROBE_LOCK` alone.
-
-    `PROBE_LOCK` has no `-` in its name and two of the three locks do, which stopped mattering
-    the moment `-` went into the glue chain: a hyphen inside the *lock* is a place the chain can
-    now cross, so a cut that works for one name is no longer evidence about the others. The
-    cross-product is cheap and says so directly.
-    """
-    found = installs_in(line.format(lock=lock), "probe")
-    assert [(install.text, install.target) for install in found] == [(verb, lock)], (
-        f"{line!r} did not read as one install of {lock} by `{verb}`: {found}"
+    lock = PROBE_LOCK
+    dev = INPUTS["requirements-dev.in"]
+    formatted = line.format(lock=lock, dev=dev)
+    named = dev if "{dev}" in line else lock
+    found = installs_in(formatted, "probe")
+    assert [(install.text, install.target) for install in found] == [(verb, named)], (
+        f"{formatted!r} did not read as one install of {named} by `{verb}`: {found}"
     )
 
 
@@ -954,9 +1072,9 @@ def test_a_quoted_value_names_the_same_lock_as_a_bare_one() -> None:
 
     On `named_target()` rather than through `installs_in()`, because every spelling here needs an
     installer verb in front of it to be a command and only some of these options belong to any
-    one verb: `pip install --with-requirements …` would be three quarters of this matrix spelled
-    as commands nobody can run. The spellings are the three that function implements, each given
-    the token `commands()` would really hand it.
+    one verb: `pip install --with-requirements …` is not a command anybody can run, and a third
+    of this matrix would be spelled that way. The spellings are the three that function
+    implements, each given the token `commands()` would really hand it.
     """
     for option in REQUIREMENT_OPTIONS:
         for lock in sorted(LOCKS):
