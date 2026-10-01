@@ -1084,10 +1084,11 @@ def test_an_option_token_is_never_cut_into(line: str, token: str) -> None:
     one it is. Two of these four *are* visible end to end -- delete `(?!-)` and the
     `COMMAND_SPELLINGS` cases "quoted value, long option" and "quoted value, uv's long option" go
     from one install to none -- so this list is not the only thing standing between them and a
-    green run. What it adds is exactness for those two, since a token the strip happened to
-    repair and a token that survived whole read the same through `installs_in()`; and it is the
-    only thing at all for `--extra-index-url`, which no installer spelling carries and which
-    `PERMITTED_INSTALL_OPTIONS` can only refuse if the option's name reaches it.
+    green run. What it adds for those two is exactness: it names the token, so a cut that trimmed
+    the option to something *still* beginning `-` is caught here, where `installs_in()` would
+    report whatever that shorter name happened to mean. And it is the only thing at all for
+    `--extra-index-url`, which no installer spelling carries and which
+    `PERMITTED_INSTALL_OPTIONS` can only refuse if the option's own name reaches it.
     """
     tokens = [word for command in commands(line.format(lock=PROBE_LOCK)) for word in command]
     assert token.format(lock=PROBE_LOCK) in tokens, (
