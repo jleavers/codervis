@@ -1977,6 +1977,55 @@ MUTATIONS: tuple[Mutation, ...] = (
         caught_by=(_LOCK_NOTHING_UNHASHED_OUTSIDE_THE_BOUND,),
     ),
     Mutation(
+        key="lock-an-unhashed-install-whose-option-value-is-quoted",
+        widening=True,
+        area=DEPENDENCY_LOCK,
+        rule="the whole-file exemptions are counted rather than invisible, so an unhashed"
+        " install cannot arrive in an exempt file unremarked -- the one that names its"
+        " requirements file as a quoted option value included",
+        # The other archived plan, so this control and the one above anchor on a line each.
+        path="docs/superpowers/plans/archive/2026-06-08-agy-1.0.6-compatibility.md",
+        before="**Tech Stack:** Python 3, standard-library",
+        # A widening and not a deletion, and the shape is #113's rather than #110's: the verb
+        # here was never in doubt -- `pipenv install` tokenises at offset 0 whatever precedes it.
+        # What was lost was the *lock*. `commands()` strips `TOKEN_EDGES` off the ends of a token,
+        # and the opening quote of a quoted option value sits in the middle of one, so
+        # `named_target()` used to hand back a value with a quote still on its front, which is in
+        # no lock's name. The command read as no install at all and this count did not move.
+        # `pipenv install` for the reason the control above picks it: no shorter entry of
+        # `INSTALLERS` sits inside it, so nothing finds this under another verb by accident.
+        after=(
+            "```bash\n"
+            'pipenv install --requirement="requirements-dev.txt"\n'
+            "```\n\n"
+            "**Tech Stack:** Python 3, standard-library"
+        ),
+        caught_by=(_LOCK_NOTHING_UNHASHED_OUTSIDE_THE_BOUND,),
+    ),
+    Mutation(
+        key="lock-an-unhashed-install-reached-through-a-hyphenated-key",
+        widening=True,
+        area=DEPENDENCY_LOCK,
+        rule="the whole-file exemptions are counted rather than invisible, so an unhashed"
+        " install cannot arrive in an exempt file unremarked -- the one whose literal is"
+        " reached through a glue chain containing a `-` included",
+        path="docs/superpowers/plans/archive/2026-06-08-browser-widget-toggles.md",
+        before="**Goal:**",
+        # #113's other half. `PYTHON_STRING_OPENS_A_COMMAND` cuts the Python syntax in front of a
+        # literal, and its chain could not cross a `-`, so the greedy match fell back to the `{`
+        # at offset 0 and yielded `pre-install":"pipenv` -- an entry of `INSTALLERS` matched at no
+        # offset and this install was counted nowhere. The chain crosses a `-` now, and `(?!-)`
+        # is what still keeps it out of an option token; `test_an_option_token_is_never_cut_into`
+        # is the pin for that direction and this is the pin for this one.
+        after=(
+            "```python\n"
+            'HOOKS = {"pre-install":"pipenv install -r requirements-dev.txt"}\n'
+            "```\n\n"
+            "**Goal:**"
+        ),
+        caught_by=(_LOCK_NOTHING_UNHASHED_OUTSIDE_THE_BOUND,),
+    ),
+    Mutation(
         key="lock-dependabot-stops-watching-a-lock",
         widening=True,
         area=DEPENDENCY_LOCK,
