@@ -120,10 +120,21 @@ MUTATION_SOURCE = "tests/test_negative_controls.py"
 #: install anywhere here fails until somebody changes a number and says why in the same change.
 #: A count rather than a pattern, because none of these is a command this project asks anyone to
 #: run -- what matters is that one cannot arrive quietly.
+#:
+#: `MUTATION_SOURCE` went from 2 to 4 in #110, in two steps worth keeping apart.
+#: **2 to 3** is the fix: a `uv run --with-requirements` install was already in the file and
+#: `commands()` could not see it, because its installer verb opened a string literal that was
+#: glued to the assignment in front of it. So the 2 meant "every unhashed install in that file
+#: whose verb the scan could reach", which is not what this table says it counts, and a de-flagged
+#: install written that way -- verb opening a literal with syntax stuck to its front -- would not
+#: have moved the number. A literal that opens its own token is *not* that shape: its quote is on
+#: an end, so it was stripped and counted all along. **3 to 4** is that change's own widening
+#: control, whose `after` carries a `pipenv install` -- mutation data in this same file, counted
+#: like the rest of it.
 EXPECTED_UNFLAGGED_INSTALLS = {
     "docs/superpowers/plans/archive/2026-06-08-agy-1.0.6-compatibility.md": 5,
     "docs/superpowers/plans/archive/2026-06-08-browser-widget-toggles.md": 5,
-    MUTATION_SOURCE: 2,
+    MUTATION_SOURCE: 4,
 }
 
 #: How an install of a lock may be *written*. Named forms rather than one pattern, because the
@@ -154,6 +165,69 @@ REQUIREMENT_OPTIONS = ("-r", "--requirement", "--with-requirements")
 #: the dev lock documented in `README.md`. The lock names are left out of this comment on
 #: purpose -- the scan reads this file too, and a real one here would be a finding about itself.
 COMMAND_SEPARATORS = ("&&", "||", ";", "|")
+
+#: The Python syntax a command written inside a string literal can be glued to, when the
+#: installer verb is the literal's *first* token: `after="uv run …`, `after=("uv run …`,
+#: `command=[rf'''uv run …`, `run(shlex.split("uv run …`. Stripping quotes off the *ends* of
+#: the token does not reach that quote -- `after="uv` begins with `a`, so the opening quote is
+#: on neither end -- and the scan looks for an installer at every token offset but never
+#: inside one, so the verb went unseen entirely (#110).
+#:
+#: Matched as *glue and then a quote*, so that only syntax can be cut. What sits immediately
+#: before the quote is one of ``= ( [ { , : +``, or a string prefix directly after one of them
+#: (``after=f"uv run …``); ahead of that glue may run a chain of the same characters, their
+#: closing halves, and the identifiers and quotes between them. The chain is greedy, so a token
+#: holding several quotes is cut at the last glue-then-quote its own class can reach -- which is
+#: what makes ``{"cmd":"uv run …`` reach the verb rather than stopping at `cmd`. What the chain
+#: cannot cross is a `-`; see below.
+#:
+#: The glue is itself optional, so a literal opening the token is reached through its prefix
+#: alone: ``f"pip install …`` is one Python string literal opening a command like any other. A
+#: literal opening the token with *no* prefix needs nothing here -- its quote is on an end, which
+#: is where `TOKEN_EDGES` already reached.
+#:
+#: What the glue requirement buys is that an apostrophe inside a word (``README's``, ``don't``)
+#: and a lock named in prose (``requirements-dev.txt's hashes``) are left whole, since the
+#: character before such a quote is an ordinary letter and not syntax. Cutting there would take
+#: the rest of the token with it -- a lock's own name among it -- and so narrow this scan in
+#: exchange for widening it. `test_a_word_holding_an_apostrophe_is_not_cut_at_it` is where that is
+#: stated, on the tokens: `test_a_lock_named_in_prose_is_not_an_install` cannot see it, because a
+#: line with no installer in it answers `[]` however the token was cut.
+#:
+#: That rule has a residue rather than no exception, and it is one or two letters wide: a word made
+#: of nothing but prefix letters is read as a prefix, so ``F's``, ``rb's`` and ``ur's`` still cut to
+#: `s`. `{0,2}` shortened the class from any such run -- ``Ruff's`` was in it -- rather than
+#: emptying it. The only tokens of that shape in the tracked tree are the three examples on this
+#: line, which name no installer and no lock; every other apostrophe the cut reaches belongs to a
+#: real byte or f-string literal, where taking the prefix off is the right answer.
+#:
+#: The prefix is `{0,2}` and not `*` because two is as long as a string prefix gets: `r`, `b`,
+#: `u`, `f` and `t` -- the last of those PEP 750's, so it needs the 3.14 the `Dockerfile` pins --
+#: in at most two letters. Which *pairs* Python actually accepts is not checked, since `bf"…"` is
+#: not a command either way; the bound is on the length, and that is what does the work. Left
+#: unbounded, the class matched a *word* built only from those letters however long, so ``Ruff's``
+#: cut to `s`: a run of prefix letters is not a prefix, and the residue above is what is left.
+#:
+#: `-` is deliberately in neither class, because a token starting `-` is an *option* and cutting
+#: into one would lose it. Two shapes go unread as a result, both noted rather than fixed here
+#: (#113): a quoted option value (`--requirement="…"`, `-r'…'`), which `named_target()` hands
+#: back with the quote still on so the lock is not recognised, and a glue chain containing a `-`
+#: (`{"pre-install":"pip install …`). Neither is the miss #110 is about, and neither is covered.
+#: A chain containing a closing bracket (`steps[0]="pip install …`) *was* a third of these, for a
+#: different reason -- the class held `(`, `[` and `{` but not their closing halves, so the chain
+#: could not cross the `]` and the token did not match at all. Fixed rather than noted, by putting
+#: `)`, `]` and `}` in the chain: a subscripted assignment is assignment syntax like any other.
+PYTHON_STRING_OPENS_A_COMMAND = re.compile(
+    r"""^(?:[\w.,+=(\[{:'")\]}]*[,+=(\[{:])?(?i:[rbuft]){0,2}(?P<command>['"]{1,3}.+)$"""
+)
+
+#: What comes off the ends of a token. Brackets and braces sit here beside the quotes because
+#: the syntax the pattern above cuts off the *front* of a command has a closing half on its
+#: last token -- `command=["uv run … requirements.txt"]` ends in ``.txt"]`` -- and leaving that
+#: on would find the verb and lose the lock, which reads as "no install" exactly as the whole
+#: miss did. Measured against the tracked tree: adding them moves no count there today, so this
+#: is the claim in `commands()` being made true rather than a number being changed.
+TOKEN_EDGES = "`\"'.,;:()[]{}"
 
 #: The options an install of a lock may carry, and no others -- the point `PERMITTED_PIP_ARGUMENTS`
 #: makes for the image, made once more for every documented install. `--require-hashes` is
@@ -416,10 +490,29 @@ def commands(text: str) -> list[list[str]]:
     the command it is. Each line is then cut at `COMMAND_SEPARATORS`, so two installs chained on
     one line are two commands and neither is credited with the other's options.
 
-    Backticks, quotes and sentence punctuation come off each token in one pass rather than in
-    sequence, since `AGENTS.md` ends an install in ``.txt`.`` and the controls end one in
-    ``.txt",``. Separators are replaced *before* that, because stripping would eat a bare ``;``
-    entirely and the cut would be lost.
+    `TOKEN_EDGES` then comes off each token in one pass rather than in sequence, since
+    `AGENTS.md` ends an install in ``.txt`.`` and the controls end one in ``.txt",``.
+    Separators are replaced *before* that, because stripping would eat a bare ``;`` entirely
+    and the cut would be lost.
+
+    That pass is ends-only, which left the claim above true of every such command *except* the one
+    whose literal is glued to syntax in front of it -- not simply the one whose verb opens the
+    literal, since ``"pip3 install …"`` standing alone has its quote on an end and always
+    tokenised fine. ``after="uv run …`` begins with `a`, so the opening quote was on neither end
+    and the verb stayed glued to the assignment as ``after="uv``. An installer is looked for at
+    every token offset but never *inside* one, so nothing matched at offset 0, and what followed
+    depended on the command: where no shorter entry of `INSTALLERS` sits inside it the whole thing
+    read as no install at all, and where one does -- ``after="python -m pip install …`` -- the
+    install was found under the shorter verb instead (#110).
+    `PYTHON_STRING_OPENS_A_COMMAND` is what cuts that --
+    the syntax in front of the quote, and only syntax -- before the strip, which then takes the
+    quote itself.
+
+    So the claim holds where what precedes the literal is a chain of ``= ( [ { , : +`` and an
+    optional string prefix, which is stated as a spelling apiece in `COMMAND_SPELLINGS` rather
+    than left to this paragraph. It is deliberately *not* every way Python can reach a string:
+    that pattern's own comment names the two shapes it does not read and why, because "whatever
+    syntax precedes it" would be the same defect as the claim it replaces -- wider than the code.
     """
     joined = text.replace("\\\n", " ").replace("\\n", " ")
     found: list[list[str]] = []
@@ -431,7 +524,10 @@ def commands(text: str) -> list[list[str]]:
             if token == "\0":
                 found.append(command)
                 command = []
-            elif stripped := token.strip("`\"'.,;:()"):
+                continue
+            if opened := PYTHON_STRING_OPENS_A_COMMAND.match(token):
+                token = opened.group("command")
+            if stripped := token.strip(TOKEN_EDGES):
                 command.append(stripped)
         found.append(command)
     return [command for command in found if command]
@@ -516,6 +612,135 @@ def installs_of_a_lock() -> dict[str, list[Install]]:
             found[name] = installs
     assert not unreadable, f"tracked files that could not be read: {unreadable}"
     return found
+
+
+#: The runtime lock, for the cases below to name. Taken from `INPUTS` rather than written out,
+#: for the reason those cases carry `{lock}` instead of a lock's name: this file is one of the
+#: files the scan reads, so an installer verb spelled here beside a real lock name would be an
+#: install of a lock in a file named in neither list -- a finding about itself. `COMMAND_SEPARATORS`
+#: above leaves the names out of its comment for the same reason.
+PROBE_LOCK = INPUTS["requirements.in"]
+
+#: The spellings `commands()` claims to read, each with the installer it must yield. Stated here
+#: rather than derived from the tree, so that this says what the scan is *for* rather than what it
+#: currently happens to find. #110 was a docstring claiming one of these and a tree whose one
+#: instance of it the scan could not see: `EXPECTED_UNFLAGGED_INSTALLS` had been measured against
+#: the buggy scan, so the stated count agreed with the bug and nothing went red. A count derived
+#: from behaviour cannot catch behaviour.
+#: Every case is one command naming `PROBE_LOCK`, so that what varies is only the syntax in front
+#: of the verb. The installers are spread across `INSTALLERS` rather than held constant, and every
+#: verb length that list has -- two tokens, three and four -- appears, so that a cut which happened
+#: to work for one length only would show up here. They repeat, since there are more spellings than
+#: installers, and which case carries which is not load-bearing.
+#:
+#: These pin the cut from **both** sides. A cut too narrow loses the *verb*, which is #110. A cut
+#: too wide loses the *lock*: "take whatever follows the last quote in the token" reads
+#: `("requirements.txt")` as `)`, `commands()` drops it as empty, and an install with no target it
+#: can name is no install at all -- the same silence, from the opposite mistake. Every case but
+#: `bare` names its lock on a token that carries a closing quote or bracket, so that direction is
+#: pinned throughout rather than in one place; `quoted target` is the one written for it alone.
+COMMAND_SPELLINGS = (
+    ("bare", "pip install -r {lock}", "pip install"),
+    ("string at the line's start", '"pip3 install -r {lock}"', "pip3 install"),
+    ("prefixed string, nothing before it", 'f"pip3 install -r {lock}"', "pip3 install"),
+    ("assignment", 'after="uv run --with-requirements {lock}"', "uv run"),
+    ("quoted target", 'pip install -r ("{lock}")', "pip install"),
+    ("assignment and call", 'after=("pipenv install -r {lock}")', "pipenv install"),
+    ("list of raw strings", 'command=[r"""poetry add -r {lock}"""]', "poetry add"),
+    ("nested call", 'run(shlex.split("uv add -r {lock}"))', "uv add"),
+    ("dict value", '{{"cmd":"uv pip install -r {lock}"}}', "uv pip install"),
+    ("keyword after the verb", 'run("pip download -r {lock}", check=True)', "pip download"),
+    # One apiece for the glue characters the cases above do not exercise as the character
+    # *immediately* before the literal -- `,`, `+` and `{` -- so the list states the whole class
+    # rather than the four spellings of it that happened to get written first.
+    ("second argument", 'run(cmd,"pip install -r {lock}")', "pip install"),
+    ("concatenation", 'prefix+"uv pip install -r {lock}"', "uv pip install"),
+    ("set or dict literal", '{{"pipenv install -r {lock}"}}', "pipenv install"),
+    # A subscripted assignment: the chain has to cross the `]` to reach the literal.
+    ("subscripted assignment", 'steps[0]="poetry add -r {lock}"', "poetry add"),
+    # The longest verb `INSTALLERS` names, so every length in that list is exercised here. It also
+    # holds a shorter entry inside it -- `pip install` at offset 2 -- so it pins which one is
+    # reported: `installs_in()` takes the *earliest* offset, and the four-token entry starts at 0.
+    # This is the shape that was found under the wrong verb before #110 rather than not at all.
+    ("module invocation", 'after="python -m pip install -r {lock}"', "python -m pip install"),
+)
+
+#: Prose that names a lock and is not a command at all. The weakest of the three directions and
+#: stated as what it is: none of these carries an installer, so what it pins is that the scan does
+#: not *invent* an install out of a sentence -- not that a wider cut would be caught here.
+#: `COMMAND_SPELLINGS` above is what answers for too wide, by naming the lock on a token that also
+#: carries a closing bracket or quote, and `TOKENS_LEFT_WHOLE` below for the apostrophe rule.
+NOT_A_COMMAND = (
+    "the {lock}'s hashes are what pip enforces",
+    "README's {lock} is the one the image installs",
+    "don't regenerate {lock} on its own",
+)
+
+#: Words the cut must hand back whole, as `(line, the token that must survive in it)`. Asserted on
+#: the tokens rather than on the installs, because that is the level the mistake lives at: none of
+#: these lines names an installer, so `installs_in()` answers `[]` however badly the token is cut
+#: and `NOT_A_COMMAND` above cannot see the difference.
+#:
+#: `Ruff's` is the one that was wrong. The string prefix was `*` rather than `{0,2}`, and `Ruff`
+#: is built only from prefix letters, so the pattern read it as `Ruff` + `'` + `s` and cut the
+#: token to `s`. `.github/workflows/ci.yml` really does say "Start with Ruff's correctness rules",
+#: so this is a token in the tree and not an invented one.
+TOKENS_LEFT_WHOLE = (
+    ("Start with Ruff's correctness rules", "Ruff's"),
+    ("don't regenerate it", "don't"),
+    ("README's own copy", "README's"),
+    ("the {lock}'s hashes", "{lock}'s"),
+)
+
+
+@pytest.mark.parametrize(
+    ("line", "verb"),
+    [(line, verb) for _, line, verb in COMMAND_SPELLINGS],
+    ids=[label for label, _, _ in COMMAND_SPELLINGS],
+)
+def test_an_install_is_found_however_its_command_is_written(line: str, verb: str) -> None:
+    """`commands()` says a command written inside a Python string tokenises as the command it is,
+    and until #110 that held only where the literal was not glued to syntax in front of it. Where
+    it was, nothing matched at offset 0, and the command was read either as no install at all or
+    -- where a shorter entry of `INSTALLERS` sits inside it, as `pip install` does inside
+    ``after="python -m pip install …`` -- as an install by that shorter verb.
+
+    An allow-list of spellings rather than the one case that was reported, for the reason
+    `PERMITTED_INSTALL_OPTIONS` is an allow-list: the next miss is a spelling nobody has written
+    down yet, and a test that re-checks only the spelling somebody already found says nothing
+    about it.
+    """
+    found = installs_in(line.format(lock=PROBE_LOCK), "probe")
+    assert [(install.text, install.target) for install in found] == [(verb, PROBE_LOCK)], (
+        f"{line!r} did not read as one install of {PROBE_LOCK} by `{verb}`: {found}"
+    )
+
+
+@pytest.mark.parametrize("line", NOT_A_COMMAND)
+def test_a_lock_named_in_prose_is_not_an_install(line: str) -> None:
+    """That a sentence naming a lock is not read as an install.
+
+    The weakest of the three directions, and worth saying why rather than leaving it to look like
+    more than it is: these lines name no installer, so they read as no install however badly the
+    token was cut. A *too wide* cut is caught by `COMMAND_SPELLINGS`, which names its lock on a
+    token carrying a closing bracket or quote, and the apostrophe rule itself by
+    `test_a_word_holding_an_apostrophe_is_not_cut_at_it`, which asserts on the tokens.
+    """
+    formatted = line.format(lock=PROBE_LOCK)
+    assert installs_in(formatted, "probe") == [], formatted
+
+
+@pytest.mark.parametrize(("line", "token"), TOKENS_LEFT_WHOLE)
+def test_a_word_holding_an_apostrophe_is_not_cut_at_it(line: str, token: str) -> None:
+    """A quote that is punctuation inside a word is not a literal opening a command, and cutting
+    there costs the rest of the token -- which is a lock's own name often enough to matter. The
+    only reason this is a test rather than a remark is `Ruff's`: a word built from nothing but
+    string-prefix letters was read as a prefix and cut, so the rule had an exception in the tree
+    while the comment claiming it did not."""
+    tokens = [word for command in commands(line.format(lock=PROBE_LOCK)) for word in command]
+    assert token.format(lock=PROBE_LOCK) in tokens, (
+        f"{line!r} was cut into {tokens}, losing {token!r}"
+    )
 
 
 def test_every_documented_install_of_a_lock_requires_hashes() -> None:

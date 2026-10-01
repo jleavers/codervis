@@ -251,6 +251,9 @@ _LOCK_EVERY_LOCK_AGREES = (
 _LOCK_DEPENDABOT_DIRECTORIES = (
     f"{LOCK_TESTS}::test_dependabot_watches_the_directory_every_lock_actually_sits_in"
 )
+_LOCK_NOTHING_UNHASHED_OUTSIDE_THE_BOUND = (
+    f"{LOCK_TESTS}::test_no_unhashed_install_is_added_to_a_file_outside_the_bound"
+)
 
 _ORIGIN_POLICY_STATED = f"{ORIGIN_TESTS}::test_the_policy_is_the_one_stated_here"
 _ORIGIN_SOURCES = (
@@ -1943,6 +1946,35 @@ MUTATIONS: tuple[Mutation, ...] = (
         before="fastapi==0.141.1",
         after="fastapi==0.142.2",
         caught_by=(f"{_LOCK_EVERY_LOCK_AGREES}[requirements-screenshots.txt]",),
+    ),
+    Mutation(
+        key="lock-an-unhashed-install-whose-verb-opens-a-python-string",
+        widening=True,
+        area=DEPENDENCY_LOCK,
+        rule="the whole-file exemptions are counted rather than invisible, so an unhashed"
+        " install cannot arrive in an exempt file unremarked -- in any spelling the scan"
+        " names an installer in, the one whose verb opens a string literal glued to the"
+        " syntax in front of it included",
+        # An archived plan, because that is an exempt file whose count is stated: the exemption
+        # is "rewriting a finished plan's command would falsify the record", never "an install
+        # added here is nobody's business". Adding one takes the count from 5 to 6.
+        path="docs/superpowers/plans/archive/2026-06-08-browser-widget-toggles.md",
+        before="**Tech Stack:** Python 3.14, FastAPI",
+        # Written in the spelling the scanner missed until #110, which is what makes this a
+        # widening and not a deletion: the verb opens a string literal glued to the call in front
+        # of it, so before the fix `commands()` yielded `subprocess.run(shlex.split("pipenv` as one
+        # token, no entry of `INSTALLERS` matched at any offset, and this install was counted
+        # nowhere. `pipenv install` is chosen because no shorter entry sits inside it -- a
+        # `python -m pip install` written the same way was still found, under the shorter verb --
+        # so this is the shape that went missing altogether, and the reason the number this control
+        # moves was previously right for the wrong reason.
+        after=(
+            "```python\n"
+            'subprocess.run(shlex.split("pipenv install -r requirements-dev.txt"), check=True)\n'
+            "```\n\n"
+            "**Tech Stack:** Python 3.14, FastAPI"
+        ),
+        caught_by=(_LOCK_NOTHING_UNHASHED_OUTSIDE_THE_BOUND,),
     ),
     Mutation(
         key="lock-dependabot-stops-watching-a-lock",
