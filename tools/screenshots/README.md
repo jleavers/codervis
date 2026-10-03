@@ -1,4 +1,4 @@
-# Regenerating the README's image
+# Regenerating the README's image and the social preview
 
 `docs/images/usage-ramp.gif` is captured from the real app serving **fabricated data**: the
 quota clients and activity readers are stubbed before the app starts, its data directories
@@ -43,6 +43,26 @@ the panel, and assembles the frames. It prints the size and exits non-zero if th
 are `--width` (900) and `--colours` (64): the panel is flat colour, so it quantises well and
 loses more to resampling than to palette.
 
+## The social preview
+
+`docs/images/social-preview.png` is the 1280×640 card GitHub shows when the repository is
+linked. It is drawn from the dashboard's own parts rather than from a copy of them:
+`social-preview.html` links `app/static/style.css` for the palette, the wordmark and the meters,
+and `social_preview.py` injects `colorFor()` from `app/static/app.js` before the page runs, so
+each meter is the colour the dashboard would draw at that percentage. The four percentages are
+invented in the page; the app is not served, nothing is read from `~/.claude` or `~/.codex`, and
+the page loads nothing from the network. Regenerate it in the same venv, after a change to the
+layout, the wordmark or the colour ramp:
+
+```bash
+. tools/screenshots/.venv/bin/activate
+python tools/screenshots/social_preview.py
+```
+
+It prints the size and exits non-zero if the file is over GitHub's 1 MB limit. GitHub takes the
+image only through the web interface, so a new one is uploaded by hand under the repository's
+Settings, General, Social preview.
+
 ## The browser builds are not fixed by content, and cannot be from here
 
 `playwright install chromium` is three downloads, not one. `playwright install --dry-run
@@ -54,7 +74,7 @@ chromium` prints them, and against the pinned `playwright==1.63.0` they are:
 | FFmpeg (`ffmpeg-<rev>`) | `cdn.playwright.dev`, with two named fallback hosts |
 | Chrome Headless Shell (`chromium_headless_shell-<rev>`) | `cdn.playwright.dev` |
 
-The third one is the one that matters most here: `capture.py` calls `pw.chromium.launch()` with
+The third one is the one that matters most here: both scripts call `pw.chromium.launch()` with
 Playwright's default `headless=True`, and since Playwright 1.49 that executes the headless shell
 rather than Chromium proper. So the binary this tool actually runs is the one easiest to
 overlook. None of the three is verified against a hash, and this repository has no way to make
@@ -85,6 +105,6 @@ weigh rather than something this file can settle:
   because a digest this project recorded itself is a digest this project vouched for, which is
   a different claim from upstream's.
 
-It is also the one step that can be skipped entirely: the browsers are only needed when the
-image is actually being regenerated, which is rare, and `capture.py` is the only thing here
-that uses them.
+It is also the one step that can be skipped entirely: the browsers are only needed when one of
+the two images is actually being regenerated, which is rare, and the two scripts here are the
+only things that use them.

@@ -851,7 +851,7 @@ flags that are useful for quick diagnosis.
   fetched `playwright` and `pillow` by bare name. It is no part of the image or of
   the test set either way. **What is not fixed by content is the browser**:
   `playwright install chromium` fetches three archives — Chromium, FFmpeg and the
-  Chrome Headless Shell, which is the one `capture.py` actually launches — and
+  Chrome Headless Shell, which is the one the screenshot tools actually launch — and
   upstream publishes a digest for none of them, so there is no hash to require.
   Which revisions are asked for *is* fixed, by the pinned `playwright` wheel;
   what arrives is backed by TLS to Playwright's download hosts and nothing else.

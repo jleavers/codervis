@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>codervis social preview</title>
+<!--
+  The repository's social preview, rendered by social_preview.py beside this file. The
+  dashboard's own stylesheet supplies the palette, the wordmark and the meters, and the script
+  injects `colorFor()` from app/static/app.js, so a redesign of either moves this image with it.
+  Everything below is layout for a 1280x640 card. Nothing is loaded from the network.
+-->
+<link rel="stylesheet" href="../../app/static/style.css">
+<style>
+  /* The dashboard is laid out for a browser window; this is a fixed card. */
+  html, body {
+    width: 1280px;
+    height: 640px;
+    min-height: 0;
+    overflow: hidden;
+  }
+  body {
+    display: block;
+    padding: 0;
+    background: radial-gradient(circle at 30% 0%, #171c23 0%, var(--bg) 62%);
+    /* DejaVu Sans Mono first, for a render that is the same on every Linux host; then the
+       dashboard's own stack, which is SF Mono or Menlo on a Mac. Menlo and DejaVu Sans Mono
+       are both descended from Bitstream Vera Sans Mono. */
+    font-family: "DejaVu Sans Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  /* A still picture: nothing should be caught mid-transition. */
+  * { transition: none !important; }
+
+  .frame {
+    position: absolute;
+    inset: 54px 72px 58px;
+    display: grid;
+    grid-template-rows: auto 1fr;
+    gap: 34px;
+  }
+
+  .brand { gap: 22px; }
+  .brand-mark { font-size: 46px; letter-spacing: -6px; text-shadow: 0 0 22px rgba(163, 230, 53, 0.45); }
+  .brand-name { font-size: 64px; line-height: 1; }
+  .tagline { margin: 14px 0 0; font-size: 26px; color: var(--ink-dim); letter-spacing: 0.2px; }
+
+  .panel.meters {
+    width: auto;
+    align-self: end;
+    padding: 30px 34px 32px;
+    display: grid;
+    grid-template-columns: 214px 118px 1fr 150px;
+    column-gap: 22px;
+    row-gap: 22px;
+    align-items: center;
+  }
+  .meters .provider-title { font-size: 18px; letter-spacing: 2.5px; }
+  .meters .window { font-size: 21px; color: var(--ink-dim); }
+  .meters .divider { grid-column: 1 / -1; border-top: 1px dashed var(--rule); margin: 2px 0; }
+  .meters .meter { height: 36px; border-radius: 7px; }
+  .meters .gauge-percent { justify-self: end; font-size: 42px; }
+  .meters .gauge-percent small { font-size: 24px; margin-left: 2px; }
+</style>
+</head>
+<body>
+  <div class="frame">
+    <header>
+      <div class="brand">
+        <span class="brand-mark">▮▮▮</span>
+        <span class="brand-name">codervis</span>
+      </div>
+      <p class="tagline">Your Claude Code and Codex quota, live on one local page.</p>
+    </header>
+
+    <section class="panel meters" id="meters"></section>
+  </div>
+
+  <script>
+    // Fabricated values, chosen so the four meters span the colour ramp. Nobody's usage.
+    const ROWS = [
+      { provider: "Claude Code", window: "5-hour", percent: 18 },
+      { provider: "", window: "weekly", percent: 47 },
+      { provider: "Codex", window: "5-hour", percent: 73 },
+      { provider: "", window: "weekly", percent: 92 },
+    ];
+
+    // `colorFor` is the dashboard's, injected by social_preview.py before this page runs. A
+    // page opened without it says so instead of drawing meters in some other colour.
+    if (typeof colorFor !== "function") {
+      document.body.textContent = "colorFor() was not injected: render this with social_preview.py";
+      throw new Error("colorFor() missing");
+    }
+
+    const meters = document.getElementById("meters");
+    ROWS.forEach((row, index) => {
+      if (index === 2) {
+        const divider = document.createElement("div");
+        divider.className = "divider";
+        meters.appendChild(divider);
+      }
+      const { hue, sat, lit } = colorFor(row.percent);
+      // The same four custom properties app.js sets on a gauge.
+      const vars = `--pct:${row.percent};--hue:${hue.toFixed(1)};` +
+        `--sat:${sat.toFixed(1)}%;--lit:${lit.toFixed(1)}%`;
+      const ticks = "<span></span>".repeat(21);
+      meters.insertAdjacentHTML(
+        "beforeend",
+        `<div class="provider-title">${row.provider}</div>` +
+          `<div class="window">${row.window}</div>` +
+          `<div class="meter" style="${vars}"><div class="meter-fill"></div>` +
+          `<div class="meter-ticks">${ticks}</div></div>` +
+          `<div class="gauge-percent" style="${vars}">${row.percent.toFixed(1)}<small>%</small></div>`,
+      );
+    });
+  </script>
+</body>
+</html>
