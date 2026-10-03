@@ -76,13 +76,14 @@ PERMITTED_PIP_ARGUMENTS = ("install", "--no-cache-dir", "--require-hashes", "-r"
 #: Every tracked file whose installs of a lock must require hashes. Named here rather than
 #: discovered, so that a *new* file telling somebody to install a lock is a failure until it is
 #: added on purpose: the flag being on the image's install alone was the gap, not the image.
-#: `tools/screenshots/README.md` joined this list in #108, by acquiring a lock to install.
+#: `tools/screenshots/README.md` joined this list in #108, by acquiring a lock to install, and
+#: `README.md` left it when the README was split: its test commands moved to `CONTRIBUTING.md`,
+#: and the quick start that stayed installs nothing.
 INSTALL_SITES = frozenset(
     {
         "Dockerfile",
         "tools/screenshots/README.md",
         ".github/workflows/ci.yml",
-        "README.md",
         "CONTRIBUTING.md",
         "CLAUDE.md",
         "AGENTS.md",

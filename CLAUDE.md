@@ -11,7 +11,9 @@ and authenticates upstream using each agent's own stored credential. Two
 gateway services from the same image bound its network: see "Network
 boundary" below.
 
-User-facing setup, env vars, and troubleshooting live in `README.md`.
+The user-facing quick start lives in `README.md`. Every setting, the egress check and
+troubleshooting are in `docs/operations.md`, and what bounds the container and the dashboard,
+for operators, is in `docs/security-model.md`.
 
 ## Architecture
 
@@ -52,8 +54,8 @@ This is load-bearing, so keep it whole:
   than `stale_after_seconds` is served as `unavailable` carrying `SourceStale`,
   never as old numbers labelled `live`. **Handlers must read `current()`, not
   `snapshot()`** — `snapshot()` is the raw record and skips that check.
-  The budget knobs are the "Read budgets" table in `README.md`, which is the
-  one place they are listed; the cadence knobs are in the table above it.
+  The budget knobs are the "Read budgets" table in `docs/operations.md`, which
+  is the one place they are listed; the cadence knobs are in the table above it.
   **A new read gets a byte cap always, and a deadline unless it provably
   cannot take one** — "the credential read has none" is a reason to check that
   a staleness limit covers it, never a precedent for leaving a new read
@@ -211,8 +213,8 @@ one process, and the Codex reader published that file's mtime as
   link; it is the operator's own configuration. The module docstring says
   which race `O_NOFOLLOW` does and does not cover.
 
-The hard-link rule has one operator-visible cost, and it is in README's
-Caveats: a data root whose files have been hard-linked by a snapshot or
+The hard-link rule has one operator-visible cost, and it is in
+`docs/security-model.md`'s Caveats: a data root whose files have been hard-linked by a snapshot or
 deduplication tool reports no activity, because every name in it is a second
 name. Refusing is the right default — the gate cannot tell which of two names
 is the one inside the tree — but it is indistinguishable from "no activity",
@@ -256,8 +258,8 @@ rather than the seven paths the app reads inside them, because each credential
 file sits at its tree's root and a bind mount of a file follows the inode it was
 made from, so it would pin the file a `logout`/`login` -- or a token refresh that
 renames a new file over the old one -- replaces.
-`tests/test_compose_topology.py` pins that list, README's "How it works" states
-both halves for operators, and its Caveats name what the whole-tree mounts leave
+`tests/test_compose_topology.py` pins that list, `docs/security-model.md`'s "How it
+works" states both halves for operators, and its Caveats name what the whole-tree mounts leave
 readable. Neither half is containment of the process, and text that reads as if
 one were is the defect #45 is about — "out of its reach rather than merely out of
 its habits" above is about the activity readers' gate, which bounds those two
@@ -428,12 +430,12 @@ network segment reaches this stack whatever address the port was published on �
 at `ingress`'s own address on the `outside` bridge, or through the mapping
 itself where the host has `route_localnet` on — and 28.2.0 through 28.3.2 lose
 Docker's rules on every firewalld reload, which reopens it until the daemon is
-restarted. Nothing here changes on that account: README's "The engine and your
-front door" carries the exposure, the engine floor and the `DOCKER-USER` rule
+restarted. Nothing here changes on that account: `docs/security-model.md`'s "The engine
+and your front door" carries the exposure, the engine floor and the `DOCKER-USER` rule
 that closes it, which is advice to an operator about their own host in exactly
 the way the older-engine egress rule is. `DASHBOARD_ALLOWED_HOSTS` is not a
 second lock on it either — whoever reaches the port writes the `Host` header —
-so do not let text here or in README read as though it were.
+so do not let text here, in README or in the docs read as though it were.
 
 `egress` and `ingress` join `inside` and `outside`, run as uid 65534 with a
 read-only root filesystem and all capabilities dropped, and hold no credential.

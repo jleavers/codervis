@@ -16,7 +16,7 @@ it: what code running there may *read* is what docker-compose.yml bind-mounts, w
 whole of both agent home trees rather than the seven paths the app reads inside them -- each
 credential file sits at its tree's root, and a bind mount of a file follows the inode it was made
 from, so it would pin the file a ``logout``/``login``, or a token refresh that renames a new file
-over the old one, replaces. README's "How it works" states
+over the old one, replaces. docs/security-model.md's "How it works" states
 both halves together, and its Caveats name what the whole-tree mounts leave readable.
 
 Two halves make that destination bound true, and neither is sufficient alone:
@@ -32,7 +32,8 @@ Two halves make that destination bound true, and neither is sufficient alone:
   successful ``docker compose up``, is what tells an operator which of them they have -- and an
   operator who cannot upgrade closes the path with a host firewall rule that drops new inbound
   connections arriving on that bridge's interface, since nothing in the stack ever connects to
-  the host over it. README's network section has the remedy for each engine.
+  the host over it. docs/operations.md's "Check the egress bound" has the remedy for
+  each engine.
 * **The allow-list** makes the route narrow: ``claude.ai`` and ``chatgpt.com``, extended by
   the operator's ``EGRESS_ALLOW``.
 
@@ -631,11 +632,11 @@ async def serve_until_stopped(
 
 
 # What replaces a proxy variable's userinfo wherever a result line prints one. `check` is a
-# command README tells operators to run and CI's `Egress bound` job runs into a public Actions
-# log, and `http://user:secret@egress:3128` is a valid `HTTPS_PROXY` -- so an authenticating
-# proxy's credential must not be what the command echoes back (#48). It cannot be mistaken for
-# a real userinfo, since a space and the angle brackets are not allowed in one unencoded, so a
-# reader can tell a redaction from a username somebody really configured.
+# command docs/operations.md tells operators to run and CI's `Egress bound` job runs into a
+# public Actions log, and `http://user:secret@egress:3128` is a valid `HTTPS_PROXY` -- so an
+# authenticating proxy's credential must not be what the command echoes back (#48). It cannot
+# be mistaken for a real userinfo, since a space and the angle brackets are not allowed in one
+# unencoded, so a reader can tell a redaction from a username somebody really configured.
 USERINFO_REDACTED = "<userinfo redacted>"
 
 # The three control characters worth a name in a result line, because they are the ones an
@@ -912,10 +913,10 @@ def _connect_within(candidates: Sequence[tuple], *, deadline: float) -> socket.s
     on a network with `enable_ipv6` resolves to an address per family, and giving the first
     one the whole remainder means a first address that blackholes spends the budget the second
     needed: a reachable proxy reported as `did not answer`, which is the direction
-    `resolved_addresses` and README both call the unsafe one -- a whole deployment failing the
-    check for nothing. A candidate that answers or refuses quickly costs its siblings nothing,
-    since the remainder is recomputed each time round; only one that goes silent spends a
-    share, and then the share is what it spends rather than everything.
+    `resolved_addresses` and docs/operations.md both call the unsafe one -- a whole deployment
+    failing the check for nothing. A candidate that answers or refuses quickly costs its
+    siblings nothing, since the remainder is recomputed each time round; only one that goes
+    silent spends a share, and then the share is what it spends rather than everything.
 
     `MIN_DIAL_BUDGET_S` is the floor: below it a connect is not a probe, because it would time
     out whatever is at the other end. So a candidate gets its share or that floor, whichever
@@ -1234,7 +1235,8 @@ def probe_direct(host: str, port: int = DEFAULT_TARGET_PORT, *, timeout_s: float
     A deployment confined by *dropping* egress rather than by withholding the route does reach
     it, and it is the one configuration this change moves from a pass to a failure -- before,
     each address got the whole timeout in turn and the last one's `TimeoutError` read as "no
-    route". It fails closed, and README says what an operator there reads the line as.
+    route". It fails closed, and docs/operations.md says what an operator there reads the
+    line as.
     """
     deadline = time.monotonic() + timeout_s
     try:
@@ -1586,7 +1588,7 @@ def resolved_addresses(host: str, *, timeout_s: float = RESOLVE_TIMEOUT_S) -> fr
     check is slow, which is what this bound is for; too short and the *proxy's* own label is
     lost on a resolver that was merely slow, the proxy's address is dialled, the proxy answers,
     and a whole deployment fails the check for nothing. So it errs towards the slow side, and
-    `check`'s cost is what README states.
+    `check`'s cost is what docs/operations.md states.
 
     The budget is per name rather than shared across a caller's names for the same reason:
     `peer_addresses` looks up two, and the second is the proxy's -- the one whose label decides
@@ -1622,8 +1624,8 @@ def probe_on_link(addr: str, port: int, *, timeout_s: float) -> str:
 
     Silence is the one answer that is not conclusive: a host holding the address while dropping
     every port asked looks the same from here. That is why this is one of three things `check`
-    asserts and not the only one, and why README's fallback is a firewall rule rather than a
-    green line.
+    asserts and not the only one, and why docs/operations.md's fallback is a firewall rule rather
+    than a green line.
 
     A failure that stopped the connection leaving this container is not silence and is not
     reported as it: `EPERM` from a local rule, `EMFILE` from running out of descriptors and the
@@ -1781,8 +1783,8 @@ def _target(addr: str, port: int) -> str:
 def format_result(ok: bool, line: str) -> str:
     r"""One line of `check`'s output, as an operator reads it.
 
-    Shared with the test that compares README's sample output against what `check` produces, so
-    the documented output and the real one cannot drift through the prefix either.
+    Shared with the test that compares docs/operations.md's sample output against what `check`
+    produces, so the documented output and the real one cannot drift through the prefix either.
 
     **One line, structurally: the whole of it goes through `escape_controls` (#88).** Every
     value `check` quotes back is one an operator configured, and the printed output is the

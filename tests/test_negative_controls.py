@@ -1849,7 +1849,9 @@ MUTATIONS: tuple[Mutation, ...] = (
         area=DEPENDENCY_LOCK,
         rule="an install of a lock passes the options named in the pin and no others: a second"
         " index beside --require-hashes is a second source of code, hashes or not",
-        path="README.md",
+        # CONTRIBUTING.md since the README split moved its test commands there: the one
+        # documented install a contributor copies before anything else.
+        path="CONTRIBUTING.md",
         before="python -m pip install --require-hashes -r requirements-dev.txt",
         after=(
             "python -m pip install --require-hashes"

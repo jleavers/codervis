@@ -17,8 +17,10 @@
 # the two files above does: README.md and CONTRIBUTING.md are what a contributing agent is
 # pointed at, SECURITY.md is what one reports through, and everything under docs/superpowers/
 # is text written to be executed -- which is why a separate check requires each document there
-# to say up front that its work is over.
+# to say up front that its work is over. The rest of docs/ is where README sends an operator,
+# and CLAUDE.md an agent, for the settings, the egress check and the security model.
 /README.md         @jleavers
 /CONTRIBUTING.md   @jleavers
 /SECURITY.md       @jleavers
+/docs/            @jleavers
 /docs/superpowers/ @jleavers

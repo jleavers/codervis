@@ -109,7 +109,8 @@ def as_oserror(number: int) -> OSError:
     return failure
 
 
-ROOT_README = Path(__file__).resolve().parents[1] / "README.md"
+#: Where the operator reads what `check` prints and costs, since the README was split.
+EGRESS_DOC = Path(__file__).resolve().parents[1] / "docs" / "operations.md"
 
 
 def asynctest(fn):
@@ -814,8 +815,8 @@ def test_every_address_of_the_proxys_name_is_dialled_inside_the_one_budget() -> 
     connected over the second. Bounding the total must not give that up: handing the first
     candidate everything up to the deadline means a blackholed first address spends the budget
     the second needed, and a reachable proxy is reported `did not answer` -- a whole deployment
-    failing the check for nothing, which is exactly what `resolved_addresses` and README call
-    the direction to err away from.
+    failing the check for nothing, which is exactly what `resolved_addresses` and
+    docs/operations.md call the direction to err away from.
 
     So what is left is shared between the addresses not yet tried. Nothing is dialled here: the
     socket is a stand-in that consumes the timeout it was given and then reports the blackhole,
@@ -968,7 +969,7 @@ def test_resolved_addresses_and_own_addresses_are_bounded_too() -> None:
 
 
 def test_the_peer_labelling_bound_is_the_default_and_is_spent_per_name() -> None:
-    """Two properties README's statement of what `check` costs rests on.
+    """Two properties docs/operations.md's statement of what `check` costs rests on.
 
     The default is what a run really spends, because nothing passes one in. And the budget is
     per name rather than shared across the two `peer_addresses` looks up, because the second is
@@ -999,8 +1000,8 @@ def test_the_peer_labelling_bound_is_the_default_and_is_spent_per_name() -> None
 
     assert budgets == [egress.RESOLVE_TIMEOUT_S, took_the_default], budgets
     # Two names, one budget each, and neither of them shares with the other -- which is the
-    # property README rests on. A `peer_addresses` that threaded one budget through both would
-    # show up here as the second call receiving what the first had left.
+    # property docs/operations.md rests on. A `peer_addresses` that threaded one budget through
+    # both would show up here as the second call receiving what the first had left.
     assert len(budgets) == 2
 
 
@@ -1222,11 +1223,12 @@ def test_the_peer_wording_says_what_each_peer_is() -> None:
 def test_the_probe_outcome_vocabularies_are_the_ones_the_suite_drives() -> None:
     """A new outcome has to be driven, not just added.
 
-    The README pin builds what `check` can print by running it with stubs, so a branch for an
-    outcome no stub returns is invisible to it -- README could then go stale about a line the
-    code really prints. Pinning the vocabulary makes adding a fifth constant fail here, which
-    is the prompt to give it a scenario in `test_readme_shows_the_lines_the_check_actually_prints`
-    and a reading in README.
+    The docs/operations.md pin builds what `check` can print by running it with stubs, so a branch
+    for an outcome no stub returns is invisible to it -- docs/operations.md could then go stale
+    about a line the code really prints. Pinning the vocabulary makes adding a fifth constant fail
+    here, which is the prompt to give it a scenario in
+    `test_the_operations_doc_shows_the_lines_the_check_actually_prints`
+    and a reading in docs/operations.md.
     """
     names = {n for n in dir(egress) if n.startswith("ON_LINK_")}
     assert names == {
@@ -1266,13 +1268,13 @@ def test_the_check_command_exits_nonzero_when_any_assertion_failed(capsys, monke
         assert printed == [egress.format_result(ok, line) for ok, line in results]
 
 
-def test_readme_shows_the_lines_the_check_actually_prints(monkeypatch) -> None:
-    """README's sample output is what an operator compares their own run against.
+def test_the_operations_doc_shows_the_lines_the_check_actually_prints(monkeypatch) -> None:
+    """`docs/operations.md`'s sample output is what an operator compares their own run against.
 
     It is quoted prose, so nothing else makes it follow the code. The expectation here is not a
     second copy of the wording -- it is `check` itself, run with every probe stubbed and its
     results formatted the way `main` formats them. Change any line `check` prints and this
-    fails until README is changed with it, which is what a literal expectation would not do.
+    fails until the doc is changed with it, which is what a literal expectation would not do.
     """
     proxy = "http://egress:3128"
     gateway = "172.30.0.1"
@@ -1295,16 +1297,16 @@ def test_readme_shows_the_lines_the_check_actually_prints(monkeypatch) -> None:
     assert all(ok for ok, _ in results), results
     produced = [egress.format_result(ok, line) for ok, line in results]
 
-    readme = ROOT_README.read_text()
+    readme = EGRESS_DOC.read_text()
     fence = re.search(r"```text\n(\[ OK \] http://egress:3128.*?)```", readme, re.S)
-    assert fence, "README no longer shows the expected `check` output"
+    assert fence, "docs/operations.md no longer shows the expected `check` output"
     shown = [line for line in fence.group(1).splitlines() if line.strip()]
     assert shown == produced
 
     # The direct half's other three lines are shown in a fence of their own, because prose
-    # that merely contains the wording pins nothing: a README could quote both lines verbatim
+    # that merely contains the wording pins nothing: a doc could quote both lines verbatim
     # and still call them both passes. Comparing the formatted line -- verdict prefix included
-    # -- is what ties each one to the `OK` or `FAIL` README claims for it.
+    # -- is what ties each one to the `OK` or `FAIL` docs/operations.md claims for it.
     def direct_line(table: str | None, outcome: str = DIRECT_NO_DNS) -> str:
         with pytest.MonkeyPatch.context() as patch:
             _pin_tables(patch, table)
@@ -1322,7 +1324,7 @@ def test_readme_shows_the_lines_the_check_actually_prints(monkeypatch) -> None:
     no_dns_fence = re.search(
         r"```text\n(\[ OK \] example\.com does not resolve.*?)```", readme, re.S
     )
-    assert no_dns_fence, "README no longer shows the no-DNS outcomes"
+    assert no_dns_fence, "docs/operations.md no longer shows the no-DNS outcomes"
     # Four, because a resolver that never answered is settled by the same tables and is not the
     # same line: only one of the two says the name does not resolve, which is a claim about DNS
     # the other did not establish.
@@ -1336,11 +1338,11 @@ def test_readme_shows_the_lines_the_check_actually_prints(monkeypatch) -> None:
 
     # Pinning the two fences pins only what they quote. A second fence above them, showing the
     # same failures as passes, would be invisible to that -- and it is a fence an operator
-    # diffs their own run against. So every sample line anywhere in README must be one `check`
-    # can produce, with the verdict README gives it.
-    # Several scenarios, not one: README is entitled to show an on-link address that answered,
-    # one that is this container, or a list over the cap, and a set built from a single run
-    # would reject those as "not producible" rather than checking them.
+    # diffs their own run against. So every sample line anywhere in the doc must be one `check`
+    # can produce, with the verdict docs/operations.md gives it.
+    # Several scenarios, not one: docs/operations.md is entitled to show an on-link address that
+    # answered, one that is this container, or a list over the cap, and a set built from a single
+    # run would reject those as "not producible" rather than checking them.
     def scenario(**over: object) -> list[str]:
         opts: dict = {
             "direct": ("example.com", 443),
@@ -1370,21 +1372,22 @@ def test_readme_shows_the_lines_the_check_actually_prints(monkeypatch) -> None:
     # renders as a code block, and is exactly as much a sample an operator diffs their run
     # against -- a column-0 anchor would not see it.
     samples = [m.strip() for m in re.findall(r"^[ \t]*(\[(?: OK |FAIL)\] .*?)[ \t]*$", readme, re.M)]
-    assert samples, "README shows no sample output at all"
+    assert samples, "docs/operations.md shows no sample output at all"
     assert set(samples) <= producible, sorted(set(samples) - producible)
 
     # A line quoted inline in prose rather than in a fence carries no verdict prefix, so the
     # sample scan above does not see it and it can go stale on its own. The one there is is
     # checked as a prefix of a line `check` can really print.
     inline = "example.com:443 was not settled"
-    assert f"`{inline}`" in flowed, "README no longer quotes the unverified line"
+    assert f"`{inline}`" in flowed, "docs/operations.md no longer quotes the unverified line"
     assert any(line[7:].startswith(inline) for line in producible), sorted(producible)
 
     # The verdicts the fences carry are also claimed in prose, which no fence comparison holds.
     assert "Only the first two are passes, and the routing table is what makes them so." in flowed
 
-    # README counts the public-name line's forms for an operator checking they have seen them
-    # all, so the count comes from the code rather than from whoever last edited the sentence.
+    # docs/operations.md counts the public-name line's forms for an operator checking they have
+    # seen them all, so the count comes from the code rather than from whoever last edited the
+    # sentence.
     # One of them is in the first fence, hence "N more forms".
     # Both prefixes are seven characters, so the payload starts at 7; only the public-name
     # line's payload begins with the probed host.
@@ -1392,7 +1395,7 @@ def test_readme_shows_the_lines_the_check_actually_prints(monkeypatch) -> None:
     spelled = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven"}
     beyond_the_fence = len(direct_forms) - 1
     assert beyond_the_fence in spelled, (
-        f"{len(direct_forms)} public-name forms is outside what README spells out; "
+        f"{len(direct_forms)} public-name forms is outside what docs/operations.md spells out; "
         f"give the count a word and update the sentence: {sorted(direct_forms)}"
     )
     assert f"{spelled[beyond_the_fence]} more forms" in flowed, sorted(direct_forms)
@@ -1848,7 +1851,7 @@ def test_the_public_name_probe_costs_its_budget_once_over_all_of_a_name_s_addres
     addresses that went undialled establish nothing. The container this project ships never
     reaches it: `internal: true` withholds the default route, so the kernel rejects every
     connect immediately and all of them are dialled for nothing. A deployment confined by
-    *dropping* egress does reach it, and README says what an operator there reads it as.
+    *dropping* egress does reach it, and docs/operations.md says what an operator there reads it as.
     """
     layer = _AnsweringAfter(30.0, None)  # far beyond any budget: nothing ever answers
     addresses = [f"192.0.2.{n}" for n in range(1, 9)]
@@ -2914,8 +2917,8 @@ async def test_the_check_reports_a_proxy_variable_that_will_not_parse(monkeypatc
 
 # --- what a result line may quote back (#48) ------------------------------------------
 #
-# `check` is a command README tells operators to run and CI's `Egress bound` job runs into a
-# public Actions log, and `http://user:secret@egress:3128` is a valid `HTTPS_PROXY`. So the
+# `check` is a command docs/operations.md tells operators to run and CI's `Egress bound` job runs
+# into a public Actions log, and `http://user:secret@egress:3128` is a valid `HTTPS_PROXY`. So the
 # variable is never printed as configured.
 
 # Distinctive enough that a substring search for it cannot match anything the wording itself
@@ -2988,7 +2991,7 @@ def test_without_userinfo_drops_the_credential_and_keeps_the_host_and_port(
 ) -> None:
     """Host, port and scheme survive -- the operator has to see which proxy was dialled -- and
     so does the `@`, so an authenticating proxy still reads as one. A URL carrying no userinfo
-    comes back exactly as written, which is why README's sample output is unchanged."""
+    comes back exactly as written, which is why docs/operations.md's sample output is unchanged."""
     assert without_userinfo(url) == expected
     assert PROXY_SECRET not in without_userinfo(url)
 
@@ -3120,8 +3123,8 @@ async def test_no_line_of_a_real_checks_output_carries_the_proxys_userinfo() -> 
     "url",
     [
         # Both branches that quote an upstream value back: the one that cannot be read, and the
-        # one that is readable but not `https://`. README claims the same redaction for these
-        # variables as for the proxy, and `check` calls `without_userinfo` on both lines.
+        # one that is readable but not `https://`. docs/operations.md claims the same redaction for
+        # these variables as for the proxy, and `check` calls `without_userinfo` on both lines.
         pytest.param(f"https://user:{PROXY_SECRET}@[::1", id="unreadable"),
         pytest.param(f"http://user:{PROXY_SECRET}@usage.example.test", id="not-https"),
         pytest.param(f"https://user:{PROXY_SECRET}@usage.example.test:notaport", id="bad-port"),

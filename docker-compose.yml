@@ -68,9 +68,10 @@ services:
     # login, which replaces it for certain -- would leave this container reading the file that was
     # replaced, with no error to show for it (and the short syntax below would create a source
     # path that is missing, as a directory). So both roots stay, read-only, and anything
-    # running in this container can read the rest of both trees: README's "How it works" says
-    # so where it names the principal, and its Caveats name what that leaves exposed. Nothing
-    # here narrows what a token may be used for at a host the proxy admits, either.
+    # running in this container can read the rest of both trees: docs/security-model.md's "How
+    # it works" says so where it names the principal, and its Caveats name what that leaves
+    # exposed. Nothing here narrows what a token may be used for at a host the proxy admits,
+    # either.
     # tests/test_compose_topology.py pins this list, so a third mount is a deliberate widening.
     volumes:
       - "${CLAUDE_HOME:-~/.claude}:/data/claude:ro"
@@ -119,9 +120,9 @@ services:
     # before 28.0 a segment peer reaches the container's own address directly, and
     # 28.2.0-28.3.2 lose Docker's rules on every firewalld reload. The host's INPUT chain never
     # sees such a packet -- it is forwarded to a container rather than delivered here -- so a
-    # ufw or firewalld rule does not close it and a DOCKER-USER rule does; README's "The engine
-    # and your front door" is what an operator there follows. Long syntax because an IPv6
-    # address in the short one has to be bracketed to be told from the port.
+    # ufw or firewalld rule does not close it and a DOCKER-USER rule does; "The engine and your
+    # front door" in docs/security-model.md is what an operator there follows. Long syntax
+    # because an IPv6 address in the short one has to be bracketed to be told from the port.
     ports:
       - host_ip: "${DASHBOARD_BIND:-127.0.0.1}"
         published: "${DASHBOARD_PORT:-8765}"
@@ -150,9 +151,9 @@ networks:
     # address, so there is nothing on it to dial. Docker Engine 28.0 or newer honours it; 27.x
     # knows the option but not this value and refuses to create the network; 26.x and older
     # have no case for the label and ignore it, so the stack starts and the host keeps its
-    # address. README's network section has all three, and the remedy where you cannot run
-    # 28.0+: a host firewall rule dropping new inbound connections on this bridge's interface,
-    # which nothing in the stack ever needs. `python -m app.egress check` is what
+    # address. docs/operations.md's "Check the egress bound" has all three, and the remedy
+    # where you cannot run 28.0+: a host firewall rule dropping new inbound connections on this
+    # bridge's interface, which nothing in the stack ever needs. `python -m app.egress check` is what
     # proves which you got: with the option honoured no gateway address is allocated at all, so
     # the subnet's first address falls to the first container attached, and finding `egress`
     # there is the evidence.

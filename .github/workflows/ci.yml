@@ -158,9 +158,9 @@ jobs:
       # The compose half of #37, asserted on the host rather than taken on trust: with
       # `gateway_mode_ipv4: isolated` honoured, the engine allocates no gateway address and the
       # `inside` bridge carries no IPv4 address, so there is nothing of the host's to dial. This
-      # is the claim README's engine table makes, and CI is the only place with a real daemon to
-      # settle it on -- so it fails here rather than being recorded and read later. The engine
-      # version is printed first so the run says which engine the result was true of.
+      # is the claim docs/operations.md's engine table makes, and CI is the only place with a real
+      # daemon to settle it on -- so it fails here rather than being recorded and read later. The
+      # engine version is printed first so the run says which engine the result was true of.
       #
       # The network is taken from the dashboard's own container rather than by label, because
       # that is the network under test and it joins exactly one. The stack has already started,

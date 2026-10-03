@@ -1061,8 +1061,8 @@ A credential that is real and live is \`critical\` however it got there.`,
     title: 'what anyone who can reach the port can read or do',
     brief: `The dashboard has no authentication. docker-compose.yml publishes it on \`127.0.0.1\`
 unless \`DASHBOARD_BIND\` names another address, and the app answers only the \`Host\` values
-\`DASHBOARD_ALLOWED_HOSTS\` names (#15); README "Security notes" says what those two leave
-reachable, and on which engines. Your job is to establish exactly what it gives away and who
+\`DASHBOARD_ALLOWED_HOSTS\` names (#15); \`docs/security-model.md\`'s "Security notes" says what
+those two leave reachable, and on which engines. Your job is to establish exactly what it gives away and who
 else can get it.
 
 Start with the attackers: a machine on the same network; another container on the same Docker
@@ -1711,8 +1711,8 @@ address on that bridge, and \`python -m app.egress check\` dials the on-link add
 families, with \`egress\` holding the subnet's first address as the evidence the option took
 effect. The one case where the route is not closed is an older engine: 27.x refuses to create
 the network at all, and 26.x and older ignore the option and leave the host its address, which
-\`check\` reports. README carries the operator's own remedy there, and that remedy is advice
-to them rather than a finding here. Go past it:
+\`check\` reports. \`docs/operations.md\` carries the operator's own remedy there, and that
+remedy is advice to them rather than a finding here. Go past it:
 
 - **The allowed names as exfiltration sinks** (the third critic's gap 2). The proxy filters by
   the CONNECT target and never sees inside the tunnel. Inside a tunnel to \`claude.ai:443\` or
@@ -1878,8 +1878,9 @@ Enumerate what GitHub will serve, not what a checkout holds:
   and others that describe attack paths just as exactly. All of them are closed. For each, say
   whether its fix closed the path it describes or whether it documents a residue that still
   stands: an engine older than 28.0, the whole-tree mounts, the tunnel's interior (#45). A
-  residue README's Caveats already disclose is intended disclosure and not a finding. An attack
-  path that a public issue spells out and that neither a fix nor a caveat answers is one.
+  residue \`docs/security-model.md\`'s Caveats already disclose is intended disclosure and not
+  a finding. An attack path that a public issue spells out and that neither a fix nor a caveat
+  answers is one.
 - **Actions.** On a public repository anyone can read a workflow run's logs and download its
   artifacts for as long as they are retained. Enumerate every run and artifact with read-only
   \`gh\` listings, fetch the logs into your scratch directory, scan them with the same rules, and
@@ -1967,7 +1968,8 @@ dependency in the image -- but on hosts this repository has never run on: Docker
 macOS and Windows, rootless Docker, an engine older than 28.0, a shell with its own proxy
 variables. Every earlier run swept the operator's deployment. Sweep theirs.
 
-Follow README from the top as a stranger would, and at each step say what they get:
+Follow README from the top as a stranger would, and the docs it sends them to, and at each step
+say what they get:
 
 - **The defaults.** \`docker compose up --build\` with no \`.env\`: what is published, on what
   address, serving which \`Host\` values, and what \`.env.example\` invites them to change.
@@ -1981,8 +1983,8 @@ Follow README from the top as a stranger would, and at each step say what they g
   that before they run it, rather than after? Establish each from Docker's documentation. You
   have one Linux engine, so say which answers you demonstrated and which you read.
 - **What the whole-tree mounts hand the image** (the fourth critic's gap 4). #45 (closed, do not
-  re-derive) stated the container's budget on both axes, and README's Caveats name what the
-  mounts leave readable. Hold those Caveats against what a stranger's \`~/.claude\` and
+  re-derive) stated the container's budget on both axes, and \`docs/security-model.md\`'s Caveats
+  name what the mounts leave readable. Hold those Caveats against what a stranger's \`~/.claude\` and
   \`~/.codex\` can hold, from each vendor's documentation and never from this host's copy:
   settings with \`env\` blocks and API keys, MCP server configuration carrying its own tokens,
   transcripts holding whatever a user pasted. Do the Caveats say enough for a stranger to

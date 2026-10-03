@@ -17,12 +17,25 @@ python -m venv .venv && . .venv/bin/activate
 python -m pip install --require-hashes -r requirements-dev.txt
 python -m pytest                          # hermetic: no network, no credential reads
 ruff check --select E4,E7,E9,F .          # what the lint job runs
+python -m compileall -q app tests         # and its byte-compile step
 node --test 'tests/test_*.js'
 ```
 
+The tests use temporary directories and stubbed upstream clients. They do not read your real
+credential files and do not call the live quota endpoints, and the proxy and relay tests use
+loopback sockets only. That is enforced for the whole session by `tests/conftest.py`, not left
+to each test remembering to stub what it uses. Before anything is collected it points
+`CLAUDE_DATA_DIR` and `CODEX_DATA_DIR` at empty scratch directories and `CLAUDE_AI_HOST` and
+`CHATGPT_HOST` at a loopback port nothing listens on, and for the rest of the run an audit hook
+fails any test that opens a path under a host agent data directory or dials a non-loopback
+address. So running `python -m pytest` in a shell where those variables point at your real
+`~/.claude` and `~/.codex` reads neither. **It affects `pytest` and nothing else**: no agent,
+editor or shell configuration is installed or changed.
+
 `tests/test_compose_topology.py` renders `docker-compose.yml` with `docker compose config`,
-which needs the Docker CLI but no daemon, and skips where Docker is not installed. The egress
-bound is checked from inside a running stack:
+which needs the Docker CLI but no daemon. It is skipped where Docker is not installed, unless
+`REQUIRE_DOCKER=1` says it must not be; CI sets that, so the compose pins fail rather than
+vanish into a skip. The egress bound is checked from inside a running stack:
 
 ```bash
 docker compose up --build -d
@@ -32,7 +45,7 @@ docker compose down
 
 The day-to-day commands and the architecture are in [`CLAUDE.md`](CLAUDE.md), which is
 written for an agent working in this repository but is the best map of the code for a person
-too.
+too. [`docs/package-layout.md`](docs/package-layout.md) says what each file is for.
 
 ## One rule above the others
 
@@ -99,8 +112,9 @@ strings in `app/degrade.py`, never `str(exc)`: an exception raised while a reque
 built carries the bearer token. The same rule covers the log.
 
 **Every read of something someone else wrote has a byte cap, and a deadline unless it
-provably cannot take one.** The knobs are the "Read budgets" table in `README.md`, and a new
-one goes there, in `.env.example` and in `docker-compose.yml`.
+provably cannot take one.** The knobs are the "Read budgets" table in
+[`docs/operations.md`](docs/operations.md#read-budgets), and a new one goes there, in
+`.env.example` and in `docker-compose.yml`.
 
 **Dependencies are fixed by content, and one place decides a version.** `requirements.in`,
 `requirements-dev.in` and `requirements-screenshots.in` name the packages; `requirements.txt`,
@@ -117,9 +131,9 @@ are resolved against it — and `tests/test_dependency_lock.py` fails if either 
 The image installs with `pip install --require-hashes`, which refuses a
 lock that has lost a hash and refuses a package the lock does not name, so an incomplete
 regeneration fails the Docker build rather than resolving something fresh. The same flag is on
-each of the other installs this repository spells out -- the venv above, CI's two jobs, and the
-commands in `README.md`, `CLAUDE.md` and `AGENTS.md` -- so a lock that has lost its hashes
-*altogether* fails at each of them rather than only in the image. That last part is the only
+each of the other installs this repository spells out -- the venv above, CI's two jobs, the
+screenshot tool's venv, and the commands in `CLAUDE.md` and `AGENTS.md` -- so a lock that has
+lost its hashes *altogether* fails at each of them rather than only in the image. That last part is the only
 part the flag adds outside the image: pip turns hash checking on by itself as soon as one
 requirement carries a `--hash`, so a lock that has lost *one* hash already fails without it.
 `tests/test_dependency_lock.py` scans the tracked tree for installs of a lock, requires the
