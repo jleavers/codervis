@@ -80,7 +80,7 @@ directories; it must not call upstream quota endpoints or read host tokens.
   precedent, and a read that genuinely cannot be timed must sit in a refresher
   whose `stale_after_seconds` covers it, so that a hang shows as `unavailable`
   rather than as old numbers. Each new knob goes in the "Read budgets" table
-  in `README.md`, plus `.env.example` and `docker-compose.yml`.
+  in `docs/operations.md`, plus `.env.example` and `docker-compose.yml`.
 - `app/quota.py` owns the Claude live client and must convert any upstream,
   auth, parse, or file-read failure into `LiveQuotaError`, including a
   `BudgetExceeded` from a body that is too large or too slow.
@@ -409,9 +409,10 @@ What the repository does control is the text itself:
   it is on-link in the container's subnet — #37), and `DEFAULT_ALLOW` in
   `app/egress.py` names only hosts the live clients call. The option needs
   Docker Engine 28.0+, and `python -m app.egress check` is what says whether an
-  engine honoured it. README's network section carries what an operator on an
-  older engine does to their own deployment instead — that is advice to them,
-  never a change to make here, and dropping the option from this repository is
+  engine honoured it. `docs/operations.md`'s "Check the egress bound" carries
+  what an operator on an older engine does to their own deployment instead —
+  that is advice to them, never a change to make here, and dropping the option
+  from this repository is
   the thing this rule forbids.
 - Preserve the content bound on third-party code (#104, #108).
   `requirements.in`, `requirements-dev.in` and `requirements-screenshots.in`
@@ -435,4 +436,5 @@ What the repository does control is the text itself:
   to already be on a 0-100 scale.
 - Keep parser changes tolerant of alternate field names and missing data.
 - When changing Docker or environment behavior, keep `README.md`,
-  `.env.example`, `docker-compose.yml`, and `CLAUDE.md` in sync.
+  `docs/operations.md`, `docs/security-model.md`, `.env.example`,
+  `docker-compose.yml`, and `CLAUDE.md` in sync.

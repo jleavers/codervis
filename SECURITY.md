@@ -32,9 +32,9 @@ codervis runs beside two long-lived session tokens — `~/.claude/.credentials.j
   operator adds to `EGRESS_ALLOW`, over HTTPS only. That holds on Docker Engine 28.0 or newer,
   which honours the `gateway_mode_ipv4: isolated` option that keeps the host off the
   dashboard's network. On an older engine the host keeps an address there that the container
-  can reach, unless the operator adds the host firewall rule that [`README.md`'s "Check the
-  egress bound"](README.md#check-the-egress-bound) gives, and `python -m app.egress check` is
-  what says which a deployment has. A way to make the dashboard send a token anywhere else — a
+  can reach, unless the operator adds the host firewall rule that [`docs/operations.md`'s
+  "Check the egress bound"](docs/operations.md#check-the-egress-bound) gives, and
+  `python -m app.egress check` is what says which a deployment has. A way to make the dashboard send a token anywhere else — a
   redirect, a host override, a compromised dependency, a route round the proxy — is in scope.
 - **Where a token can be seen.** `source_error` and the log come from a fixed vocabulary
   (`app/degrade.py`), never from an exception's own text, because an exception raised while a
@@ -63,10 +63,12 @@ codervis runs beside two long-lived session tokens — `~/.claude/.credentials.j
   the host. The credential files are bind-mounted read-only from a home directory; someone who
   can read that directory does not need the dashboard.
 - Anyone the operator chose to serve. Widening `DASHBOARD_BIND` and `DASHBOARD_ALLOWED_HOSTS`
-  serves the machines they name, and `README.md` says what those machines can then read.
+  serves the machines they name, and
+  [`docs/security-model.md`](docs/security-model.md#security-notes) says what those machines
+  can then read.
 - Denial of service against your own dashboard from a client you allowed to reach it, within
   the bounds above.
 
-The "Security notes" section of [`README.md`](README.md#security-notes) is the operator's
-view of these boundaries, and the "Network boundary" section of [`CLAUDE.md`](CLAUDE.md) is
-the developer's, with the tests that pin each one.
+[`docs/security-model.md`](docs/security-model.md) is the operator's view of these
+boundaries, and the "Network boundary" section of [`CLAUDE.md`](CLAUDE.md) is the developer's,
+with the tests that pin each one.

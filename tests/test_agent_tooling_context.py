@@ -2062,7 +2062,8 @@ CODEOWNERS = ROOT / ".github" / "CODEOWNERS"
 #: change to what the next unattended session is told to do, on a host holding two live
 #: tokens, so each needs a named reviewer. `.github/` is here because it owns CI and this file
 #: itself; `.claude/` because it is the harness's own; `docs/superpowers/` because everything
-#: in it is text written to be executed.
+#: in it is text written to be executed; and the rest of `docs/` because `CLAUDE.md` sends an
+#: agent there for the settings, the egress check and the security model.
 AGENT_FACING_PATHS = (
     "/CLAUDE.md",
     "/AGENTS.md",
@@ -2071,6 +2072,7 @@ AGENT_FACING_PATHS = (
     "/SECURITY.md",
     "/.claude/",
     "/.github/",
+    "/docs/",
     "/docs/superpowers/",
 )
 

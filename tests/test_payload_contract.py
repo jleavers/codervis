@@ -244,7 +244,7 @@ def transport_fault_codes() -> dict[str, str]:
     Asserting only "unavailable and in schema" would pass even if both clients
     dropped their `except (OSError, http.client.HTTPException)` clause or stopped
     telling 401 from 500 — `main`'s boundary contains anything either way. But
-    the message an operator reads is keyed off this, and README sends them
+    the message an operator reads is keyed off this, and docs/operations.md sends them
     somewhere different for each one: "upstream unreachable" is the network,
     "upstream rejected the stored credential" is a re-login, and "internal
     error" is a bug to report. A fault classified as the wrong one of those

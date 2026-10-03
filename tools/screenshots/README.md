@@ -96,8 +96,8 @@ where it can connect — and it is narrower only in that the artefacts come from
 rather than from packages resolved afresh. Two things follow, and both are the reader's to
 weigh rather than something this file can settle:
 
-- This is the one place the "everything by content hash" claim in `README.md`'s Security notes
-  does not reach, and it is stated there as such.
+- This is the one place the "everything by content hash" claim in `docs/security-model.md`'s
+  Security notes does not reach, and it is stated there as such.
 - Whoever wants it closed anyway has one honest option: install on a machine that is not this
   one, record the digest of **each** of the three archives that arrived, and check all of them
   by hand on every later machine — recording one and running the other two unverified is worse

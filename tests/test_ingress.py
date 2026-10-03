@@ -281,10 +281,10 @@ def test_the_front_doors_bounds_are_the_ones_it_documents() -> None:
 
     They each pass the bound they exercise in, and the flood test sizes its flood off
     `MAX_REQUEST_HEAD_BYTES`, so a cap raised to 16 MiB or a deadline raised to ten minutes
-    was invisible to the whole suite (#46). These are the numbers `README.md` and `CLAUDE.md`
-    describe -- a complete head at most 16 KiB, within 10 s, and at most 256 connections; the
-    16 KiB is `CLAUDE.md`'s, and README repeats the other two -- so widening one is a change made
-    here and in those documents, on purpose. `CONNECT_TIMEOUT_S`
+    was invisible to the whole suite (#46). These are the numbers `docs/security-model.md` and
+    `CLAUDE.md` describe -- a complete head at most 16 KiB, within 10 s, and at most 256
+    connections; the 16 KiB is `CLAUDE.md`'s, and the security model repeats the other two -- so
+    widening one is a change made here and in those documents, on purpose. `CONNECT_TIMEOUT_S`
     is the fourth and no shipped document states it: it bounds the relay's own dial to the
     dashboard rather than anything a peer can do, and it is pinned here alone. The values rather
     than only the wiring: a default that still reads its constant says nothing about what that

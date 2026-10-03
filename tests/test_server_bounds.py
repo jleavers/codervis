@@ -1040,8 +1040,8 @@ def test_the_servers_bounds_are_the_ones_it_documents() -> None:
 
     A head cap raised to 16 MiB, either deadline raised to ten minutes or a ceiling raised past
     what the process can hold would leave every one of them green. These are the numbers
-    `README.md`, `CLAUDE.md` and `AGENTS.md` describe, so widening one is a change made here and
-    in those documents, on purpose.
+    `docs/security-model.md`, `CLAUDE.md` and `AGENTS.md` describe, so widening one is a change
+    made here and in those documents, on purpose.
     """
     assert (MAX_REQUEST_HEAD_BYTES, REQUEST_TIMEOUT_S, MAX_CONNECTIONS) == (16 * 1024, 10.0, 320)
     assert REQUEST_BODY_TIMEOUT_S == 10.0

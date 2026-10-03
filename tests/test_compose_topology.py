@@ -279,26 +279,30 @@ def test_the_dashboard_answers_only_loopback_names_by_default(request, rendered:
 # run ahead of that chain, which is what the old text generalised into "a host firewall cannot".
 ENGINE_FLOOR = "28.3.3"
 WORKING_CHAIN = "DOCKER-USER"
-FRONT_DOOR_DOCS = ("README.md", ".env.example", "docker-compose.yml")
-FRONT_DOOR_SECTION = "### The engine and your front door"
+#: Where the operator-facing text lives since the README was split: the quick start keeps a short
+#: statement of each promise, and the whole of it is in the security model and operations docs.
+SECURITY_MODEL = "docs/security-model.md"
+OPERATIONS = "docs/operations.md"
+FRONT_DOOR_DOCS = ("README.md", SECURITY_MODEL, ".env.example", "docker-compose.yml")
+FRONT_DOOR_SECTION = "## The engine and your front door"
 
 
 def _document(name: str) -> str:
     return (ROOT / name).read_text()
 
 
-def _readme_section(heading: str) -> str:
-    """The text under one README heading, so a pin cannot be satisfied from somewhere else.
+def _section(name: str, heading: str) -> str:
+    """The text under one heading of one document, so a pin cannot be satisfied from somewhere else.
 
     Fenced blocks are skipped when looking for where the section ends, because a shell comment
     inside one starts with the same character a heading does -- `# The interface they reach you
     on` under "Serving other machines" is one -- and a section cut short there would fail its
     pin for a reason that has nothing to do with the claim.
     """
-    readme = _document("README.md")
-    assert heading in readme, f"README has no {heading!r} section"
+    text = _document(name)
+    assert heading in text, f"{name} has no {heading!r} section"
     depth = len(heading) - len(heading.lstrip("#"))
-    rest = readme[readme.index(heading) + len(heading) :]
+    rest = text[text.index(heading) + len(heading) :]
     kept: list[str] = []
     fenced = False
     for line in rest.splitlines():
@@ -311,17 +315,20 @@ def _readme_section(heading: str) -> str:
 
 
 # Where each document makes the claim, and what that site owes a reader who stops there. The
-# two small files make it once and are taken whole; README makes it in several places, and a
-# whole-file search there would pass on the table of contents alone -- so each of its claim
-# sites is asked for itself. Every site names the release; the ones that tell an operator what
+# two small files make it once and are taken whole; README and the security model make it in
+# several places, and a whole-file search there would pass on a link or a heading alone -- so each
+# claim site is asked for itself. Every site names the release; the ones that tell an operator what
 # to do about it name the chain that does it as well.
 CLAIM_SITES = (
     (".env.example", None, (ENGINE_FLOOR, WORKING_CHAIN)),
     ("docker-compose.yml", None, (ENGINE_FLOOR, WORKING_CHAIN)),
     ("README.md", "## How it works", (ENGINE_FLOOR,)),
     ("README.md", "## Prerequisites", (ENGINE_FLOOR,)),
-    ("README.md", "## Security notes", (ENGINE_FLOOR, WORKING_CHAIN)),
-    ("README.md", FRONT_DOOR_SECTION, (ENGINE_FLOOR, WORKING_CHAIN)),
+    ("README.md", "## Quick start", (ENGINE_FLOOR,)),
+    ("README.md", "## Security in brief", (ENGINE_FLOOR, WORKING_CHAIN)),
+    (SECURITY_MODEL, "## How it works", (ENGINE_FLOOR,)),
+    (SECURITY_MODEL, "## Security notes", (ENGINE_FLOOR, WORKING_CHAIN)),
+    (SECURITY_MODEL, FRONT_DOOR_SECTION, (ENGINE_FLOOR, WORKING_CHAIN)),
 )
 
 
@@ -336,7 +343,7 @@ def test_every_document_that_promises_the_loopback_publish_names_its_condition(
     """Each of these says what publishing on `DASHBOARD_BIND` keeps out, so each carries what
     that rests on. A reader who only ever opens `.env.example` is the one this is for."""
     assert "DASHBOARD_BIND" in _document(name), f"{name} no longer makes the claim; move this pin"
-    text = _document(name) if site is None else _readme_section(site)
+    text = _document(name) if site is None else _section(name, site)
     where = name if site is None else f"{name}'s {site!r} section"
     if ENGINE_FLOOR in owed:
         assert ENGINE_FLOOR in text, (
@@ -350,23 +357,28 @@ def test_every_document_that_promises_the_loopback_publish_names_its_condition(
         )
 
 
-def test_the_readme_has_one_place_that_says_what_an_older_engine_leaves_open() -> None:
+def test_the_security_model_has_one_place_that_says_what_an_older_engine_leaves_open() -> None:
     """Two different lapses are fixed by one release, and an operator's own version decides
     which they have. Naming the floor alone would leave 28.2.0-28.3.2 reading as closed."""
-    section = _readme_section(FRONT_DOOR_SECTION)
+    section = _section(SECURITY_MODEL, FRONT_DOOR_SECTION)
     for phrase in ("28.0", "28.2.0", "28.3.2", ENGINE_FLOOR, "firewalld", WORKING_CHAIN):
         assert phrase in section, f"{FRONT_DOOR_SECTION} does not name {phrase}"
 
 
-def test_the_rule_the_readme_gives_matches_state_rather_than_the_interface_alone() -> None:
+def test_every_rule_the_docs_give_matches_state_rather_than_the_interface_alone() -> None:
     """`DOCKER-USER` is consulted before the conntrack accept that lets a container's own
     replies back in, so `-i <lan> -j DROP` closes the front door and the egress proxy's TLS
     sessions with it -- every quota panel `unavailable`, for a documentation fix. Every rule
     offered here refuses new connections only."""
-    # Continuations first, so a rule written over two lines is read as the one rule it is.
-    lines = _document("README.md").replace("\\\n", " ").splitlines()
+    # Continuations first, so a rule written over two lines is read as the one rule it is. Every
+    # document an operator follows, so a rule that moves between them is still read.
+    lines = [
+        line
+        for name in ("README.md", SECURITY_MODEL, OPERATIONS)
+        for line in _document(name).replace("\\\n", " ").splitlines()
+    ]
     rules = [" ".join(line.split()) for line in lines if WORKING_CHAIN in line and "-j DROP" in line]
-    assert rules, "README offers no rule at all"
+    assert rules, "no document offers a rule at all"
     for rule in rules:
         assert "--ctstate NEW,INVALID" in rule, (
             f"a rule with no state match drops this stack's own return traffic: {rule}"
@@ -391,9 +403,9 @@ def test_the_caveat_on_the_whole_tree_mounts_names_what_each_cli_writes_there(wr
     """The mounts fall under the compromised-dependency principal #45 accepts. What a list of
     examples decides is whether a stranger's acceptance is an informed one, so the list names
     the contents worth most rather than the ones easiest to describe."""
-    caveats = _readme_section("### Caveats")
+    caveats = _section(SECURITY_MODEL, "## Caveats")
     assert written in caveats, (
-        f"README's Caveats do not name {written}, which the whole-tree mount leaves readable"
+        f"{SECURITY_MODEL}'s Caveats do not name {written}, which the whole-tree mount leaves readable"
     )
 
 
@@ -734,7 +746,7 @@ def test_the_relay_publishes_exactly_this_one_port(source: dict) -> None:
 
 #: The environment settings on `codervis` that carry a bound, with the defaults an operator who
 #: wrote no `.env` gets. Not the whole environment: the cadence and budget knobs below it are
-#: passed through empty on purpose, and `README.md`'s two tables are where those live. These
+#: passed through empty on purpose, and `docs/operations.md`'s two tables are where those live. These
 #: are the ones that decide who may reach the dashboard and where it may reach.
 DASHBOARD_EXPOSURE = {
     # Which names the dashboard answers at all, the other half of `DASHBOARD_BIND` (#15).
