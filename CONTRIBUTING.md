@@ -60,6 +60,15 @@ approval, and GitHub records that as a bypass of the rule. The bypass covers pul
 so a direct push is refused to an admin too. Either way, review is a person reading the diff,
 and the approval is where that is recorded.
 
+CI has to pass as well, and nobody bypasses that. A second ruleset on `main` requires the five
+jobs in `.github/workflows/ci.yml` (`Lint`, `Python tests`, `JavaScript tests`, `Docker image`
+and `Egress bound`) on every pull request, with no bypass for anyone, the maintainer included:
+the review bypass above does not reach it. A pull request from a fork runs CI only once a
+maintainer has read the diff and approved the run, because Actions asks for that for every
+outside contributor. Until then its checks show as waiting rather than failed. The commands
+under [Getting set up](#getting-set-up) are the ones CI runs, so running them before you push
+is the quickest way to find out.
+
 - Say what changed and why. A reviewer reading the diff alone should not have to guess the
   motivation.
 - Keep the tests green, and add one for behaviour you change. Most of this repository's tests
