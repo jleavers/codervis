@@ -34,12 +34,12 @@ fits together, and is written for an agent working here but reads as well for a 
 ├── requirements-screenshots.txt # Those resolved in full and fixed by content hash
 ├── pytest.ini
 ├── tests/
-├── tools/screenshots/   # Renders the README's image and the social preview from fabricated data
+├── tools/screenshots/   # Renders the README's image, the social preview and the LinkedIn header from fabricated data
 ├── docs/
 │   ├── operations.md      # Configuration, serving other machines, the egress check, troubleshooting
 │   ├── security-model.md  # What bounds the container and the dashboard, and what an engine leaves open
 │   ├── package-layout.md  # This file
-│   └── images/            # The README's image and the social preview
+│   └── images/            # The README's image, the social preview and the LinkedIn header
 ├── .env.example
 ├── .gitignore
 ├── CONTRIBUTING.md

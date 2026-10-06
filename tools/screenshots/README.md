@@ -1,4 +1,4 @@
-# Regenerating the README's image and the social preview
+# Regenerating the README's image, the social preview and the LinkedIn header
 
 `docs/images/usage-ramp.gif` is captured from the real app serving **fabricated data**: the
 quota clients and activity readers are stubbed before the app starts, its data directories
@@ -63,6 +63,27 @@ It prints the size and exits non-zero if the file is over GitHub's 1 MB limit. G
 image only through the web interface, so a new one is uploaded by hand under the repository's
 Settings, General, Social preview.
 
+## The LinkedIn header
+
+`docs/images/linkedin-header.png` is the 1920×1080 header for a LinkedIn post about the project,
+laid out as issuebot's is: the copy on the left and the dashboard in a browser window on the
+right. `linkedin-header.html` holds the copy and the layout and links `app/static/style.css` for
+the palette. The window's picture is the real app served by `capture.py`'s stubs, so it is
+fabricated in the same way as the GIF: the five percentages are invented in `linkedin_header.py`
+and nothing is read from `~/.claude` or `~/.codex`. The chip dots are coloured by `colorFor()`,
+injected the way `social_preview.py` does it. The screenshot reaches the page as a data URL
+rather than an iframe of the app, because the dashboard refuses to be framed. Regenerate it in
+the same venv:
+
+```bash
+. tools/screenshots/.venv/bin/activate
+python tools/screenshots/linkedin_header.py
+```
+
+It prints the size and exits non-zero if the file is over 1 MB. That limit is this repository's,
+to keep it small, not LinkedIn's. A post that has already been published keeps the image it was
+published with, so this needs regenerating only for a new post.
+
 ## The browser builds are not fixed by content, and cannot be from here
 
 `playwright install chromium` is three downloads, not one. `playwright install --dry-run
@@ -74,7 +95,7 @@ chromium` prints them, and against the pinned `playwright==1.63.0` they are:
 | FFmpeg (`ffmpeg-<rev>`) | `cdn.playwright.dev`, with two named fallback hosts |
 | Chrome Headless Shell (`chromium_headless_shell-<rev>`) | `cdn.playwright.dev` |
 
-The third one is the one that matters most here: both scripts call `pw.chromium.launch()` with
+The third one is the one that matters most here: all three scripts call `pw.chromium.launch()` with
 Playwright's default `headless=True`, and since Playwright 1.49 that executes the headless shell
 rather than Chromium proper. So the binary this tool actually runs is the one easiest to
 overlook. None of the three is verified against a hash, and this repository has no way to make
@@ -106,5 +127,5 @@ weigh rather than something this file can settle:
   a different claim from upstream's.
 
 It is also the one step that can be skipped entirely: the browsers are only needed when one of
-the two images is actually being regenerated, which is rare, and the two scripts here are the
-only things that use them.
+the three images is actually being regenerated, which is rare, and the three scripts here are
+the only things that use them.
