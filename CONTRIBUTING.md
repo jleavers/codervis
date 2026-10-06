@@ -152,8 +152,10 @@ The locks are compiled `--universal` against
 **The image in the README is generated, not screenshotted by hand.** It is captured from the
 real app serving fabricated data, so nobody's plan tier, usage or activity ends up in a public
 file. The repository's social preview is drawn the same way, from the dashboard's own
-stylesheet and colour function with invented values. If a change moves the layout or the colour
-ramp, regenerate both: [`tools/screenshots/README.md`](tools/screenshots/README.md). That file
+stylesheet and colour function with invented values, and so is the LinkedIn header, around a
+screenshot of the stubbed app. If a change moves the layout or the colour ramp, regenerate the
+README's image and the social preview; the header needs it only for a new post. How is in
+[`tools/screenshots/README.md`](tools/screenshots/README.md). That file
 is also where the one thing this repository does not fix by content is written down -- the
 three browser archives `playwright install chromium` downloads, for which nothing upstream
 publishes a digest.

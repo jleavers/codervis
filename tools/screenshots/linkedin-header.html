@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>codervis LinkedIn header</title>
+<!--
+  A header image for a LinkedIn post, rendered by linkedin_header.py beside this file: the
+  copy on the left, the dashboard in a browser window on the right, in the same layout as
+  issuebot's. The dashboard's own stylesheet supplies the palette, and the script injects
+  `colorFor()` from app/static/app.js, so the chip dots are the colours the meters are.
+
+  The window's picture is a screenshot of the real app serving fabricated data, which the
+  script takes first and hands to this page as a data URL. It cannot be an iframe of the app
+  instead: the dashboard's policy is `frame-ancestors 'none'`, and that is right.
+
+  This page holds every layout number. The script reads the window's size from it rather than
+  keeping a copy. Nothing is loaded from the network.
+-->
+<link rel="stylesheet" href="../../app/static/style.css">
+<style>
+  /* The dashboard is laid out for a browser window; this is a fixed 1280x720 card. */
+  html, body {
+    width: 1280px;
+    height: 720px;
+    min-height: 0;
+    overflow: hidden;
+  }
+  body {
+    display: block;
+    position: relative;
+    padding: 0;
+    background:
+      radial-gradient(ellipse 620px 460px at 12% 6%, rgba(163, 230, 53, 0.055), transparent 70%),
+      radial-gradient(circle at 20% 0%, #161b22 0%, var(--bg) 70%);
+    /* Liberation Sans first, for a render that is the same on every Linux host, and the face
+       issuebot's header is set in. */
+    font-family: "Liberation Sans", Arial, Helvetica, sans-serif;
+  }
+  /* A still picture: nothing should be caught mid-transition. */
+  * { transition: none !important; }
+
+  .copy {
+    position: absolute;
+    left: 64px;
+    top: 0;
+    bottom: 0;
+    width: 440px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+  .title {
+    margin: 0;
+    font-size: 80px;
+    font-weight: 700;
+    letter-spacing: -2.5px;
+    line-height: 1;
+  }
+  .tagline {
+    margin: 34px 0 0;
+    font-size: 27px;
+    font-weight: 700;
+    line-height: 1.25;
+  }
+  .tagline .accent { color: var(--lime); }
+
+  .chips {
+    display: flex;
+    gap: 9px;
+    margin-top: 26px;
+  }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 14px 7px 12px;
+    border: 1px solid #262c34;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.025);
+    color: #aeb7c0;
+    font-size: 17px;
+  }
+  .chip .dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: hsl(var(--hue), var(--sat), var(--lit));
+    box-shadow: 0 0 8px hsla(var(--hue), var(--sat), var(--lit), 0.6);
+  }
+
+  .blurb {
+    margin: 30px 0 0;
+    font-size: 17px;
+    line-height: 1.6;
+    color: var(--ink-dim);
+  }
+
+  /* Wider than what is left of the card, so the window runs off its right edge. */
+  .window {
+    position: absolute;
+    left: 548px;
+    top: 86px;
+    width: 800px;
+    height: 590px;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid #2b3139;
+    border-radius: 10px;
+    background: var(--bg);
+    overflow: hidden;
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(0, 0, 0, 0.4);
+  }
+  .window-bar {
+    flex: none;
+    height: 27px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding-left: 12px;
+    background: #15191e;
+    border-bottom: 1px solid #22272e;
+  }
+  .window-bar span {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #3a4048;
+  }
+  /* The viewport the screenshot fills. Its width is what the dashboard is scaled to: just
+     under what is visible of the window, so the whole panel shows and only the frame bleeds. */
+  .window-view {
+    flex: 1;
+    min-height: 0;
+  }
+  #shot {
+    display: block;
+    width: 745px;
+  }
+</style>
+</head>
+<body>
+  <div class="copy">
+    <h1 class="title">codervis</h1>
+    <p class="tagline">
+      Claude Code and Codex quota.<br>
+      <span class="accent">Live, on one local page.</span>
+    </p>
+    <div class="chips" id="chips"></div>
+    <p class="blurb">
+      Colour-shifting meters from each vendor's own<br>
+      usage numbers, in a locked-down container.
+    </p>
+  </div>
+
+  <div class="window">
+    <div class="window-bar"><span></span><span></span><span></span></div>
+    <div class="window-view"><img id="shot" alt=""></div>
+  </div>
+
+  <script>
+    // Where on the ramp each chip's dot sits. Its colour is the one a meter has there.
+    const CHIPS = [
+      { label: "plenty left", percent: 15 },
+      { label: "pace yourself", percent: 62 },
+      { label: "nearly out", percent: 96 },
+    ];
+
+    // `colorFor` is the dashboard's, injected by linkedin_header.py before this page runs. A
+    // page opened without it says so instead of drawing dots in some other colour.
+    if (typeof colorFor !== "function") {
+      document.body.textContent = "colorFor() was not injected: render this with linkedin_header.py";
+      throw new Error("colorFor() missing");
+    }
+
+    const chips = document.getElementById("chips");
+    for (const chip of CHIPS) {
+      const { hue, sat, lit } = colorFor(chip.percent);
+      const el = document.createElement("span");
+      el.className = "chip";
+      el.style.cssText = `--hue:${hue.toFixed(1)};--sat:${sat.toFixed(1)}%;--lit:${lit.toFixed(1)}%`;
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      el.append(dot, chip.label);
+      chips.appendChild(el);
+    }
+  </script>
+</body>
+</html>
