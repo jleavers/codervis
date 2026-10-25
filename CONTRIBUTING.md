@@ -147,7 +147,11 @@ repository ships, and it now matches the *filename* anywhere in the tree rather 
 the root, so a seventh in a subdirectory fails rather than going unnoticed.
 The locks are compiled `--universal` against
 `--python-version 3.13`, which is the floor CI runs and not the target: the image is Python
-3.14, and a universal resolve is what makes one set of artefacts serve both.
+3.14, and a universal resolve is what makes one set of artefacts serve both. Dependabot's pip
+PRs are the exception to "regenerate with the header's command": its updater drops
+`--universal`, and `tests/test_dependency_lock.py` fails the result.
+`python tools/relock.py <PR>` redoes such a PR's locks properly and shows what moved;
+`--push` pushes them to its branch.
 
 **The image in the README is generated, not screenshotted by hand.** It is captured from the
 real app serving fabricated data, so nobody's plan tier, usage or activity ends up in a public

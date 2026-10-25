@@ -516,11 +516,13 @@ README's picture must be the same artefacts, which `tests/test_dependency_lock.p
 package for package, alongside the shape of a lock line and the flags the image may pass to
 pip. **Dependabot's pip PRs do not use those commands**: its updater re-resolves without
 `--universal`, so a lock comes back resolved for its Linux runner, with markers gone and
-Windows-only packages dropped (#121, #122). `@dependabot recreate` reproduces that. Re-lock
-such a PR from main's locks with each header's command plus `--upgrade-package name==version`
-for exactly the PR's bumps, and push onto its branch;
-`test_a_lock_is_resolved_for_every_platform_rather_than_for_one` is what fails when this is
-skipped. The reason is `app/main.py`'s: import-time code in this process holds both bearer tokens
+Windows-only packages dropped (#121, #122). `@dependabot recreate` reproduces that.
+`python tools/relock.py <PR>` re-locks such a PR from main's locks with each header's command
+plus `--upgrade-package name==version` for exactly the PR's bumps, in a throwaway worktree, and
+`--push` sends the result to its branch as a fast-forward; without it nothing leaves the
+machine. It refuses a branch that changes anything but the three locks, because it runs the
+lock tests from that branch. `test_a_lock_is_resolved_for_every_platform_rather_than_for_one` is
+what fails when this is skipped. The reason is `app/main.py`'s: import-time code in this process holds both bearer tokens
 and can read both mounted home trees, so a version range is a standing invitation for whoever
 compromises a publishing account inside it (#104).
 

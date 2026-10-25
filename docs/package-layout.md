@@ -35,6 +35,7 @@ fits together, and is written for an agent working here but reads as well for a 
 ├── pytest.ini
 ├── tests/
 ├── tools/screenshots/   # Renders the README's image, the social preview and the LinkedIn header from fabricated data
+├── tools/relock.py      # Re-locks a Dependabot pip PR universally, which its updater does not
 ├── docs/
 │   ├── operations.md      # Configuration, serving other machines, the egress check, troubleshooting
 │   ├── security-model.md  # What bounds the container and the dashboard, and what an engine leaves open
