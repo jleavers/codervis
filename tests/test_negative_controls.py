@@ -248,6 +248,9 @@ _LOCK_INSTALL_SITES_NAMED = (
 _LOCK_EVERY_LOCK_AGREES = (
     f"{LOCK_TESTS}::test_every_other_lock_agrees_with_the_runtime_lock_package_for_package"
 )
+_LOCK_RESOLVED_FOR_EVERY_PLATFORM = (
+    f"{LOCK_TESTS}::test_a_lock_is_resolved_for_every_platform_rather_than_for_one"
+)
 _LOCK_DEPENDABOT_DIRECTORIES = (
     f"{LOCK_TESTS}::test_dependabot_watches_the_directory_every_lock_actually_sits_in"
 )
@@ -1954,6 +1957,38 @@ MUTATIONS: tuple[Mutation, ...] = (
         ),
         after=" \\",
         caught_by=(f"{_LOCK_EVERY_LOCK_AGREES}[requirements-screenshots.txt]",),
+    ),
+    Mutation(
+        key="lock-resolved-for-the-machine-it-ran-on",
+        widening=True,
+        area=DEPENDENCY_LOCK,
+        rule="a lock is resolved for every platform its header says it is, not for the one"
+        " the resolver ran on",
+        # #121's shape, on the lock the image installs: Dependabot's re-resolve dropped
+        # `--universal` and wrote `uvloop` with no marker in all three locks, which still agreed
+        # with each other, so the control above could not see it. The marker is the whole anchor,
+        # for the reason that control gives.
+        path="requirements.txt",
+        before=(
+            " ; platform_python_implementation != 'PyPy'"
+            " and sys_platform != 'cygwin' and sys_platform != 'win32' \\"
+        ),
+        after=" \\",
+        caught_by=(f"{_LOCK_RESOLVED_FOR_EVERY_PLATFORM}[requirements.txt-uvloop]",),
+    ),
+    Mutation(
+        key="lock-resolved-for-the-other-machine",
+        widening=True,
+        area=DEPENDENCY_LOCK,
+        rule="a lock is resolved for every platform its header says it is, a Windows-only"
+        " package included",
+        # The same resolve on a Windows runner: `colorama`, which pytest asks for there only,
+        # comes back for every platform. It is the one case in the test of a package that only
+        # Windows gets, so without this control that case could go and nothing would notice.
+        path="requirements-dev.txt",
+        before=" ; sys_platform == 'win32' \\",
+        after=" \\",
+        caught_by=(f"{_LOCK_RESOLVED_FOR_EVERY_PLATFORM}[requirements-dev.txt-colorama]",),
     ),
     Mutation(
         key="lock-an-unhashed-install-whose-verb-opens-a-python-string",
