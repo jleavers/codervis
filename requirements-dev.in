@@ -25,3 +25,8 @@ ruff
 # extra that stopped pulling it in would take two test modules with it, which is the shape of
 # a version decided nowhere.
 pyyaml
+
+# Imported directly by `tests/test_dependency_lock.py`, which evaluates a lock's environment
+# markers as an installer would; asked for here rather than relied on as pytest's own
+# dependency, for the reason pyyaml is.
+packaging

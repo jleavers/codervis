@@ -29,6 +29,12 @@ What is *not* pinned here, because it cannot be witnessed without an index: that
 complete. `pip install --require-hashes` is what establishes that, by refusing to install a
 dependency the file does not name, and the `Dockerfile` line below is where it runs.
 
+Nor that every marker in a lock is the one a universal resolve would write. What is pinned is
+narrower, and enough for the failure that has actually arrived: two packages a universal
+resolve can lock only under a marker are evaluated for Linux and for Windows, and a lock
+resolved for one machine -- which is what Dependabot's pip updater produces, since it drops
+`--universal` -- gets one of them wrong for the other.
+
 What is not pinned here at all, and is not an oversight: the three browser archives
 `playwright install chromium` downloads after that lock is installed. Nothing upstream
 publishes a digest for them, so there is no hash to require; `tools/screenshots/README.md` says
@@ -45,6 +51,7 @@ from typing import NamedTuple
 
 import pytest
 import yaml
+from packaging.markers import Marker
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -480,6 +487,78 @@ def test_every_other_lock_agrees_with_the_runtime_lock_package_for_package(lock:
     for name, pin in runtime.items():
         assert name in other, f"{name} is in the image and not in {lock}"
         assert other[name] == pin, f"{name} differs from the image: {other[name]} vs {pin}"
+
+
+#: Two platforms a lock is installed on, as the environment a marker is evaluated in. Only the
+#: keys a platform marker reads are given; anything else is the running interpreter's own.
+LINUX = {
+    "os_name": "posix",
+    "sys_platform": "linux",
+    "platform_system": "Linux",
+    "platform_python_implementation": "CPython",
+    "implementation_name": "cpython",
+}
+WINDOWS = {
+    "os_name": "nt",
+    "sys_platform": "win32",
+    "platform_system": "Windows",
+    "platform_python_implementation": "CPython",
+    "implementation_name": "cpython",
+}
+
+
+@pytest.mark.parametrize(
+    "lock,package,asked_for_by,installs_on,not_on",
+    [
+        pytest.param(lock, "uvloop", "uvicorn[standard]", LINUX, WINDOWS, id=f"{lock}-uvloop")
+        for lock in sorted(LOCKS)
+    ]
+    + [
+        pytest.param(
+            "requirements-dev.txt",
+            "colorama",
+            "pytest",
+            WINDOWS,
+            LINUX,
+            id="requirements-dev.txt-colorama",
+        )
+    ],
+)
+def test_a_lock_is_resolved_for_every_platform_rather_than_for_one(
+    lock: str, package: str, asked_for_by: str, installs_on: dict, not_on: dict
+) -> None:
+    """Every header says `--universal`, and this is what holds a lock to it.
+
+    Dependabot's pip updater re-resolves without that flag, so a lock comes back resolved for
+    the runner it ran on. #121 arrived like that in all three: `uvloop` unconditional, and
+    `colorama` gone from the dev lock, which a Windows contributor's hash-required install would
+    have refused, since pytest asks for it there. The three still agreed with each other, so the
+    test above passed them; it only caught #122, where one lock moved alone.
+
+    Each package here is asked for, by a package an input names directly, on some platforms
+    only. A universal resolve can lock it only under a marker, and a resolve for one machine
+    either writes it unconditionally or leaves it out. So the marker is evaluated as an
+    installer would evaluate it, on a platform that must get the package and one that must not.
+    `uvloop` reaches every lock, because every input builds on the runtime one.
+    """
+    remedy = (
+        f"Regenerate {lock} with its header's own command. If {asked_for_by} no longer asks for "
+        f"{package} on some platforms only, name another package here that is"
+    )
+    pins = locked_packages(lock)
+    assert package in pins, (
+        f"{package} is not in {lock}, though {asked_for_by} asks for it on some platforms: the "
+        f"lock was resolved for one machine. {remedy}"
+    )
+    marker = pins[package].marker
+    assert marker is not None and not Marker(marker).evaluate(not_on), (
+        f"{lock} installs {package} on {not_on['sys_platform']}, where {asked_for_by} does not "
+        f"ask for it: the lock was resolved for one machine. {remedy}"
+    )
+    assert Marker(marker).evaluate(installs_on), (
+        f"{lock} does not install {package} on {installs_on['sys_platform']}, where "
+        f"{asked_for_by} asks for it. {remedy}"
+    )
 
 
 # ─── the image ───────────────────────────────────────────────────────────────
