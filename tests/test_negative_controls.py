@@ -1941,12 +1941,18 @@ MUTATIONS: tuple[Mutation, ...] = (
         area=DEPENDENCY_LOCK,
         rule="every lock agrees with the runtime lock package for package: one set of"
         " artefacts serves the image, a contributor's venv and the README's picture",
-        # A version, not a deletion: an independent resolve of the screenshot input really
-        # does take a newer `fastapi` than the image has, so this is the drift as it arrives
-        # rather than an invented one.
+        # A marker, not a deletion, and the drift as it really arrived: Dependabot re-resolved
+        # this lock alone for #122 without `--universal`, leaving `uvloop` unconditional here
+        # and under this marker in the image. The marker is the whole anchor, and no version is
+        # in it: this was `fastapi==0.141.1` until #121, and an anchor on a version stops
+        # matching at that package's next bump, so a routine update broke the control rather
+        # than the rule. `uvloop` is the one package in this lock under this marker.
         path="requirements-screenshots.txt",
-        before="fastapi==0.141.1",
-        after="fastapi==0.142.2",
+        before=(
+            " ; platform_python_implementation != 'PyPy'"
+            " and sys_platform != 'cygwin' and sys_platform != 'win32' \\"
+        ),
+        after=" \\",
         caught_by=(f"{_LOCK_EVERY_LOCK_AGREES}[requirements-screenshots.txt]",),
     ),
     Mutation(
