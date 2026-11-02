@@ -86,6 +86,8 @@ One panel per agent (Claude Code, Codex):
 
 - **Claude** shows **5-Hour Window**, **Weekly Window**, and **Weekly Window
   (Fable)** gauges, each with a countdown when its reset time is available.
+  A plan with no five-hour limit (Ultra) gets no 5-Hour Window from Anthropic,
+  so that gauge reads “—” while the weekly gauges stay live.
 - **Codex** shows **5-Hour Window** and **Weekly Window** gauges with their reset
   countdowns. If Codex omits either window, that gauge reads “—”.
 - Per-panel header shows the server source state (`live` / `unavailable`) or

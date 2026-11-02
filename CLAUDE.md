@@ -106,7 +106,12 @@ Live-only by design:
   `claudeAiOauth.accessToken`, and hits
   `GET https://claude.ai/api/oauth/usage` with `Authorization: Bearer …`.
   Response has `five_hour.utilization` and `seven_day.utilization` as
-  percentages already. Its optional `limits` list can also contain a
+  percentages already. `five_hour` is `null` on a plan with no five-hour
+  limit — Ultra (formerly Max 20x) since 2026-10-30 — and that, or the key
+  being absent, gives `LiveSnapshot.five_hour = None`: the gauge stays live
+  with `percent: null`, as an omitted Codex window does. Only null and absent
+  are tolerated; a `five_hour` that is present and malformed, or a missing
+  `seven_day`, is still a `shape` failure. Its optional `limits` list can also contain a
   `weekly_scoped` entry whose `scope.model.display_name` identifies Fable;
   that entry's `percent` is also already on a 0–100 scale. No token-count
   maths is needed. `get()` always fetches and caches nothing: its refresher

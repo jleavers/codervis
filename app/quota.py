@@ -45,7 +45,9 @@ class LiveWindow:
 
 @dataclass
 class LiveSnapshot:
-    five_hour: LiveWindow
+    # None when the plan has no five-hour limit: Ultra's usage response has sent
+    # `"five_hour": null` since 2026-10-30.
+    five_hour: LiveWindow | None
     seven_day: LiveWindow
     seven_day_fable: LiveWindow | None
     subscription_type: str | None
@@ -208,7 +210,9 @@ class LiveQuotaClient:
             raise LiveQuotaError("response is not a JSON object", code=degrade.SHAPE)
 
         return LiveSnapshot(
-            five_hour=_window("five_hour", "5-Hour Window", payload.get("five_hour")),
+            five_hour=_optional_window(
+                "five_hour", "5-Hour Window", payload.get("five_hour")
+            ),
             seven_day=_window("seven_day", "Weekly Window", payload.get("seven_day")),
             seven_day_fable=_fable_window(payload),
             subscription_type=subscription,
@@ -243,6 +247,17 @@ def _window(name: str, label: str, raw: dict | None) -> LiveWindow:
         except (ValueError, OverflowError, OSError):
             resets_at = None
     return LiveWindow(name=name, label=label, percent=percent, resets_at=resets_at)
+
+
+def _optional_window(name: str, label: str, raw: object) -> LiveWindow | None:
+    """A window a plan may not have: null or absent means "no such limit".
+
+    Only null and absent. A window that is present and malformed is still a
+    response this client does not understand, and `_window` says so.
+    """
+    if raw is None:
+        return None
+    return _window(name, label, raw)
 
 
 def _fable_window(payload: dict) -> LiveWindow | None:
