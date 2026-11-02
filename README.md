@@ -90,7 +90,9 @@ One panel per agent (Claude Code, Codex):
   countdowns. If Codex omits either window, that gauge reads “—”.
 - Per-panel header shows the server source state (`live` / `unavailable`) or
   the browser-local presentation state (`disabled`); footer shows the plan
-  and most recent local activity. Claude activity comes from project
+  and most recent local activity. Claude's plan is the one its credential
+  names, with `ultra` told apart from `max` by the rate-limit tier stored
+  beside it, since Ultra kept Max 20x's identifier. Claude activity comes from project
   transcript timestamps; Codex from local history/session file metadata. When a
   live quota call fails the footer shows one of a fixed set of messages
   (`app/degrade.py`): the dashboard never echoes an exception's own text,

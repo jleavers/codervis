@@ -55,6 +55,60 @@ def test_claude_window_rejects_missing_utilization() -> None:
         quota._window("five_hour", "5-Hour Window", {"resets_at": "2026-05-20T12:00:00Z"})
 
 
+_NOT_SET = object()
+
+
+@pytest.mark.parametrize(
+    ("subscription_type", "rate_limit_tier", "plan"),
+    [
+        # Ultra, formerly Max 20x: renamed on 2026-10-30 with its identifier
+        # left as `max`, so the tier is the only thing that names it. This pair
+        # is what an Ultra account's credential file carries.
+        ("max", "default_claude_max_20x", "ultra"),
+        # Max, formerly Max 5x, kept the name its identifier already says.
+        ("max", "default_claude_max_5x", "max"),
+        ("max", _NOT_SET, "max"),
+        ("max", None, "max"),
+        ("max", "default_claude_max_40x", "max"),
+        ("max", 20, "max"),
+        ("max", {"tier": "default_claude_max_20x"}, "max"),
+        ("max", ["default_claude_max_20x"], "max"),
+        # The tier on its own is not the plan: Claude Code gives a Team seat
+        # Max's 5x tier too, and that seat is still Team.
+        ("team", "default_claude_max_5x", "team"),
+        ("team", "default_claude_max_20x", "team"),
+        ("pro", _NOT_SET, "pro"),
+        ("enterprise", _NOT_SET, "enterprise"),
+        # A type this table does not know is still shown as itself.
+        ("some_new_plan", "default_claude_max_20x", "some_new_plan"),
+        # No type, no plan: a tier never stands in for one.
+        (_NOT_SET, "default_claude_max_20x", None),
+    ],
+)
+def test_claude_client_names_the_plan_from_its_type_and_tier(
+    tmp_path, monkeypatch, subscription_type, rate_limit_tier, plan
+) -> None:
+    oauth = {"accessToken": "fake-access-token"}
+    if subscription_type is not _NOT_SET:
+        oauth["subscriptionType"] = subscription_type
+    if rate_limit_tier is not _NOT_SET:
+        oauth["rateLimitTier"] = rate_limit_tier
+    (tmp_path / ".credentials.json").write_text(
+        json.dumps({"claudeAiOauth": oauth}), encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        quota.urllib.request,
+        "urlopen",
+        lambda req, timeout: _JSONResponse(
+            {"five_hour": {"utilization": 1}, "seven_day": {"utilization": 2}}
+        ),
+    )
+
+    snapshot = quota.LiveQuotaClient(tmp_path).get()
+
+    assert snapshot.subscription_type == plan
+
+
 def test_claude_client_reads_fable_window_from_same_usage_response(
     tmp_path, monkeypatch
 ) -> None:
