@@ -143,8 +143,7 @@ class LiveQuotaClient:
                 "accessToken contains a character that cannot be sent as a header",
                 code=degrade.CREDENTIALS,
             )
-        subscription = oauth.get("subscriptionType")
-        return token, subscription if isinstance(subscription, str) else None
+        return token, _plan_name(oauth.get("subscriptionType"), oauth.get("rateLimitTier"))
 
     def _fetch(self) -> LiveSnapshot:
         deadline = deadline_in(self.total_deadline_seconds)
@@ -297,6 +296,31 @@ def _float_field(value, field: str) -> float:
     if not math.isfinite(parsed):
         raise LiveQuotaError(f"{field} is not finite", code=degrade.SHAPE)
     return parsed
+
+
+# The plans whose `subscriptionType` does not name them, keyed on the type *and*
+# the tier. Ultra, formerly Max 20x, was renamed on 2026-10-30 and its identifier
+# was not: it is still `max`, and only `default_claude_max_20x` tells it from Max.
+# The tier alone is not enough, since Claude Code gives a Team seat Max's 5x tier
+# too. Every other plan's type is its name already, so it is not listed here.
+_PLAN_BY_TYPE_AND_TIER: dict[tuple[str, str], str] = {
+    ("max", "default_claude_max_20x"): "ultra",
+}
+
+
+def _plan_name(subscription_type: object, rate_limit_tier: object) -> str | None:
+    """The plan to show for this account: its type, unless the tier renames it.
+
+    Both values come from a file another program writes, so each is used only
+    if it is a string. A tier is never a plan on its own.
+    """
+    if not isinstance(subscription_type, str):
+        return None
+    if not isinstance(rate_limit_tier, str):
+        return subscription_type
+    return _PLAN_BY_TYPE_AND_TIER.get(
+        (subscription_type, rate_limit_tier), subscription_type
+    )
 
 
 def client_from_env() -> LiveQuotaClient:

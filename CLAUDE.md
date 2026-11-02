@@ -127,6 +127,15 @@ Live-only by design:
   to the UI. `LiveQuotaError` is the failure the client declares, but the
   boundary contains anything else it raises too. The app does not estimate
   quota usage locally.
+- The footer's plan is `claudeAiOauth.subscriptionType` from the same
+  credential file, unless `rateLimitTier` beside it renames it:
+  `_PLAN_BY_TYPE_AND_TIER` in `app/quota.py` serves `max` with
+  `default_claude_max_20x` as `ultra`, because Ultra (formerly Max 20x) was
+  renamed on 2026-10-30 and its identifier was not. Every other plan's type is
+  already its name, so the table lists only the exceptions. It is keyed on the
+  type *and* the tier, never the tier alone: Claude Code gives a Team seat
+  Max's 5x tier too. The display name Claude Code shows itself comes from
+  `/api/oauth/profile`, which this app does not call.
 - **`app/claude_activity.py`** — `ClaudeActivityReader` reports Claude
   `last_activity` from timestamp fields in local project transcript files.
   It does not inspect usage fields or influence quota. That it does not read

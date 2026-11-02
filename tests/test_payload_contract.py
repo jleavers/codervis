@@ -333,6 +333,16 @@ def hostile_credentials(provider: str) -> dict[str, str | None]:
             + SECRET
             + '", "subscriptionType": "max\\ud800"}}'
         )
+        # The tier is looked up with the type as a pair, so a tier that cannot
+        # be a dict key must be refused before the lookup rather than raise in it.
+        for name, tier in (
+            ("tier-is-a-number", 7),
+            ("tier-is-an-object", {"a": 1}),
+            ("tier-is-a-list", ["default_claude_max_20x"]),
+        ):
+            cases[name] = json.dumps(
+                {wrapper: {token_key: SECRET, "subscriptionType": "max", "rateLimitTier": tier}}
+            )
     else:
         cases["account-id-with-lf"] = json.dumps(
             {"tokens": {token_key: SECRET, "account_id": "acct\nX-Evil: 1"}}
@@ -1231,6 +1241,29 @@ def test_a_control_character_in_a_plan_string_is_scrubbed_not_just_bounded() -> 
     # name of three spaces instead of dropped.
     assert main._text("\x00\r\n") is None
     assert main._text("   ") is None
+
+
+def test_an_ultra_credential_is_served_as_the_ultra_plan(deployment) -> None:
+    # Ultra's credential still says `max`; the tier beside it is what tells it
+    # apart from Max, and the footer shows the plan the account is on.
+    deployment.write_credentials(
+        "claude",
+        json.dumps(
+            {
+                "claudeAiOauth": {
+                    "accessToken": SECRET,
+                    "subscriptionType": "max",
+                    "rateLimitTier": "default_claude_max_20x",
+                }
+            }
+        ),
+    )
+
+    payload = main._build_payload()
+
+    assert_payload_in_schema(payload)
+    assert payload["claude"]["source"] == "live"
+    assert payload["claude"]["subscription_type"] == "ultra"
 
 
 @pytest.mark.parametrize("provider", PROVIDERS)
