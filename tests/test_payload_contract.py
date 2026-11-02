@@ -653,6 +653,55 @@ def test_healthy_payload_is_in_schema(deployment) -> None:
     assert [w["percent"] for w in payload["codex"]["windows"]] == [12.5, 40.0]
 
 
+def _body_without_a_five_hour_window(provider: str) -> bytes:
+    """A healthy body from a plan that has no five-hour limit.
+
+    Claude says so with `"five_hour": null`, which is what an Ultra account's
+    usage response has carried since 2026-10-30. Codex says so by sending its
+    weekly window alone.
+    """
+    if provider == "claude":
+        return json.dumps(
+            {
+                "five_hour": None,
+                "seven_day": {"utilization": 40.0},
+                "limits": [
+                    {
+                        "kind": "weekly_scoped",
+                        "percent": 7.5,
+                        "scope": {"model": {"display_name": "Fable"}},
+                    }
+                ],
+            }
+        ).encode()
+    return json.dumps(
+        {"secondary_window": {"utilization": 40.0, "limit_window_seconds": 604_800}}
+    ).encode()
+
+
+@pytest.mark.parametrize("provider", PROVIDERS)
+def test_a_plan_without_a_five_hour_window_stays_live(deployment, provider) -> None:
+    # One gauge with no window to report is not a response the dashboard failed
+    # to understand: the section stays live, that gauge shows no value, and the
+    # weekly gauges keep theirs.
+    deployment.bodies[provider] = _body_without_a_five_hour_window(provider)
+
+    records = _captured_records(main._build_payload)
+    payload = main._build_payload()
+
+    assert_payload_in_schema(payload)
+    section = payload[provider]
+    assert section["source"] == "live"
+    assert section["source_error"] is None
+    windows = {w["name"]: w for w in section["windows"]}
+    assert windows["five_hour"]["percent"] is None
+    assert windows["five_hour"]["resets_at"] is None
+    assert windows["seven_day"]["percent"] == 40.0
+    if provider == "claude":
+        assert windows["seven_day_fable"]["percent"] == 7.5
+    assert records == []
+
+
 @pytest.mark.parametrize("provider", PROVIDERS)
 @pytest.mark.parametrize("case", sorted(hostile_bodies("codex") | hostile_bodies("claude")))
 def test_hostile_response_body_stays_in_schema(deployment, provider, case) -> None:

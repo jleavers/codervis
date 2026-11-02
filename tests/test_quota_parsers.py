@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app import codex_quota, quota
+from app import codex_quota, degrade, quota
 
 
 class _JSONResponse:
@@ -159,6 +159,108 @@ def test_claude_client_ignores_malformed_optional_fable_window(
     assert snapshot.five_hour.percent == 12.5
     assert snapshot.seven_day.percent == 45
     assert snapshot.seven_day_fable is None
+
+
+_ABSENT = object()
+
+
+def _claude_client_answering(tmp_path, monkeypatch, body: dict) -> quota.LiveQuotaClient:
+    (tmp_path / ".credentials.json").write_text(
+        json.dumps({"claudeAiOauth": {"accessToken": "fake-access-token"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        quota.urllib.request, "urlopen", lambda req, timeout: _JSONResponse(body)
+    )
+    return quota.LiveQuotaClient(tmp_path)
+
+
+@pytest.mark.parametrize("five_hour", [None, _ABSENT], ids=["null", "absent"])
+def test_claude_client_reports_no_five_hour_window_for_a_plan_without_one(
+    tmp_path, monkeypatch, five_hour
+) -> None:
+    # The shape an Ultra account's usage response took from 2026-10-30, when
+    # the plan stopped having a five-hour limit: `five_hour` is still a key but
+    # its value is null, and the `session` entry has gone from `limits`. The
+    # weekly windows are untouched, so they must still be read.
+    body = {
+        "seven_day": {
+            "utilization": 14,
+            "resets_at": "2026-11-06T05:00:00.285845+00:00",
+        },
+        "seven_day_opus": None,
+        "limits": [
+            {
+                "kind": "weekly_all",
+                "group": "weekly",
+                "percent": 14,
+                "severity": "normal",
+                "resets_at": "2026-11-06T05:00:00.285845+00:00",
+                "scope": None,
+                "is_active": True,
+            },
+            {
+                "kind": "weekly_scoped",
+                "group": "weekly",
+                "percent": 0,
+                "severity": "normal",
+                "resets_at": "2026-11-06T05:00:00+00:00",
+                "scope": {"model": {"id": None, "display_name": "Fable"}, "surface": None},
+                "is_active": False,
+            },
+        ],
+    }
+    if five_hour is not _ABSENT:
+        body["five_hour"] = five_hour
+
+    snapshot = _claude_client_answering(tmp_path, monkeypatch, body).get()
+
+    assert snapshot.five_hour is None
+    assert snapshot.seven_day.percent == 14
+    assert snapshot.seven_day.resets_at == datetime(
+        2026, 11, 6, 5, 0, 0, 285845, tzinfo=timezone.utc
+    )
+    assert snapshot.seven_day_fable.percent == 0
+
+
+@pytest.mark.parametrize(
+    ("body", "match"),
+    [
+        (
+            {"five_hour": "nope", "seven_day": {"utilization": 14}},
+            "invalid five_hour usage window",
+        ),
+        (
+            {"five_hour": {"resets_at": None}, "seven_day": {"utilization": 14}},
+            "missing five_hour.utilization",
+        ),
+        (
+            {"five_hour": {"utilization": None}, "seven_day": {"utilization": 14}},
+            "five_hour.utilization is not numeric",
+        ),
+        ({"five_hour": None, "seven_day": None}, "invalid seven_day usage window"),
+        ({"five_hour": {"utilization": 1}}, "invalid seven_day usage window"),
+    ],
+    ids=[
+        "five-hour-not-an-object",
+        "five-hour-without-utilization",
+        "five-hour-utilization-null",
+        "no-windows-at-all",
+        "seven-day-absent",
+    ],
+)
+def test_claude_client_still_refuses_a_window_it_does_not_understand(
+    tmp_path, monkeypatch, body, match
+) -> None:
+    # A null five_hour means the plan has no such limit. A five_hour that is
+    # there but malformed, or a response with no weekly window, is still an
+    # endpoint whose shape has moved and must say so.
+    client = _claude_client_answering(tmp_path, monkeypatch, body)
+
+    with pytest.raises(quota.LiveQuotaError, match=match) as raised:
+        client.get()
+
+    assert raised.value.code == degrade.SHAPE
 
 
 @pytest.mark.parametrize(

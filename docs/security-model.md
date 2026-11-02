@@ -98,6 +98,11 @@ link out of them.
   `weekly_scoped` Fable entry from the endpoint's `limits` list. If Anthropic
   omits that optional entry or returns it malformed, the Fable gauge shows “—”
   while the 5-hour and all-model weekly gauges remain live.
+- **Claude's 5-hour limit is plan-dependent too.** Ultra (formerly Max 20x) has
+  had no five-hour limit since 30 October 2026, and the endpoint reports that
+  as a null `five_hour`. The 5-hour gauge then shows “—” while the weekly
+  gauges remain live; it is a malformed `five_hour`, not a missing one, that
+  reads as `upstream response not understood`.
 - Claude Code refreshes its own access token. If you have not opened Claude
   Code for a while, Anthropic rejects codervis's call until the host CLI runs
   and refreshes `~/.claude/.credentials.json`, and the card reads `unavailable`
